@@ -86,6 +86,15 @@ class GameState:
     def target_hidden_slots(self) -> List[CardSlot]:
         return self.target_player().hidden_slots()
 
+    def inference_player_ids(self) -> List[str]:
+        ordered_ids = [self.target_player_id]
+        ordered_ids.extend(
+            player_id
+            for player_id in self.players
+            if player_id not in {self.self_player_id, self.target_player_id}
+        )
+        return ordered_ids
+
     def hidden_index_by_slot(self, player_id: str) -> Dict[int, int]:
         player = self.get_player(player_id)
         return {

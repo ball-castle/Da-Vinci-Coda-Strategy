@@ -7,11 +7,11 @@ from app.core.state import (
     JOKER,
     MAX_CARD_VALUE,
     Card,
-    CardSlot,
     GameState,
 )
 
 ProbabilityMatrix = Dict[int, Dict[Card, float]]
+FullProbabilityMatrix = Dict[str, ProbabilityMatrix]
 CARD_COLOR_RANK = {"B": 0, "W": 1}
 
 
@@ -27,12 +27,23 @@ def serialize_card(card: Card) -> List[Any]:
 
 
 class DaVinciInferenceEngine:
-    """Infer posterior card probabilities for the target player's hidden slots."""
+    """Infer posterior card probabilities for all non-self hidden slots jointly."""
 
     def __init__(self, game_state: GameState):
         self.game_state = game_state
-        self.target_slots = game_state.target_player().ordered_slots()
-        self.hidden_slots = [slot for slot in self.target_slots if slot.value is None]
+        self.inference_player_ids = [
+            player_id
+            for player_id in game_state.inference_player_ids()
+            if game_state.get_player(player_id).ordered_slots()
+        ]
+        self.player_slots = {
+            player_id: game_state.get_player(player_id).ordered_slots()
+            for player_id in self.inference_player_ids
+        }
+        self.hidden_slots_by_player = {
+            player_id: [slot for slot in slots if slot.value is None]
+            for player_id, slots in self.player_slots.items()
+        }
         self.available_cards = tuple(self._get_available_cards())
 
     def _build_all_possible_cards(self) -> Tuple[Card, ...]:
@@ -52,77 +63,108 @@ class DaVinciInferenceEngine:
 
     def infer_hidden_probabilities(
         self,
-        guess_signals: Sequence[Dict[str, Any]],
+        guess_signals_by_player: Dict[str, Sequence[Dict[str, Any]]],
         psy_filter: "PsychologicalFilter",
-    ) -> Tuple[ProbabilityMatrix, int, float]:
-        if not self.hidden_slots:
+    ) -> Tuple[FullProbabilityMatrix, int, float]:
+        if not any(self.hidden_slots_by_player.values()):
             return {}, 0, 0.0
 
-        position_weights: DefaultDict[int, DefaultDict[Card, float]] = defaultdict(
-            lambda: defaultdict(float)
-        )
+        position_weights: Dict[str, DefaultDict[int, DefaultDict[Card, float]]] = {
+            player_id: defaultdict(lambda: defaultdict(float))
+            for player_id in self.inference_player_ids
+        }
         total_weight = 0.0
         search_space_size = 0
-        hidden_assignment: Dict[int, Card] = {}
+        hidden_assignment: Dict[str, Dict[int, Card]] = {
+            player_id: {}
+            for player_id in self.inference_player_ids
+        }
 
-        def dfs(
-            slot_cursor: int,
-            available_cards: Tuple[Card, ...],
-            last_numeric_card: Optional[Card],
-        ) -> None:
+        def dfs_player(player_cursor: int, available_cards: Tuple[Card, ...]) -> None:
             nonlocal search_space_size, total_weight
 
-            if slot_cursor == len(self.target_slots):
+            if player_cursor == len(self.inference_player_ids):
                 search_space_size += 1
-                hypothesis = tuple(
-                    hidden_assignment[slot.slot_index] for slot in self.hidden_slots
+                hypothesis_by_player = {
+                    player_id: tuple(
+                        hidden_assignment[player_id][slot.slot_index]
+                        for slot in self.hidden_slots_by_player[player_id]
+                    )
+                    for player_id in self.inference_player_ids
+                    if self.hidden_slots_by_player[player_id]
+                }
+                weight = psy_filter.score_global_hypothesis(
+                    hypothesis_by_player,
+                    guess_signals_by_player,
                 )
-                weight = psy_filter.score_hypothesis(hypothesis, guess_signals)
                 if weight <= 0:
                     return
 
                 total_weight += weight
-                for slot in self.hidden_slots:
-                    position_weights[slot.slot_index][hidden_assignment[slot.slot_index]] += weight
+                for player_id, slots in self.hidden_slots_by_player.items():
+                    for slot in slots:
+                        position_weights[player_id][slot.slot_index][
+                            hidden_assignment[player_id][slot.slot_index]
+                        ] += weight
                 return
 
-            slot = self.target_slots[slot_cursor]
-            fixed_card = slot.known_card()
-            if fixed_card is not None:
-                next_last_numeric = self._advance_sequence(last_numeric_card, fixed_card)
-                if next_last_numeric is None:
+            player_id = self.inference_player_ids[player_cursor]
+            player_slots = self.player_slots[player_id]
+
+            def dfs_slot(
+                slot_cursor: int,
+                current_available_cards: Tuple[Card, ...],
+                last_numeric_card: Optional[Card],
+            ) -> None:
+                if slot_cursor == len(player_slots):
+                    dfs_player(player_cursor + 1, current_available_cards)
                     return
-                dfs(slot_cursor + 1, available_cards, next_last_numeric)
-                return
 
-            for idx, candidate in enumerate(available_cards):
-                if slot.color is not None and candidate[0] != slot.color:
-                    continue
+                slot = player_slots[slot_cursor]
+                fixed_card = slot.known_card()
+                if fixed_card is not None:
+                    next_last_numeric = self._advance_sequence(last_numeric_card, fixed_card)
+                    if next_last_numeric is None:
+                        return
+                    dfs_slot(slot_cursor + 1, current_available_cards, next_last_numeric)
+                    return
 
-                next_last_numeric = self._advance_sequence(last_numeric_card, candidate)
-                if next_last_numeric is None:
-                    continue
+                for idx, candidate in enumerate(current_available_cards):
+                    if slot.color is not None and candidate[0] != slot.color:
+                        continue
 
-                hidden_assignment[slot.slot_index] = candidate
-                dfs(
-                    slot_cursor + 1,
-                    available_cards[:idx] + available_cards[idx + 1 :],
-                    next_last_numeric,
-                )
-                del hidden_assignment[slot.slot_index]
+                    next_last_numeric = self._advance_sequence(last_numeric_card, candidate)
+                    if next_last_numeric is None:
+                        continue
 
-        dfs(0, self.available_cards, None)
+                    hidden_assignment[player_id][slot.slot_index] = candidate
+                    dfs_slot(
+                        slot_cursor + 1,
+                        current_available_cards[:idx] + current_available_cards[idx + 1 :],
+                        next_last_numeric,
+                    )
+                    del hidden_assignment[player_id][slot.slot_index]
+
+            dfs_slot(0, available_cards, None)
+
+        dfs_player(0, self.available_cards)
 
         if total_weight == 0:
             return {}, search_space_size, total_weight
 
-        probability_matrix: ProbabilityMatrix = {}
-        for slot_index, weighted_cards in position_weights.items():
-            probability_matrix[slot_index] = {
-                card: weight / total_weight for card, weight in weighted_cards.items()
+        full_probability_matrix: FullProbabilityMatrix = {}
+        for player_id, weighted_slots in position_weights.items():
+            if not weighted_slots:
+                continue
+            full_probability_matrix[player_id] = {
+                slot_index: {
+                    card: weight / total_weight
+                    for card, weight in weighted_cards.items()
+                }
+                for slot_index, weighted_cards in weighted_slots.items()
             }
 
-        return probability_matrix, search_space_size, total_weight
+        return full_probability_matrix, search_space_size, total_weight
 
     def _advance_sequence(
         self,
@@ -160,13 +202,11 @@ class PsychologicalFilter:
     def build_guess_signals(
         self,
         game_state: GameState,
-    ) -> List[Dict[str, Any]]:
-        signals: List[Dict[str, Any]] = []
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        signals_by_player: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for action in game_state.actions:
             if action.action_type != "guess":
-                continue
-            if action.guesser_id != game_state.target_player_id:
                 continue
 
             guessed_card = action.guessed_card()
@@ -180,18 +220,35 @@ class PsychologicalFilter:
             if guessed_number < MAX_CARD_VALUE:
                 adjacent_cards.append((guessed_color, guessed_number + 1))
 
-            signals.append(
+            signals_by_player[action.guesser_id].append(
                 {
                     "exact_card": guessed_card,
                     "adjacent_cards": tuple(adjacent_cards),
                     "result": action.result,
                     "continued_turn": action.continued_turn,
+                    "target_player_id": action.target_player_id,
+                    "target_slot_index": action.target_slot_index,
                 }
             )
 
-        return signals
+        return signals_by_player
 
-    def score_hypothesis(
+    def score_global_hypothesis(
+        self,
+        hypothesis_by_player: Dict[str, Sequence[Card]],
+        guess_signals_by_player: Dict[str, Sequence[Dict[str, Any]]],
+    ) -> float:
+        weight = 1.0
+
+        for player_id, hypothesis in hypothesis_by_player.items():
+            weight *= self._score_player_hypothesis(
+                hypothesis,
+                guess_signals_by_player.get(player_id, ()),
+            )
+
+        return weight
+
+    def _score_player_hypothesis(
         self,
         hypothesis: Sequence[Card],
         guess_signals: Sequence[Dict[str, Any]],
@@ -291,27 +348,30 @@ class GameController:
         self.decision_engine = DaVinciDecisionEngine()
 
     def run_turn(self) -> Dict[str, Any]:
-        hidden_slots = self.game_state.target_hidden_slots()
-        if not hidden_slots:
+        target_hidden_slots = self.game_state.target_hidden_slots()
+        has_any_hidden_slots = any(self.inference_engine.hidden_slots_by_player.values())
+        if not has_any_hidden_slots:
             return {
                 "best_move": None,
                 "top_moves": [],
                 "probability_matrix": [],
+                "full_probability_matrix": [],
                 "search_space_size": 0,
                 "opponent_hidden_count": 0,
                 "risk_factor": self.decision_engine.calculate_risk_factor(self.game_state.my_hidden_count()),
                 "should_stop": True,
             }
 
-        guess_signals = self.psy_filter.build_guess_signals(self.game_state)
-        probability_matrix, search_space_size, total_weight = self.inference_engine.infer_hidden_probabilities(
-            guess_signals,
+        guess_signals_by_player = self.psy_filter.build_guess_signals(self.game_state)
+        full_probability_matrix, search_space_size, total_weight = self.inference_engine.infer_hidden_probabilities(
+            guess_signals_by_player,
             self.psy_filter,
         )
 
+        target_probability_matrix = full_probability_matrix.get(self.game_state.target_player_id, {})
         hidden_index_by_slot = self.game_state.hidden_index_by_slot(self.game_state.target_player_id)
         evaluated_moves, risk_factor = self.decision_engine.evaluate_moves(
-            probability_matrix,
+            target_probability_matrix,
             self.game_state.my_hidden_count(),
             hidden_index_by_slot,
         )
@@ -321,11 +381,14 @@ class GameController:
             "best_move": best_move,
             "top_moves": evaluated_moves[:5],
             "probability_matrix": self._serialize_probability_matrix(
-                probability_matrix,
+                target_probability_matrix,
                 hidden_index_by_slot,
             ),
+            "full_probability_matrix": self._serialize_full_probability_matrix(
+                full_probability_matrix,
+            ),
             "search_space_size": search_space_size,
-            "opponent_hidden_count": len(hidden_slots),
+            "opponent_hidden_count": len(target_hidden_slots),
             "risk_factor": risk_factor,
             "effective_weight_sum": total_weight,
             "should_stop": best_move is None,
@@ -359,3 +422,23 @@ class GameController:
             )
 
         return serialized_positions
+
+    def _serialize_full_probability_matrix(
+        self,
+        full_probability_matrix: FullProbabilityMatrix,
+    ) -> List[Dict[str, Any]]:
+        serialized_players: List[Dict[str, Any]] = []
+
+        for player_id in full_probability_matrix:
+            hidden_index_by_slot = self.game_state.hidden_index_by_slot(player_id)
+            serialized_players.append(
+                {
+                    "player_id": player_id,
+                    "positions": self._serialize_probability_matrix(
+                        full_probability_matrix[player_id],
+                        hidden_index_by_slot,
+                    ),
+                }
+            )
+
+        return serialized_players
