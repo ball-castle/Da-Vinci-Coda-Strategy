@@ -6,10 +6,15 @@ type CardTuple = [string, CardValue]
 
 interface OpponentAction {
   type: string
+  target_slot_index?: number
   target_color: string
   target_num: CardValue
   result: boolean
   continued_turn?: boolean
+  revealed_player_id?: string
+  revealed_slot_index?: number
+  revealed_color?: string
+  revealed_value?: CardValue
 }
 
 interface CardSlotPayload {
@@ -33,6 +38,10 @@ interface GuessActionPayload {
   guessed_value?: CardValue
   result: boolean
   continued_turn?: boolean
+  revealed_player_id?: string
+  revealed_slot_index?: number
+  revealed_color?: string
+  revealed_value?: CardValue
   action_type: string
 }
 
@@ -58,6 +67,7 @@ interface ProbabilityPosition {
 }
 
 interface Move {
+  target_player_id: string
   target_index: number
   target_slot_index?: number
   guess_card: CardTuple
@@ -92,7 +102,18 @@ function App() {
   const [mePublic] = useState<CardTuple[]>([['W', 5]])
   const [oppPublic] = useState<CardTuple[]>([['B', 4]])
   const [history] = useState<OpponentAction[]>([
-    { type: 'guess', target_color: 'B', target_num: 8, result: false, continued_turn: false }
+    {
+      type: 'guess',
+      target_slot_index: 2,
+      target_color: 'B',
+      target_num: 8,
+      result: false,
+      continued_turn: false,
+      revealed_player_id: 'opponent',
+      revealed_slot_index: 2,
+      revealed_color: 'W',
+      revealed_value: 9,
+    }
   ])
 
   const [loading, setLoading] = useState(false)
@@ -142,7 +163,7 @@ function App() {
 
   const bestMove = result?.best_move
   const targetPositionLabel = bestMove
-    ? `对手第 ${(bestMove.target_slot_index ?? bestMove.target_index) + 1} 张牌`
+    ? `${renderPlayerLabel(bestMove.target_player_id)}第 ${(bestMove.target_slot_index ?? bestMove.target_index) + 1} 张牌`
     : ''
   const topCandidates = result?.probability_matrix[0]?.candidates.slice(0, 3) ?? []
 
@@ -187,9 +208,12 @@ function App() {
                 {history.map((item, index) => (
                   <div key={index} className="history-item">
                     <span className="badge">猜测记录</span>
-                    敌方猜了 {item.target_color === 'B' ? '黑' : '白'} {item.target_num}，
+                    敌方猜了我方第 {(item.target_slot_index ?? 0) + 1} 张牌是 {item.target_color === 'B' ? '黑' : '白'} {item.target_num}，
                     结果: {item.result ? '命中' : '失败'}
                     {item.continued_turn ? '，并继续了回合' : ''}
+                    {!item.result && item.revealed_color && item.revealed_value !== undefined
+                      ? `，并公开了 ${renderPlayerLabel(item.revealed_player_id ?? 'opponent')}第 ${(item.revealed_slot_index ?? 0) + 1} 张牌 ${item.revealed_color === 'B' ? '黑' : '白'} ${item.revealed_value}`
+                      : ''}
                   </div>
                 ))}
               </div>
@@ -266,6 +290,9 @@ function App() {
                   <p>
                     当前最接近可出的行动：
                     {' '}
+                    {renderPlayerLabel(result.top_moves[0].target_player_id)}
+                    第 {(result.top_moves[0].target_slot_index ?? result.top_moves[0].target_index) + 1} 张，
+                    {' '}
                     {result.top_moves[0].guess_card[0] === 'B' ? '黑' : '白'}
                     {result.top_moves[0].guess_card[1] === '-' ? 'Joker' : result.top_moves[0].guess_card[1]}
                     ，EV {result.top_moves[0].expected_value.toFixed(2)}
@@ -324,10 +351,15 @@ function buildStructuredPayload(
       actions: history.map((action) => ({
         guesser_id: 'opponent',
         target_player_id: 'me',
+        target_slot_index: action.target_slot_index,
         guessed_color: action.target_color,
         guessed_value: action.target_num,
         result: action.result,
         continued_turn: action.continued_turn,
+        revealed_player_id: action.revealed_player_id,
+        revealed_slot_index: action.revealed_slot_index,
+        revealed_color: action.revealed_color,
+        revealed_value: action.revealed_value,
         action_type: action.type,
       })),
     },
@@ -336,6 +368,16 @@ function buildStructuredPayload(
 
 function cardKey(card: CardTuple): string {
   return `${card[0]}:${String(card[1])}`
+}
+
+function renderPlayerLabel(playerId: string): string {
+  if (playerId === 'opponent') {
+    return '对手'
+  }
+  if (playerId === 'me') {
+    return '我方'
+  }
+  return `${playerId} `
 }
 
 export default App

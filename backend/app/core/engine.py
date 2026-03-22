@@ -34,10 +34,10 @@ class DaVinciInferenceEngine:
         self.inference_player_ids = [
             player_id
             for player_id in game_state.inference_player_ids()
-            if game_state.get_player(player_id).ordered_slots()
+            if game_state.resolved_ordered_slots(player_id)
         ]
         self.player_slots = {
-            player_id: game_state.get_player(player_id).ordered_slots()
+            player_id: game_state.resolved_ordered_slots(player_id)
             for player_id in self.inference_player_ids
         }
         self.hidden_slots_by_player = {
@@ -86,16 +86,14 @@ class DaVinciInferenceEngine:
             if player_cursor == len(self.inference_player_ids):
                 search_space_size += 1
                 hypothesis_by_player = {
-                    player_id: tuple(
-                        hidden_assignment[player_id][slot.slot_index]
-                        for slot in self.hidden_slots_by_player[player_id]
-                    )
+                    player_id: dict(hidden_assignment[player_id])
                     for player_id in self.inference_player_ids
                     if self.hidden_slots_by_player[player_id]
                 }
                 weight = psy_filter.score_global_hypothesis(
                     hypothesis_by_player,
                     guess_signals_by_player,
+                    self.game_state,
                 )
                 if weight <= 0:
                     return
@@ -210,15 +208,17 @@ class PsychologicalFilter:
                 continue
 
             guessed_card = action.guessed_card()
-            if guessed_card is None or not isinstance(guessed_card[1], int):
+            if guessed_card is None:
                 continue
 
-            guessed_color, guessed_number = guessed_card
             adjacent_cards: List[Card] = []
-            if guessed_number > 0:
-                adjacent_cards.append((guessed_color, guessed_number - 1))
-            if guessed_number < MAX_CARD_VALUE:
-                adjacent_cards.append((guessed_color, guessed_number + 1))
+            guessed_value = guessed_card[1]
+            if isinstance(guessed_value, int):
+                guessed_color = guessed_card[0]
+                if guessed_value > 0:
+                    adjacent_cards.append((guessed_color, guessed_value - 1))
+                if guessed_value < MAX_CARD_VALUE:
+                    adjacent_cards.append((guessed_color, guessed_value + 1))
 
             signals_by_player[action.guesser_id].append(
                 {
@@ -235,16 +235,42 @@ class PsychologicalFilter:
 
     def score_global_hypothesis(
         self,
-        hypothesis_by_player: Dict[str, Sequence[Card]],
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
         guess_signals_by_player: Dict[str, Sequence[Dict[str, Any]]],
+        game_state: GameState,
     ) -> float:
         weight = 1.0
 
         for player_id, hypothesis in hypothesis_by_player.items():
             weight *= self._score_player_hypothesis(
-                hypothesis,
+                tuple(hypothesis.values()),
                 guess_signals_by_player.get(player_id, ()),
             )
+            if weight <= 0:
+                return 0.0
+
+        for signals in guess_signals_by_player.values():
+            for signal in signals:
+                target_player_id = signal["target_player_id"]
+                target_slot_index = signal["target_slot_index"]
+                if target_player_id is None or target_slot_index is None:
+                    continue
+
+                slot_card = self._resolve_slot_card(
+                    game_state,
+                    hypothesis_by_player,
+                    target_player_id,
+                    target_slot_index,
+                )
+                if slot_card is None:
+                    continue
+
+                if signal["result"]:
+                    if slot_card != signal["exact_card"]:
+                        return 0.0
+                else:
+                    if slot_card == signal["exact_card"]:
+                        return 0.0
 
         return weight
 
@@ -256,11 +282,12 @@ class PsychologicalFilter:
         if not guess_signals:
             return 1.0
 
+        all_cards = set(hypothesis)
         numeric_cards = {card for card in hypothesis if card[1] != JOKER}
         weight = 1.0
 
         for signal in guess_signals:
-            if signal["exact_card"] in numeric_cards:
+            if signal["exact_card"] in all_cards:
                 weight *= (
                     self.EXACT_GUESS_PENALTY_ON_HIT
                     if signal["result"]
@@ -279,6 +306,24 @@ class PsychologicalFilter:
                 weight *= self.CONTINUE_GUESS_BONUS
 
         return weight
+
+    def _resolve_slot_card(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        player_id: str,
+        slot_index: int,
+    ) -> Optional[Card]:
+        try:
+            slot = game_state.get_slot(player_id, slot_index)
+        except ValueError:
+            return None
+
+        known_card = slot.known_card()
+        if known_card is not None:
+            return known_card
+
+        return hypothesis_by_player.get(player_id, {}).get(slot_index)
 
 
 class DaVinciDecisionEngine:
@@ -303,6 +348,7 @@ class DaVinciDecisionEngine:
         probability_matrix: ProbabilityMatrix,
         my_hidden_count: int,
         hidden_index_by_slot: Dict[int, int],
+        player_id: str,
     ) -> Tuple[List[Dict[str, Any]], float]:
         risk_factor = self.calculate_risk_factor(my_hidden_count)
         moves: List[Dict[str, Any]] = []
@@ -312,6 +358,7 @@ class DaVinciDecisionEngine:
                 expected_value, information_gain = self.calculate_ev(probability, risk_factor)
                 moves.append(
                     {
+                        "target_player_id": player_id,
                         "target_index": hidden_index_by_slot.get(target_slot_index, target_slot_index),
                         "target_slot_index": target_slot_index,
                         "guess_card": serialize_card(card),
@@ -369,20 +416,15 @@ class GameController:
         )
 
         target_probability_matrix = full_probability_matrix.get(self.game_state.target_player_id, {})
-        hidden_index_by_slot = self.game_state.hidden_index_by_slot(self.game_state.target_player_id)
-        evaluated_moves, risk_factor = self.decision_engine.evaluate_moves(
-            target_probability_matrix,
-            self.game_state.my_hidden_count(),
-            hidden_index_by_slot,
-        )
-        best_move = evaluated_moves[0] if evaluated_moves and evaluated_moves[0]["expected_value"] > 0 else None
+        all_moves, risk_factor = self._evaluate_all_moves(full_probability_matrix)
+        best_move = all_moves[0] if all_moves and all_moves[0]["expected_value"] > 0 else None
 
         return {
             "best_move": best_move,
-            "top_moves": evaluated_moves[:5],
+            "top_moves": all_moves[:5],
             "probability_matrix": self._serialize_probability_matrix(
                 target_probability_matrix,
-                hidden_index_by_slot,
+                self.game_state.hidden_index_by_slot(self.game_state.target_player_id),
             ),
             "full_probability_matrix": self._serialize_full_probability_matrix(
                 full_probability_matrix,
@@ -393,6 +435,35 @@ class GameController:
             "effective_weight_sum": total_weight,
             "should_stop": best_move is None,
         }
+
+    def _evaluate_all_moves(
+        self,
+        full_probability_matrix: FullProbabilityMatrix,
+    ) -> Tuple[List[Dict[str, Any]], float]:
+        my_hidden_count = self.game_state.my_hidden_count()
+        all_moves: List[Dict[str, Any]] = []
+        risk_factor = self.decision_engine.calculate_risk_factor(my_hidden_count)
+
+        for player_id, probability_matrix in full_probability_matrix.items():
+            hidden_index_by_slot = self.game_state.hidden_index_by_slot(player_id)
+            player_moves, _ = self.decision_engine.evaluate_moves(
+                probability_matrix,
+                my_hidden_count,
+                hidden_index_by_slot,
+                player_id,
+            )
+            all_moves.extend(player_moves)
+
+        all_moves.sort(
+            key=lambda move: (
+                -move["expected_value"],
+                -move["win_probability"],
+                move["target_player_id"],
+                move["target_slot_index"],
+                card_sort_key((move["guess_card"][0], move["guess_card"][1])),
+            )
+        )
+        return all_moves, risk_factor
 
     def _serialize_probability_matrix(
         self,

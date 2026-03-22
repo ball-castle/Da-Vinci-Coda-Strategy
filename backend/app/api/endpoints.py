@@ -20,10 +20,16 @@ router = APIRouter()
 
 class OpponentAction(BaseModel):
     type: str = "guess"
+    target_player_id: Optional[str] = None
+    target_slot_index: Optional[int] = None
     target_color: Optional[str] = None
     target_num: Any = None
     result: bool = False
     continued_turn: Optional[bool] = None
+    revealed_player_id: Optional[str] = None
+    revealed_slot_index: Optional[int] = None
+    revealed_color: Optional[str] = None
+    revealed_value: Any = None
 
 
 class CardSlotPayload(BaseModel):
@@ -47,6 +53,10 @@ class GuessActionPayload(BaseModel):
     guessed_value: Any = None
     result: bool = False
     continued_turn: Optional[bool] = None
+    revealed_player_id: Optional[str] = None
+    revealed_slot_index: Optional[int] = None
+    revealed_color: Optional[str] = None
+    revealed_value: Any = None
     action_type: str = "guess"
 
 
@@ -106,11 +116,16 @@ def _build_legacy_actions(opponent_history: List[OpponentAction]) -> List[GuessA
         actions.append(
             GuessAction(
                 guesser_id="opponent",
-                target_player_id="me",
+                target_player_id=action.target_player_id or "me",
+                target_slot_index=action.target_slot_index,
                 guessed_color=_coerce_color(action.target_color, "opponent_history.target_color"),
                 guessed_value=_coerce_card_value(action.target_num, "opponent_history.target_num"),
                 result=action.result,
                 continued_turn=action.continued_turn,
+                revealed_player_id=action.revealed_player_id,
+                revealed_slot_index=action.revealed_slot_index,
+                revealed_color=_coerce_color(action.revealed_color, "opponent_history.revealed_color"),
+                revealed_value=_coerce_card_value(action.revealed_value, "opponent_history.revealed_value"),
                 action_type=action.type,
             )
         )
@@ -169,6 +184,8 @@ def _build_structured_state(payload: GameStatePayload) -> GameState:
             raise HTTPException(status_code=400, detail=f"未知 guesser_id: {action_payload.guesser_id}。")
         if action_payload.target_player_id not in players:
             raise HTTPException(status_code=400, detail=f"未知 target_player_id: {action_payload.target_player_id}。")
+        if action_payload.revealed_player_id is not None and action_payload.revealed_player_id not in players:
+            raise HTTPException(status_code=400, detail=f"未知 revealed_player_id: {action_payload.revealed_player_id}。")
 
         actions.append(
             GuessAction(
@@ -179,6 +196,10 @@ def _build_structured_state(payload: GameStatePayload) -> GameState:
                 guessed_value=_coerce_card_value(action_payload.guessed_value, "action.guessed_value"),
                 result=action_payload.result,
                 continued_turn=action_payload.continued_turn,
+                revealed_player_id=action_payload.revealed_player_id,
+                revealed_slot_index=action_payload.revealed_slot_index,
+                revealed_color=_coerce_color(action_payload.revealed_color, "action.revealed_color"),
+                revealed_value=_coerce_card_value(action_payload.revealed_value, "action.revealed_value"),
                 action_type=action_payload.action_type,
             )
         )
