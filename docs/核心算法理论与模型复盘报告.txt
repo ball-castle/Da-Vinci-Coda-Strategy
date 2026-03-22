@@ -1,0 +1,22 @@
+《达芬奇密码》策略模型：核心算法理论与模型复盘报告
+
+第一部分：核心理论与模型复盘
+在《达芬奇密码》的不完全信息博弈中，面临的核心挑战是状态不确定性和对手行为建模。这里不采用纯规则的硬编码，而是融合了搜索算法、概率统计和博弈论中的期望决策模型。
+
+1. 状态空间搜索与约束满足 (State Space Search & Constraint Satisfaction)
+- 针对情况：游戏初始阶段，寻找所有符合当前既有线索的“合法猜测”。
+- 采用理论：深度优先搜索 (DFS) 与剪枝策略 (Pruning)。利用数字 0-11、从左到右递增、同数字黑在白左等规则作为强约束条件，加速剪枝。
+- 代码体现：推理引擎（Inference Engine）。
+
+2. 不确定性下的决策模型 (Decision Making Under Uncertainty)
+- 针对情况：从多个合法猜测中，决定“猜哪一张收益最高、风险最低”。
+- 采用理论：期望值计算 (Expected Value, EV)。EV = ∑(P(Success)*Reward) - ∑(P(Fail)*Penalty)。
+- 代码体现：决策引擎（Decision Engine）。
+
+3. 信念修正与概率推断 (Belief Revision & Probabilistic Inference)
+- 针对情况：推测对手某张暗牌是特定数字的概率。
+- 采用理论：贝叶斯更新 (Bayesian Update) 与正向推理 (Positive Inference)。利用心理战过滤器，根据暴露信息动态调整假设空间中各个组合的权重。
+- 代码体现：心理战过滤器（Psychological Filter）。
+
+第二部分：工程架构建议
+- 本项目包含独立运行的 Python 后端（FastAPI）用于暴露核心算法，与完整的前端（React）环境结合，实现架构内聚。在使用时可直接运行算法节点，便于后续测试。
