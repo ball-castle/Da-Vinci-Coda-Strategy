@@ -1,0 +1,177 @@
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from app.core.engine import BehavioralLikelihoodModel, GameController
+from app.core.state import CardSlot, GameState, GuessAction, PlayerState
+
+
+class BehavioralLikelihoodModelTests(unittest.TestCase):
+    def test_failed_guess_prefers_interval_consistent_world(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=6, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=4,
+                    result=False,
+                )
+            ],
+        )
+        model = BehavioralLikelihoodModel()
+        signals = model.build_guess_signals(game_state)
+
+        consistent = model.score_hypothesis({"opp": {1: ("W", 5)}}, signals, game_state)
+        inconsistent = model.score_hypothesis({"opp": {1: ("W", 10)}}, signals, game_state)
+
+        self.assertGreater(consistent, inconsistent)
+
+    def test_continue_signal_prefers_attackable_world(self):
+        model = BehavioralLikelihoodModel()
+
+        tight_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+        loose_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+
+        tight_signals = model.build_guess_signals(tight_world)
+        loose_signals = model.build_guess_signals(loose_world)
+        tight_score = model.score_hypothesis(
+            {"opp": {0: ("W", 7)}, "side": {1: ("W", 3)}},
+            tight_signals,
+            tight_world,
+        )
+        loose_score = model.score_hypothesis(
+            {"opp": {0: ("W", 7)}, "side": {1: ("W", 6)}},
+            loose_signals,
+            loose_world,
+        )
+
+        self.assertGreater(tight_score, loose_score)
+
+
+class GameControllerOutputTests(unittest.TestCase):
+    def test_controller_returns_decision_summary_and_reasoning(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=5, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        result = GameController(game_state).run_turn()
+        self.assertIn("decision_summary", result)
+        self.assertIn("evaluated_move_count", result["decision_summary"])
+        if result["top_moves"]:
+            self.assertIn("recommendation_reason", result["top_moves"][0])
+            self.assertIn("score_breakdown", result["top_moves"][0])
+
+
+if __name__ == "__main__":
+    unittest.main()

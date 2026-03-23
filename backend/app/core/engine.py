@@ -35,6 +35,25 @@ class HardConstraintSet:
     forbidden_by_slot: Dict[SlotKey, Set[Card]]
 
 
+@dataclass(frozen=True)
+class GuessSignal:
+    guesser_id: str
+    target_player_id: str
+    target_slot_index: int
+    guessed_card: Card
+    result: bool
+    continued_turn: Optional[bool]
+
+
+def numeric_card_value(card: Optional[Card]) -> Optional[int]:
+    if card is None:
+        return None
+    value = card[1]
+    if value == JOKER or not isinstance(value, int):
+        return None
+    return int(value)
+
+
 def card_sort_key(card: Card) -> Tuple[int, int]:
     color, value = card
     if value == JOKER:
@@ -140,48 +159,58 @@ class HardConstraintCompiler:
 
 
 class BehavioralLikelihoodModel:
-    """Soft action likelihoods kept intentionally mild and fully separated from hard constraints."""
+    """Structured soft action likelihood model, separate from hard constraints."""
 
-    SELF_EXACT_GUESS_PENALTY = 0.18
-    SELF_ADJACENT_ANCHOR_BONUS = 1.06
-    TARGET_NEIGHBOR_BONUS = 1.08
-    TARGET_CLOSE_BONUS = 1.03
+    SELF_EXACT_GUESS_PENALTY = 0.14
+    SELF_ADJACENT_ANCHOR_BONUS = 1.08
+
+    TARGET_IN_INTERVAL_BONUS = 1.15
+    TARGET_NARROW_INTERVAL_BONUS = 1.10
+    TARGET_OUTSIDE_INTERVAL_PENALTY = 0.80
+    TARGET_NEIGHBOR_BONUS = 1.10
+    TARGET_CLOSE_BONUS = 1.04
     TARGET_FAR_PENALTY = 0.97
-    WRONG_COLOR_SLOT_PENALTY = 0.95
-    CONTINUE_CONFIDENCE_BONUS = 1.05
+    WRONG_COLOR_SLOT_PENALTY = 0.88
+
+    CONTINUE_HIGH_ATTACKABILITY_BONUS = 1.10
+    CONTINUE_LOW_ATTACKABILITY_PENALTY = 0.93
+    STOP_LOW_ATTACKABILITY_BONUS = 1.04
+    STOP_HIGH_ATTACKABILITY_PENALTY = 0.97
+
+    ATTACKABILITY_TIGHT_THRESHOLD = 0.34
+    EPSILON = 1e-9
 
     def build_guess_signals(
         self,
         game_state: GameState,
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        signals_by_player: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    ) -> Dict[str, List[GuessSignal]]:
+        signals_by_player: Dict[str, List[GuessSignal]] = defaultdict(list)
 
         for action in getattr(game_state, "actions", ()):
             if getattr(action, "action_type", None) != "guess":
                 continue
 
             guessed_card = action.guessed_card()
-            if guessed_card is None:
+            guesser_id = getattr(action, "guesser_id", None)
+            target_player_id = getattr(action, "target_player_id", None)
+            target_slot_index = getattr(action, "target_slot_index", None)
+            if (
+                guessed_card is None
+                or guesser_id is None
+                or target_player_id is None
+                or target_slot_index is None
+            ):
                 continue
 
-            adjacent_cards: List[Card] = []
-            guessed_value = guessed_card[1]
-            if isinstance(guessed_value, int):
-                guessed_color = guessed_card[0]
-                if guessed_value > 0:
-                    adjacent_cards.append((guessed_color, guessed_value - 1))
-                if guessed_value < MAX_CARD_VALUE:
-                    adjacent_cards.append((guessed_color, guessed_value + 1))
-
-            signals_by_player[getattr(action, "guesser_id", "")].append(
-                {
-                    "guessed_card": guessed_card,
-                    "adjacent_cards": tuple(adjacent_cards),
-                    "result": bool(getattr(action, "result", False)),
-                    "continued_turn": bool(getattr(action, "continued_turn", False)),
-                    "target_player_id": getattr(action, "target_player_id", None),
-                    "target_slot_index": getattr(action, "target_slot_index", None),
-                }
+            signals_by_player[guesser_id].append(
+                GuessSignal(
+                    guesser_id=guesser_id,
+                    target_player_id=target_player_id,
+                    target_slot_index=target_slot_index,
+                    guessed_card=guessed_card,
+                    result=bool(getattr(action, "result", False)),
+                    continued_turn=getattr(action, "continued_turn", None),
+                )
             )
 
         return signals_by_player
@@ -189,38 +218,88 @@ class BehavioralLikelihoodModel:
     def score_hypothesis(
         self,
         hypothesis_by_player: Dict[str, Dict[int, Card]],
-        guess_signals_by_player: Dict[str, Sequence[Dict[str, Any]]],
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         game_state: GameState,
     ) -> float:
         weight = 1.0
 
-        for player_id, hidden_cards_by_slot in hypothesis_by_player.items():
-            player_cards = self._player_cards(game_state, player_id, hidden_cards_by_slot)
-            weight *= self._score_self_hand(player_cards, guess_signals_by_player.get(player_id, ()))
-            if weight <= 0:
-                return 0.0
-
         for signals in guess_signals_by_player.values():
             for signal in signals:
-                target_player_id = signal["target_player_id"]
-                target_slot_index = signal["target_slot_index"]
-                if target_player_id is None or target_slot_index is None:
-                    continue
-
-                target_card = self._resolve_slot_card(
-                    game_state,
-                    hypothesis_by_player,
-                    target_player_id,
-                    target_slot_index,
-                )
-                if target_card is None:
-                    continue
-
-                weight *= self._score_target_slot(target_card, signal)
-                if weight <= 0:
+                weight *= self._score_signal(game_state, hypothesis_by_player, signal)
+                if weight <= 0.0:
                     return 0.0
 
         return weight
+
+    def estimate_attackability(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        *,
+        acting_player_id: Optional[str] = None,
+        exclude_slot: Optional[SlotKey] = None,
+    ) -> float:
+        best = 0.0
+        for player_id in game_state.inference_player_ids():
+            if acting_player_id is not None and player_id == acting_player_id:
+                continue
+
+            for slot in game_state.resolved_ordered_slots(player_id):
+                if slot.known_card() is not None:
+                    continue
+                key = slot_key(player_id, slot.slot_index)
+                if exclude_slot is not None and key == exclude_slot:
+                    continue
+
+                low, high, width = self._slot_numeric_interval(
+                    game_state,
+                    hypothesis_by_player,
+                    player_id,
+                    slot.slot_index,
+                )
+                color_bonus = 1.0
+                if getattr(slot, "color", None) is not None:
+                    color_bonus = 1.12
+                confidence = color_bonus / max(1.0, float(width + 1))
+                if low is not None and high is not None and width <= 2:
+                    confidence *= 1.08
+                best = max(best, confidence)
+        return best
+
+    def _score_signal(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+    ) -> float:
+        target_card = self._resolve_slot_card(
+            game_state,
+            hypothesis_by_player,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
+        if target_card is None:
+            return 1.0
+
+        weight = 1.0
+        guesser_cards = self._player_cards(
+            game_state,
+            signal.guesser_id,
+            hypothesis_by_player.get(signal.guesser_id, {}),
+        )
+        weight *= self._score_self_hand(guesser_cards, signal.guessed_card)
+        weight *= self._score_target_slot(
+            game_state,
+            hypothesis_by_player,
+            signal,
+            target_card,
+        )
+        weight *= self._score_continue_decision(
+            game_state,
+            hypothesis_by_player,
+            signal,
+        )
+        return max(self.EPSILON, weight)
 
     def _player_cards(
         self,
@@ -241,48 +320,138 @@ class BehavioralLikelihoodModel:
 
     def _score_self_hand(
         self,
-        cards: Sequence[Card],
-        guess_signals: Sequence[Dict[str, Any]],
+        player_cards: Sequence[Card],
+        guessed_card: Card,
     ) -> float:
-        if not guess_signals:
-            return 1.0
-
-        all_cards = set(cards)
-        numeric_cards = {card for card in cards if card[1] != JOKER}
         weight = 1.0
+        if guessed_card in player_cards:
+            weight *= self.SELF_EXACT_GUESS_PENALTY
 
-        for signal in guess_signals:
-            guessed_card = signal["guessed_card"]
-            if guessed_card in all_cards:
-                weight *= self.SELF_EXACT_GUESS_PENALTY
-                continue
+        guessed_numeric = numeric_card_value(guessed_card)
+        if guessed_numeric is None:
+            return weight
 
-            if any(adjacent in numeric_cards for adjacent in signal["adjacent_cards"]):
-                weight *= self.SELF_ADJACENT_ANCHOR_BONUS
-
+        same_color_values = {
+            numeric_card_value(card)
+            for card in player_cards
+            if card[0] == guessed_card[0] and numeric_card_value(card) is not None
+        }
+        if (guessed_numeric - 1) in same_color_values or (guessed_numeric + 1) in same_color_values:
+            weight *= self.SELF_ADJACENT_ANCHOR_BONUS
         return weight
 
-    def _score_target_slot(self, target_card: Card, signal: Dict[str, Any]) -> float:
-        guessed_card = signal["guessed_card"]
-        if guessed_card == target_card:
-            return self.CONTINUE_CONFIDENCE_BONUS if signal["continued_turn"] else 1.0
+    def _score_target_slot(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+        target_card: Card,
+    ) -> float:
+        guessed_card = signal.guessed_card
+        weight = 1.0
 
-        guessed_value = guessed_card[1]
-        target_value = target_card[1]
-        if guessed_value == JOKER or target_value == JOKER:
+        try:
+            slot = game_state.get_slot(signal.target_player_id, signal.target_slot_index)
+        except ValueError:
             return 1.0
 
-        if guessed_card[0] != target_card[0]:
-            return self.WRONG_COLOR_SLOT_PENALTY
+        known_slot_color = getattr(slot, "color", None)
+        if known_slot_color is not None and guessed_card[0] != known_slot_color:
+            weight *= self.WRONG_COLOR_SLOT_PENALTY
 
-        distance = abs(int(guessed_value) - int(target_value))
+        guessed_numeric = numeric_card_value(guessed_card)
+        target_numeric = numeric_card_value(target_card)
+        if guessed_numeric is None or target_numeric is None:
+            return weight
+
+        low, high, width = self._slot_numeric_interval(
+            game_state,
+            hypothesis_by_player,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
+
+        if low is not None and high is not None:
+            if low <= guessed_numeric <= high:
+                weight *= self.TARGET_IN_INTERVAL_BONUS
+                if width <= 2:
+                    weight *= self.TARGET_NARROW_INTERVAL_BONUS
+            else:
+                weight *= self.TARGET_OUTSIDE_INTERVAL_PENALTY
+
+        distance = abs(guessed_numeric - target_numeric)
+        if distance == 0:
+            return weight
         if distance == 1:
-            return self.TARGET_NEIGHBOR_BONUS
-        if distance == 2:
-            return self.TARGET_CLOSE_BONUS
-        if distance >= 4:
-            return self.TARGET_FAR_PENALTY
-        return 1.0
+            return weight * self.TARGET_NEIGHBOR_BONUS
+        if distance <= 2:
+            return weight * self.TARGET_CLOSE_BONUS
+        return weight * (self.TARGET_FAR_PENALTY ** max(1, distance - 2))
+
+    def _score_continue_decision(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+    ) -> float:
+        if not signal.result or signal.continued_turn is None:
+            return 1.0
+
+        attackability = self.estimate_attackability(
+            game_state,
+            hypothesis_by_player,
+            acting_player_id=signal.guesser_id,
+            exclude_slot=slot_key(signal.target_player_id, signal.target_slot_index),
+        )
+        if signal.continued_turn:
+            if attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD:
+                return self.CONTINUE_HIGH_ATTACKABILITY_BONUS
+            return self.CONTINUE_LOW_ATTACKABILITY_PENALTY
+
+        if attackability < self.ATTACKABILITY_TIGHT_THRESHOLD:
+            return self.STOP_LOW_ATTACKABILITY_BONUS
+        return self.STOP_HIGH_ATTACKABILITY_PENALTY
+
+    def _slot_numeric_interval(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        player_id: str,
+        slot_index: int,
+    ) -> Tuple[Optional[int], Optional[int], int]:
+        slots = game_state.resolved_ordered_slots(player_id)
+        index_by_slot = {slot.slot_index: idx for idx, slot in enumerate(slots)}
+        order_index = index_by_slot.get(slot_index)
+        if order_index is None:
+            return None, None, MAX_CARD_VALUE
+
+        lower: Optional[int] = None
+        upper: Optional[int] = None
+
+        cursor = order_index - 1
+        while cursor >= 0:
+            left_card = self._resolve_slot_card(game_state, hypothesis_by_player, player_id, slots[cursor].slot_index)
+            left_value = numeric_card_value(left_card)
+            if left_value is not None:
+                lower = left_value
+                break
+            cursor -= 1
+
+        cursor = order_index + 1
+        while cursor < len(slots):
+            right_card = self._resolve_slot_card(game_state, hypothesis_by_player, player_id, slots[cursor].slot_index)
+            right_value = numeric_card_value(right_card)
+            if right_value is not None:
+                upper = right_value
+                break
+            cursor += 1
+
+        effective_low = 0 if lower is None else lower
+        effective_high = MAX_CARD_VALUE if upper is None else upper
+        if effective_high < effective_low:
+            effective_high = effective_low
+        width = max(0, effective_high - effective_low)
+        return lower, upper, width
 
     def _resolve_slot_card(
         self,
@@ -409,7 +578,7 @@ class DaVinciInferenceEngine:
 
     def infer_hidden_probabilities(
         self,
-        guess_signals_by_player: Dict[str, Sequence[Dict[str, Any]]],
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         behavior_model: BehavioralLikelihoodModel,
     ) -> Tuple[
         FullProbabilityMatrix,
@@ -743,8 +912,30 @@ class DaVinciDecisionEngine:
             "continuation_value": continuation_value,
             "hit_reward": hit_reward,
             "miss_penalty": miss_penalty,
+            "score_breakdown": {
+                "hit_reward": hit_reward,
+                "miss_penalty": miss_penalty,
+                "information_gain_bonus": info_gain * self.INFORMATION_GAIN_WEIGHT,
+                "continuation_value": continuation_value,
+            },
+            "recommendation_reason": self._build_reason(probability, info_gain, continuation_value, miss_penalty),
             "target_scope": "player_slots",
         }
+
+    def _build_reason(
+        self,
+        probability: float,
+        info_gain: float,
+        continuation_value: float,
+        miss_penalty: float,
+    ) -> str:
+        if continuation_value > max(0.35, info_gain * self.INFORMATION_GAIN_WEIGHT):
+            return "命中后继续收益较高，适合主动压回合。"
+        if probability >= 0.62 and miss_penalty < self.HIT_REWARD:
+            return "当前命中率较高，且风险处于可接受范围。"
+        if info_gain * self.INFORMATION_GAIN_WEIGHT >= max(0.45, continuation_value):
+            return "即便不是最稳的一猜，也能显著压缩该位置的不确定性。"
+        return "这步主要依靠当前命中率与风险平衡取得正收益。"
 
     def _best_immediate_ev(
         self,
@@ -872,6 +1063,15 @@ class GameController:
         target_probability_matrix = full_probability_matrix.get(target_player_id, {})
         target_hard_matrix = hard_full_probability_matrix.get(target_player_id, {})
 
+        decision_summary = {
+            "evaluated_move_count": len(all_moves),
+            "best_expected_value": (best_move or all_moves[0])["expected_value"] if all_moves else 0.0,
+            "best_win_probability": (best_move or all_moves[0])["win_probability"] if all_moves else 0.0,
+            "best_continuation_value": (best_move or all_moves[0]).get("continuation_value", 0.0) if all_moves else 0.0,
+            "recommend_stop": best_move is None,
+            "stop_reason": "所有候选动作的期望收益都不为正。" if best_move is None else "存在正收益动作，可继续进攻。",
+        }
+
         return {
             "best_move": best_move,
             "top_moves": all_moves[:10],
@@ -897,6 +1097,7 @@ class GameController:
             "risk_factor": risk_factor,
             "effective_weight_sum": total_soft_weight,
             "behavior_blend": SOFT_BEHAVIOR_BLEND,
+            "decision_summary": decision_summary,
             "should_stop": best_move is None,
         }
 
