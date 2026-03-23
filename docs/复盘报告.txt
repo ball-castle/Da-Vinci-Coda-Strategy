@@ -1,0 +1,210 @@
+3/24-策略引擎推进复盘报告
+
+项目：Da Vinci Code Strategy
+日期：2026-03-24
+
+一、本轮推进目标
+本轮工作的目标，是沿着既定主线继续推进项目从“带 heuristic 的猜牌程序”向“更接近最优策略的隐藏信息决策引擎”演进。
+
+本轮聚焦的核心不是 UI、接口或代码表层整理，而是：
+1. 让 belief state 更可信
+2. 让行为信息的利用更结构化
+3. 让继续猜 / 停止的判断更接近长期收益
+4. 在不推翻现有架构的前提下，持续增强后端核心可扩展性
+
+二、本轮实际推进内容
+本轮是在完整仓库本地读取基础上推进的，而不是继续依赖 GitHub raw 抓取链路。
+
+本轮已实际对齐并读取的核心内容包括：
+- backend/app/core/state.py
+- backend/app/core/engine.py
+- backend/app/api/endpoints.py
+- direction/algorithm_roadmap.txt
+- direction/algorithm_remaining_optimizations.txt
+
+在此基础上，本轮继续沿着复盘主线做了两类工作：
+1. 补强行为证据建模
+2. 补强决策解释与测试验证
+
+三、本轮核心改动
+1. 行为层进一步结构化
+本轮不是继续堆零散 heuristic，而是把行为证据继续组织成更明确的 action likelihood 近似形式。
+
+具体做法：
+- 新增 GuessSignal 结构
+- 明确拆出：
+  - guesser_id
+  - target_player_id
+  - target_slot_index
+  - guessed_card
+  - result
+  - continued_turn
+
+这样做的意义是：
+- 行为信息不再只是零散 bonus / penalty
+- 后续更容易演进为 P(action | state)
+- 推理层与行为层的职责边界更清楚
+
+2. BehavioralLikelihoodModel 进一步强化
+本轮将 soft evidence 进一步拆成更稳定的四因子结构：
+- self-hand consistency
+- slot-interval consistency
+- target-card proximity
+- continue-decision fit
+
+这意味着：
+- 猜测行为开始更像“这个动作在该隐藏世界下是否合理”
+- 而不只是“这个数字是否像人会猜的”
+
+3. 新增 attackability 评估
+为了让“继续猜 / 停止”不再只是抽象偏好，本轮引入了 attackability 近似量。
+
+它用于回答一个更关键的问题：
+如果当前世界成立，那么猜中之后，场上是否还存在值得继续攻击的高置信目标？
+
+这样，历史中的 continued_turn 行为就开始与：
+- 槽位候选域宽度
+- 局面中可攻击目标密度
+发生联系。
+
+这一步虽然仍然是近似，但已经比纯经验型 heuristic 更接近真实策略动机。
+
+4. 决策解释字段补强
+本轮还增强了输出的解释能力，新增：
+- score_breakdown
+- recommendation_reason
+- decision_summary
+
+这样做的价值在于：
+- 不只是输出 best_move
+- 还能解释为什么推荐该动作
+- 便于后续调参、调策略、做 case review
+
+四、本轮解决了什么问题
+1. 行为信息的表达方式更像 likelihood
+这是本轮最重要的推进点。
+
+之前的问题是：
+行为 heuristic 虽然可用，但过于分散，难以验证，也难以继续升级。
+
+本轮之后，行为层开始具备以下特征：
+- 有结构
+- 可解释
+- 可继续扩展
+- 更容易和 posterior 融合
+
+这为下一步做真正的动作似然模型打下了基础。
+
+2. continued_turn 不再只是孤立特征
+过去 continued_turn 更像一个孤立的“更激进”信号。
+
+本轮之后，它开始和局面可攻击性挂钩：
+- attackable world 更支持 continued_turn
+- loose / low-confidence world 更不支持 aggressive continuation
+
+这让该特征开始具备策略意义，而不是仅仅成为风格标签。
+
+3. 输出结果更可复盘
+单纯输出 best_move 的系统，很难迭代。
+本轮新增的解释字段让系统更适合：
+- 对比不同策略版本
+- 复盘具体 case
+- 分析误判是推理错还是决策错
+
+五、本轮尚未解决的问题
+需要明确，本轮虽然继续推进了主线，但仍没有解决以下问题：
+
+1. 行为模型还不是真正的 P(action | state)
+当前只是结构化近似，不是完整概率模型。
+仍然缺：
+- 为什么猜这个 player
+- 为什么猜这个 slot
+- 为什么猜这个 value
+- 为什么在该时点继续 / 停止
+
+这些还需要继续建模。
+
+2. continuation 还没有真正反向进入 should_stop 主逻辑
+虽然本轮让 continued_turn 更合理地作用于 posterior，但“继续猜 / 停止”的主判断仍然还有提升空间。
+下一步要做的是：
+把 continuation likelihood 和 decision EV 更紧地接起来。
+
+3. 决策仍然不是完整博弈树决策
+当前仍处在“比单步贪心更强，但尚未达到多步求解”的阶段。
+这是合理的，因为 belief 层还需要继续稳固。
+
+六、本轮产出物
+本轮已形成的产出包括：
+1. engine.py 新版本
+   - 行为信号结构化
+   - soft likelihood 继续强化
+   - attackability 引入
+   - 决策解释字段增强
+
+2. 新增测试文件
+   - 验证 failed guess 对 posterior 的影响
+   - 验证 continued_turn 对 attackable world 的偏好
+   - 验证 controller 输出解释字段完整性
+
+七、本轮收益总结
+1. 对 belief state
+- 行为层更规整
+- posterior 更可解释
+- hard / soft 分层后的演进路径更清楚
+
+2. 对决策质量
+- 行为证据更接近真实行动逻辑
+- continued_turn 的使用更合理
+- 为 should_stop 的进一步增强打下基础
+
+3. 对工程可扩展性
+- 更容易继续做动作似然模型
+- 更容易补更深的 continuation value
+- 更适合做 case-based evaluation
+
+4. 对调试与复盘
+- 输出更可解释
+- 测试验证更直接
+- 更容易定位错误来自 inference 还是 decision
+
+八、下一阶段建议
+下一阶段最值得继续推进的是：
+
+第一优先级：
+把 continuation likelihood 真正接入 should_stop / continue 决策逻辑。
+也就是让：
+- “历史上这种局面会不会继续”
+和
+- “当前命中后继续猜是否值”
+两者合并到同一套决策评估中。
+
+第二优先级：
+继续把行为层从 heuristic 近似推进到更完整的 P(action | state)。
+
+第三优先级：
+在保持 belief 可信的前提下，尝试更浅层但更明确的 continuation rollout。
+
+九、不建议现在优先做的事
+当前阶段仍然不建议优先投入：
+- UI 层优化
+- 大规模非核心重构
+- 复杂深搜索树
+- 只做参数微调而不改结构
+
+原因仍然一致：
+如果 belief 和 decision 的基础逻辑还没稳，复杂化只会放大偏差。
+
+十、结论
+本轮工作的价值，不是单纯“再多加几条 heuristic”，而是继续把系统往正确方向推进：
+
+从：
+- 基于规则和经验混合的猜牌系统
+
+往：
+- belief-state 更清晰
+- 行为证据更结构化
+- 决策更具长期收益意识
+的策略引擎继续演进。
+
+一句话总结：
+本轮推进的核心成果，是让行为层更像 likelihood，让继续猜 / 停止的依据更接近策略逻辑，而不是停留在松散 heuristic 层面。

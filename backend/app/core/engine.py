@@ -76,6 +76,10 @@ def slot_key(player_id: str, slot_index: int) -> SlotKey:
     return (player_id, slot_index)
 
 
+def clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
 class HardConstraintCompiler:
     """Compile hard public evidence into fixed/forbidden slot constraints."""
 
@@ -178,6 +182,10 @@ class BehavioralLikelihoodModel:
     STOP_HIGH_ATTACKABILITY_PENALTY = 0.97
 
     ATTACKABILITY_TIGHT_THRESHOLD = 0.34
+    CONTINUATION_PRIOR_BASE = 0.52
+    CONTINUATION_ATTACKABILITY_GAIN = 1.35
+    CONTINUATION_MIN = 0.08
+    CONTINUATION_MAX = 0.95
     EPSILON = 1e-9
 
     def build_guess_signals(
@@ -214,6 +222,77 @@ class BehavioralLikelihoodModel:
             )
 
         return signals_by_player
+
+    def continuation_profile(
+        self,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        acting_player_id: Optional[str],
+    ) -> Dict[str, float]:
+        if acting_player_id is None:
+            return {
+                "continue_rate": self.CONTINUATION_PRIOR_BASE,
+                "observations": 0.0,
+                "history_blend": 0.0,
+            }
+
+        signals = guess_signals_by_player.get(acting_player_id, ())
+        observed = [
+            signal
+            for signal in signals
+            if signal.result and signal.continued_turn is not None
+        ]
+        observations = len(observed)
+        if observations == 0:
+            return {
+                "continue_rate": self.CONTINUATION_PRIOR_BASE,
+                "observations": 0.0,
+                "history_blend": 0.0,
+            }
+
+        continue_count = sum(1 for signal in observed if signal.continued_turn)
+        continue_rate = (continue_count + 1.0) / (observations + 2.0)
+        history_blend = min(0.5, 0.18 * observations)
+        return {
+            "continue_rate": continue_rate,
+            "observations": float(observations),
+            "history_blend": history_blend,
+        }
+
+    def estimate_continue_likelihood(
+        self,
+        full_probability_matrix: FullProbabilityMatrix,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        acting_player_id: Optional[str],
+        *,
+        exclude_slot: Optional[SlotKey] = None,
+    ) -> Dict[str, float]:
+        attackability = self.estimate_matrix_attackability(
+            full_probability_matrix,
+            acting_player_id=acting_player_id,
+            exclude_slot=exclude_slot,
+        )
+        attackability_prior = clamp(
+            0.5 + self.CONTINUATION_ATTACKABILITY_GAIN * (attackability - self.ATTACKABILITY_TIGHT_THRESHOLD),
+            self.CONTINUATION_MIN,
+            self.CONTINUATION_MAX,
+        )
+
+        profile = self.continuation_profile(guess_signals_by_player, acting_player_id)
+        history_blend = profile["history_blend"]
+        continue_likelihood = ((1.0 - history_blend) * attackability_prior) + (history_blend * profile["continue_rate"])
+
+        if attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD and profile["continue_rate"] >= 0.60:
+            continue_likelihood *= 1.03
+        elif attackability < self.ATTACKABILITY_TIGHT_THRESHOLD and profile["continue_rate"] <= 0.45:
+            continue_likelihood *= 0.98
+
+        continue_likelihood = clamp(continue_likelihood, self.CONTINUATION_MIN, self.CONTINUATION_MAX)
+        return {
+            "continue_likelihood": continue_likelihood,
+            "attackability": attackability,
+            "history_continue_rate": profile["continue_rate"],
+            "history_observations": profile["observations"],
+        }
 
     def score_hypothesis(
         self,
@@ -265,6 +344,32 @@ class BehavioralLikelihoodModel:
                     confidence *= 1.08
                 best = max(best, confidence)
         return best
+
+    def estimate_matrix_attackability(
+        self,
+        full_probability_matrix: FullProbabilityMatrix,
+        *,
+        acting_player_id: Optional[str] = None,
+        exclude_slot: Optional[SlotKey] = None,
+    ) -> float:
+        best = 0.0
+        for player_id, probability_matrix in full_probability_matrix.items():
+            if acting_player_id is not None and player_id == acting_player_id:
+                continue
+            for slot_index, slot_distribution in probability_matrix.items():
+                key = slot_key(player_id, slot_index)
+                if exclude_slot is not None and key == exclude_slot:
+                    continue
+                if not slot_distribution:
+                    continue
+                max_probability = max(slot_distribution.values())
+                concentration = sum(probability * probability for probability in slot_distribution.values())
+                effective_support = 1.0 / max(self.EPSILON, concentration)
+                certainty = max_probability / max(1.0, effective_support ** 0.5)
+                if len(slot_distribution) <= 2:
+                    certainty *= 1.05
+                best = max(best, certainty)
+        return clamp(best, 0.0, 1.0)
 
     def _score_signal(
         self,
@@ -469,7 +574,6 @@ class BehavioralLikelihoodModel:
         if known_card is not None:
             return known_card
         return hypothesis_by_player.get(player_id, {}).get(slot_index)
-
 
 class DaVinciInferenceEngine:
     """Infer hard posterior, soft posterior, and blended posterior for all hidden slots."""
@@ -810,7 +914,7 @@ class DaVinciInferenceEngine:
 
 
 class DaVinciDecisionEngine:
-    """Score moves by immediate EV plus one-step continuation value."""
+    """Score moves by immediate EV, continuation likelihood, and stop-aware thresholding."""
 
     HIT_REWARD = 10.0
     MISS_BASE = 12.0
@@ -820,15 +924,25 @@ class DaVinciDecisionEngine:
     MAX_CANDIDATES_PER_SLOT = 8
     MIN_CANDIDATE_PROBABILITY = 1e-9
 
+    STOP_MARGIN_BASE = 0.18
+    STOP_MARGIN_RISK_SCALE = 0.035
+    STOP_MARGIN_SHORT_HAND = 0.22
+    STOP_MARGIN_LOW_CONFIDENCE = 0.28
+    STOP_MARGIN_WEAK_CONTINUATION = 0.16
+
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
         return self.MISS_BASE + self.MISS_ENDGAME_MULTIPLIER * exposure
 
     def evaluate_all_moves(
         self,
+        *,
         full_probability_matrix: FullProbabilityMatrix,
         my_hidden_count: int,
         hidden_index_by_player: Dict[str, Dict[int, int]],
+        behavior_model: BehavioralLikelihoodModel,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        acting_player_id: Optional[str],
         blocked_slots: Optional[Set[SlotKey]] = None,
     ) -> Tuple[List[Dict[str, Any]], float]:
         risk_factor = self.calculate_risk_factor(my_hidden_count)
@@ -858,6 +972,9 @@ class DaVinciDecisionEngine:
                         card=card,
                         probability=probability,
                         slot_distribution=slot_distribution,
+                        behavior_model=behavior_model,
+                        guess_signals_by_player=guess_signals_by_player,
+                        acting_player_id=acting_player_id,
                     )
                     moves.append(move)
 
@@ -866,12 +983,83 @@ class DaVinciDecisionEngine:
                 -move["expected_value"],
                 -move["win_probability"],
                 -move["continuation_value"],
+                -move["continuation_likelihood"],
                 move["target_player_id"],
                 move["target_slot_index"],
                 card_sort_key((move["guess_card"][0], move["guess_card"][1])),
             )
         )
         return moves, risk_factor
+
+    def choose_best_move(
+        self,
+        all_moves: List[Dict[str, Any]],
+        *,
+        risk_factor: float,
+        my_hidden_count: int,
+    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        if not all_moves:
+            return None, {
+                "evaluated_move_count": 0,
+                "best_expected_value": 0.0,
+                "best_win_probability": 0.0,
+                "best_continuation_value": 0.0,
+                "best_continuation_likelihood": 0.0,
+                "stop_threshold": self._stop_threshold(
+                    risk_factor=risk_factor,
+                    my_hidden_count=my_hidden_count,
+                    best_move=None,
+                ),
+                "recommend_stop": True,
+                "stop_reason": "没有可评估的候选动作。",
+            }
+
+        best_move = all_moves[0]
+        second_move = all_moves[1] if len(all_moves) > 1 else None
+        stop_threshold = self._stop_threshold(
+            risk_factor=risk_factor,
+            my_hidden_count=my_hidden_count,
+            best_move=best_move,
+        )
+        best_gap = best_move["expected_value"] - (second_move["expected_value"] if second_move else 0.0)
+
+        low_confidence_guard = (
+            my_hidden_count <= 2
+            and best_move["win_probability"] < 0.45
+            and best_move["continuation_likelihood"] < 0.55
+        )
+        weak_edge_guard = (
+            second_move is not None
+            and best_gap < 0.18
+            and best_move["expected_value"] < (stop_threshold + 0.30)
+        )
+
+        should_continue = (
+            best_move["expected_value"] > stop_threshold
+            and not low_confidence_guard
+            and not weak_edge_guard
+        )
+        stop_reason = self._build_stop_reason(
+            should_continue=should_continue,
+            best_move=best_move,
+            stop_threshold=stop_threshold,
+            low_confidence_guard=low_confidence_guard,
+            weak_edge_guard=weak_edge_guard,
+        )
+
+        decision_summary = {
+            "evaluated_move_count": len(all_moves),
+            "best_expected_value": best_move["expected_value"],
+            "best_win_probability": best_move["win_probability"],
+            "best_continuation_value": best_move.get("continuation_value", 0.0),
+            "best_continuation_likelihood": best_move.get("continuation_likelihood", 0.0),
+            "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
+            "best_gap": best_gap,
+            "stop_threshold": stop_threshold,
+            "recommend_stop": not should_continue,
+            "stop_reason": stop_reason,
+        }
+        return (best_move if should_continue else None), decision_summary
 
     def _score_single_move(
         self,
@@ -885,9 +1073,15 @@ class DaVinciDecisionEngine:
         card: Card,
         probability: float,
         slot_distribution: Dict[Card, float],
+        behavior_model: BehavioralLikelihoodModel,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        acting_player_id: Optional[str],
     ) -> Dict[str, Any]:
         info_gain = self._expected_slot_entropy_reduction(slot_distribution, card)
         continuation_value = 0.0
+        continuation_likelihood = 0.0
+        attackability_after_hit = 0.0
+        history_continue_rate = behavior_model.CONTINUATION_PRIOR_BASE
 
         success_matrix = self._success_posterior(full_probability_matrix, player_id, slot_index, card)
         if success_matrix:
@@ -895,11 +1089,26 @@ class DaVinciDecisionEngine:
                 success_matrix,
                 my_hidden_count,
             )
-            continuation_value = probability * self.CONTINUATION_DISCOUNT * max(0.0, next_best_immediate_ev)
+            continuation_assessment = behavior_model.estimate_continue_likelihood(
+                success_matrix,
+                guess_signals_by_player,
+                acting_player_id,
+                exclude_slot=slot_key(player_id, slot_index),
+            )
+            continuation_likelihood = continuation_assessment["continue_likelihood"]
+            attackability_after_hit = continuation_assessment["attackability"]
+            history_continue_rate = continuation_assessment["history_continue_rate"]
+            continuation_value = (
+                probability
+                * self.CONTINUATION_DISCOUNT
+                * continuation_likelihood
+                * max(0.0, next_best_immediate_ev)
+            )
 
         hit_reward = probability * self.HIT_REWARD
         miss_penalty = (1.0 - probability) * risk_factor
-        expected_value = hit_reward - miss_penalty + (info_gain * self.INFORMATION_GAIN_WEIGHT) + continuation_value
+        info_bonus = info_gain * self.INFORMATION_GAIN_WEIGHT
+        expected_value = hit_reward - miss_penalty + info_bonus + continuation_value
 
         return {
             "target_player_id": player_id,
@@ -910,17 +1119,67 @@ class DaVinciDecisionEngine:
             "expected_value": expected_value,
             "information_gain": info_gain,
             "continuation_value": continuation_value,
+            "continuation_likelihood": continuation_likelihood,
+            "attackability_after_hit": attackability_after_hit,
+            "history_continue_rate": history_continue_rate,
             "hit_reward": hit_reward,
             "miss_penalty": miss_penalty,
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
-                "information_gain_bonus": info_gain * self.INFORMATION_GAIN_WEIGHT,
+                "information_gain_bonus": info_bonus,
                 "continuation_value": continuation_value,
+                "continuation_likelihood": continuation_likelihood,
+                "attackability_after_hit": attackability_after_hit,
             },
-            "recommendation_reason": self._build_reason(probability, info_gain, continuation_value, miss_penalty),
+            "recommendation_reason": self._build_reason(
+                probability,
+                info_gain,
+                continuation_value,
+                miss_penalty,
+                continuation_likelihood,
+            ),
             "target_scope": "player_slots",
         }
+
+    def _stop_threshold(
+        self,
+        *,
+        risk_factor: float,
+        my_hidden_count: int,
+        best_move: Optional[Dict[str, Any]],
+    ) -> float:
+        threshold = self.STOP_MARGIN_BASE + max(0.0, (risk_factor - self.HIT_REWARD) * self.STOP_MARGIN_RISK_SCALE)
+        if my_hidden_count <= 2:
+            threshold += self.STOP_MARGIN_SHORT_HAND
+        if my_hidden_count <= 1:
+            threshold += self.STOP_MARGIN_SHORT_HAND
+
+        if best_move is not None:
+            if best_move["win_probability"] < 0.5:
+                threshold += self.STOP_MARGIN_LOW_CONFIDENCE * (0.5 - best_move["win_probability"]) / 0.5
+            if best_move.get("continuation_likelihood", 0.0) < 0.5:
+                threshold += self.STOP_MARGIN_WEAK_CONTINUATION * (0.5 - best_move.get("continuation_likelihood", 0.0)) / 0.5
+        return threshold
+
+    def _build_stop_reason(
+        self,
+        *,
+        should_continue: bool,
+        best_move: Dict[str, Any],
+        stop_threshold: float,
+        low_confidence_guard: bool,
+        weak_edge_guard: bool,
+    ) -> str:
+        if should_continue:
+            if best_move.get("continuation_value", 0.0) > 0.0:
+                return "最佳动作不仅单步收益为正，命中后继续收益也支持进攻。"
+            return "最佳动作期望收益超过停手阈值，可以继续进攻。"
+        if low_confidence_guard:
+            return "当前属于高暴露局面，命中率与续压潜力都偏弱，建议停手。"
+        if weak_edge_guard:
+            return "最佳动作与次优动作差距过小，当前进攻边际优势不足，建议停手。"
+        return f"最佳动作期望收益 {best_move['expected_value']:.2f} 未超过停手阈值 {stop_threshold:.2f}。"
 
     def _build_reason(
         self,
@@ -928,9 +1187,12 @@ class DaVinciDecisionEngine:
         info_gain: float,
         continuation_value: float,
         miss_penalty: float,
+        continuation_likelihood: float,
     ) -> str:
         if continuation_value > max(0.35, info_gain * self.INFORMATION_GAIN_WEIGHT):
-            return "命中后继续收益较高，适合主动压回合。"
+            if continuation_likelihood >= 0.60:
+                return "命中后继续收益较高，且续压概率也偏高，适合主动压回合。"
+            return "命中后存在续压价值，但更依赖后续局面兑现。"
         if probability >= 0.62 and miss_penalty < self.HIT_REWARD:
             return "当前命中率较高，且风险处于可接受范围。"
         if info_gain * self.INFORMATION_GAIN_WEIGHT >= max(0.45, continuation_value):
@@ -1055,22 +1317,20 @@ class GameController:
             full_probability_matrix=full_probability_matrix,
             my_hidden_count=my_hidden_count,
             hidden_index_by_player=hidden_index_by_player,
+            behavior_model=self.behavior_model,
+            guess_signals_by_player=guess_signals_by_player,
+            acting_player_id=self.game_state.self_player_id,
             blocked_slots=self.inference_engine.publicly_collapsed_slots,
         )
-        best_move = all_moves[0] if all_moves and all_moves[0]["expected_value"] > 0 else None
+        best_move, decision_summary = self.decision_engine.choose_best_move(
+            all_moves,
+            risk_factor=risk_factor,
+            my_hidden_count=my_hidden_count,
+        )
 
         target_player_id = getattr(self.game_state, "target_player_id", None)
         target_probability_matrix = full_probability_matrix.get(target_player_id, {})
         target_hard_matrix = hard_full_probability_matrix.get(target_player_id, {})
-
-        decision_summary = {
-            "evaluated_move_count": len(all_moves),
-            "best_expected_value": (best_move or all_moves[0])["expected_value"] if all_moves else 0.0,
-            "best_win_probability": (best_move or all_moves[0])["win_probability"] if all_moves else 0.0,
-            "best_continuation_value": (best_move or all_moves[0]).get("continuation_value", 0.0) if all_moves else 0.0,
-            "recommend_stop": best_move is None,
-            "stop_reason": "所有候选动作的期望收益都不为正。" if best_move is None else "存在正收益动作，可继续进攻。",
-        }
 
         return {
             "best_move": best_move,
