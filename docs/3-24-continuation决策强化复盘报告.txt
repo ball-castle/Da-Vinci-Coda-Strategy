@@ -1,0 +1,190 @@
+3/24-continuation决策强化复盘报告
+
+项目：Da Vinci Code Strategy
+日期：2026-03-24
+
+一、本轮推进目标
+本轮工作的目标，是在前几轮“hard/soft posterior 分层、MRV DFS、行为似然结构化”的基础上，继续把系统往“更接近长期回合收益最优”的方向推进。
+
+本轮不再只优化：
+- 当前猜中的概率
+- 单步 EV
+- continued_turn 的后验加权
+
+而是进一步尝试解决：
+- 猜中之后到底值不值得继续压
+- should_stop 是否仍然过于粗糙
+- 行为层能否真正反向作用到 decision 层
+
+二、本轮实际推进内容
+本轮仍然基于完整仓库本地文件树推进，核心修改文件为：
+- backend/app/core/engine.py
+
+新增测试文件为：
+- backend/tests/test_engine_continuation.py
+
+本轮重点推进两件事：
+1. continuation likelihood 显式建模
+2. should_stop 从单步 EV 阈值升级为动态停手判断
+
+三、本轮核心改动
+1. continuation likelihood 正式接入决策层
+在此前版本中，continued_turn 虽然已经作为行为证据作用于 posterior，但它还没有真正影响 should_stop 的核心判断。
+
+本轮新增：
+- continuation_profile(...)
+- estimate_matrix_attackability(...)
+- estimate_continue_likelihood(...)
+
+目标是显式估计：
+如果当前动作成功，那么在成功后的 posterior 下，这个局面是否真的还值得继续攻击。
+
+也就是说，本轮开始让系统回答：
+“猜中以后还能不能继续赚，而不是只看当前这一手值不值。”
+
+2. continuation value 计算方式升级
+此前 continuation value 更接近：
+continuation_value = p_hit * discount * next_best_immediate_ev
+
+本轮升级为：
+continuation_value
+= p_hit
+× continuation_discount
+× continuation_likelihood
+× max(0, next_best_immediate_ev)
+
+这样做的意义是：
+- 不是默认猜中后都能顺利继续
+- 而是根据成功后局面的可攻击性决定 continuation value 的真实强度
+
+这比简单折扣下一手 EV 更接近真实回合价值。
+
+3. should_stop 升级为动态阈值
+本轮不再简单使用：
+best_move.expected_value > 0 就继续
+
+而是引入动态 stop threshold，并综合考虑：
+- 风险因子
+- 我方剩余暗牌数
+- 当前最佳动作命中率
+- continuation likelihood
+- 最佳动作与次优动作之间的优势 gap
+
+这意味着系统开始更像一个“控回合”的策略器，而不是一个“只要当前正收益就压”的单步贪心器。
+
+4. 输出解释字段继续增强
+为了让 should_stop 和 best_move 更可复盘，本轮在输出中补充了：
+- continuation_likelihood
+- attackability_after_hit
+- history_continue_rate
+- stop_threshold
+- best_gap
+
+这样可以更直接地回答：
+- 为什么建议继续
+- 为什么不建议继续
+- 这个结论主要是由命中率、续压潜力还是风险驱动的
+
+四、本轮解决了什么问题
+1. continued_turn 不再只是 posterior 修饰项
+过去 continued_turn 更多只是一个行为风格信号。
+本轮之后，它开始直接影响 continuation value 和 should_stop 的主逻辑。
+
+这是一次很关键的推进，因为它意味着：
+行为层第一次不只是“解释过去的动作”，而是开始参与“指导当前的决策”。
+
+2. should_stop 比之前更接近真实策略意图
+过去 should_stop 更像“当前这一步值不值”。
+
+本轮之后，should_stop 开始更像：
+“这一手如果成功，整个回合是否还有继续压的空间；如果失败，代价是否值得承受。”
+
+这比单步阈值更接近真正的策略问题。
+
+3. decision 层可解释性进一步增强
+本轮之后，decision 的关键中间量已经更容易直接输出和观察：
+- continuation likelihood
+- attackability
+- dynamic stop threshold
+- best/second-best gap
+
+这让后续做 case review、参数校准、错误归因都更容易。
+
+五、本轮仍未解决的问题
+1. continuation 仍然是浅层近似
+当前 continuation likelihood 仍然主要基于：
+- hit 后局面是否 attackable
+- 下一手 immediate EV 是否可观
+
+但它还没有真正展开到：
+- hit -> next best move -> next continuation
+这样的浅层 rollout 树。
+
+2. 行为模型仍然不是真正完整的 P(action | state)
+虽然现在已经越来越像 likelihood，但仍然没有完整建模：
+- 为什么猜这个 player
+- 为什么猜这个 slot
+- 为什么猜这个 value
+- 为什么在这个时点继续 / 停止
+
+3. stop threshold 仍然主要是工程化近似
+它已经明显优于“EV > 0 就继续”，但还不是通过大量固定 case 校准出来的经验边界。
+后面仍需要 case-based evaluation 做进一步验证。
+
+六、本轮测试与验证
+本轮新增测试的重点是：
+1. continuation likelihood 是否会偏好更可攻击的世界
+2. should_stop / decision 输出是否包含新的解释字段
+3. 新增逻辑是否与前几轮 engine 改造兼容
+
+本轮在本地仓库上完成了测试运行，相关测试通过。
+
+七、本轮收益总结
+1. 对决策质量
+- should_stop 更合理
+- continuation value 更可信
+- 系统开始更像“优化整回合收益”
+
+2. 对 belief -> decision 联动
+- 行为层第一次显式反向作用于 decision
+- posterior 与 action choice 的连接更紧密
+
+3. 对可解释性
+- 输出更适合 case review
+- 更容易看出是命中率、续压空间还是风险在主导推荐
+
+4. 对下一阶段演进
+- 为 shallow continuation rollout 做好了接口和结构准备
+- 为后续更完整动作似然模型铺好了路
+
+八、下一阶段建议
+下一阶段最值得继续推进的是：
+1. shallow continuation rollout
+把当前：
+- hit 后局面可攻击性
+推进成：
+- hit -> next move -> next immediate value
+的浅层展开
+
+2. 更完整的 P(action | state)
+继续把行为层从结构化 heuristic 推进为更明确的动作似然模型。
+
+3. 固定 case 评测集
+针对 should_stop、continuation value、high-risk / low-risk 场景建立固定 benchmark，避免后续优化只靠直觉调参。
+
+九、不建议现在优先做的事情
+当前仍然不建议先投入：
+- 深层 Expectimax / MCTS
+- 复杂位运算状态压缩
+- UI / 展示层增强
+- 大量调小参数但不改结构
+
+原因仍然一致：
+belief 和浅层决策逻辑还处在继续稳固阶段，过早上重求解器会把误差进一步放大。
+
+十、结论
+本轮最关键的价值，不是“让 AI 更激进”或“让 EV 再多一点”，而是让系统第一次更认真地处理：
+“我现在该不该继续压这一回合？”
+
+一句话总结：
+本轮推进的核心成果，是把 continuation likelihood 真正接入 decision / should_stop，使系统从“单步正收益判断”继续迈向“整回合收益控制”。
