@@ -1,0 +1,132 @@
+3/25-模型目的整理与回归case固化复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 19:50:44 +08:00
+
+一、本轮推进目标
+本轮做了两件互相配套的事：
+
+1. 把“这个模型到底要干什么”整理成一份更贴近当前实现状态的正式说明。
+2. 按上一份最新复盘里的第一优先级，建立固定 case 集，把当前 stop / continue 的关键边界固化成回归测试。
+
+这轮没有继续往更复杂的 rollout 深度抢跑，
+而是先补：
+- 模型定位清晰度
+- 工程验证稳定性
+
+这与当前阶段目标是一致的。
+
+二、本轮实际代码与文档改动
+本轮核心修改文件：
+- docs/implementation_explanation.md
+- backend/tests/test_regression_cases.py
+
+具体推进如下：
+
+1. 整理模型目的说明文档
+本轮重写了 `docs/implementation_explanation.md`，去掉了偏旧、偏夸张的描述，
+改成更准确的当前版本说明。
+
+新的文档重点明确了：
+- 这不是一个简单的猜牌脚本
+- 当前目标是先维护 belief state，再在 belief state 上做回合收益决策
+- 当前后端可拆成状态层、概率推理层、决策层三部分
+- 当前系统已经具备哪些能力
+- 当前系统还不是什么
+- 下一阶段最合理的推进方向是什么
+
+这样做的价值在于：
+- 对项目定位更准确
+- 对外说明更稳
+- 后续复盘与迭代时不会再被旧描述误导
+
+2. 建立固定回归 case 集
+本轮新增 `backend/tests/test_regression_cases.py`，
+把当前几类关键的 decision 边界集中整理成命名 case 集。
+
+当前固化的回归 case 包括：
+- weak_endgame_stop
+- strong_continuation_continue
+- negative_post_hit_margin_stop
+- fragile_positive_margin_stop
+- weak_topk_followup_stop
+- low_attackability_stop
+
+每个 case 都显式记录：
+- 我方暗牌数
+- 候选动作集合
+- 预期应该继续还是停手
+- 某类 pressure 是否必须被触发
+- continue_margin 的方向
+
+3. 从“零散断言”推进到“可持续回归”
+此前测试虽然已经覆盖了不少边界，
+但更多还是以单个测试函数的形式分散存在。
+
+本轮之后，这些关键边界已经被抽成了一个统一的回归 case 集。
+
+这样做的意义是：
+- 后续每轮继续改 decision 逻辑时
+- 可以直接检查是不是把某类 stop / continue 边界打歪了
+
+这比继续无节制加 heuristic 更符合当前工程阶段。
+
+三、本轮测试验证
+本轮测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 11 个测试全部通过
+
+其中新增的价值不是只多了 1 个文件，
+而是把当前 stop / continue 的关键边界正式固化成了固定回归集。
+
+四、本轮解决了什么问题
+1. 模型目的表述终于和当前实现对齐了
+这轮之前，`implementation_explanation.md` 里的描述存在明显的旧化和泛化问题。
+
+本轮之后，文档与当前代码状态的对应关系更清楚了：
+- belief state 是地基
+- decision 是建立在 posterior 之上的
+- 当前仍处于策略引擎骨架继续稳固阶段
+
+2. decision 层开始具备更像“工程产品”的验证方式
+当前 `should_stop` 已经叠加了：
+- post-hit margin
+- fragile gap
+- top-k follow-up 支撑
+- attackability
+
+如果没有固定回归 case，
+后面每次优化都很容易让旧边界悄悄退化。
+
+本轮建立 case 集后，
+这些边界第一次开始被系统化锁住。
+
+3. 后续继续推进动作似然模型时，回归风险更可控
+因为现在已经有一批固定的 decision regression case，
+所以下一步如果继续推进更完整的 `P(action | state)`，
+至少能更快判断：
+- 是模型真的更强了
+- 还是只是让 decision 逻辑变形了
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 继续把行为层从 heuristic 推进成更完整的动作似然模型
+也就是从：
+- 猜过的牌惩罚
+- 邻近值奖励
+- continued_turn 风格信号
+
+继续推进到更明确的：
+- 为什么猜这个 player
+- 为什么猜这个 slot
+- 为什么猜这个 value
+
+2. 如果继续补行为模型，就优先保证它能落进当前固定 case 集验证
+
+3. 再往后，才考虑把 top-k 聚合从简单平均推进到更细的加权聚合
+
+六、一句话总结
+本轮推进的核心成果，是把模型的目的表述整理清楚了，同时把当前关键的 stop / continue 边界正式固化成固定回归 case，让后续继续补动作似然模型时有更稳的验证底座。
