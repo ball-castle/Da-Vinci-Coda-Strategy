@@ -1,0 +1,210 @@
+3/25-行为解释反哺continuation复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 22:20:16 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的下一步建议推进：
+
+让 posterior 解释信号开始反哺 decision 层。
+
+上一轮虽然已经把 `behavior_debug` 推进到了：
+- target slot top-k posterior 聚合解释
+- posterior support
+- weighted strength
+- dominant signal
+
+但这些信息还主要停留在“调试可见”阶段。
+
+也就是说，
+系统已经能看见：
+- 哪些 value signal 在 posterior 上更稳定
+
+却还没有把这些稳定性真正接回：
+- continuation 评估
+- 候选动作排序
+
+所以本轮目标很明确：
+- 不去直接重写整个 decision 层
+- 而是先做一个最小可验证闭环
+- 让 posterior 聚合出来的历史行为支持度，开始轻量反馈到 continuation 分支
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+- backend/tests/test2.py
+
+具体推进如下：
+
+1. 新增 `behavior_guidance_profile`
+本轮在 `GameController` 中新增：
+- `_build_behavior_guidance_profile(...)`
+
+它会基于当前已经做好的 posterior 聚合行为解释，
+针对当前行动者（`self_player_id`）抽取一份轻量 guidance profile，包括：
+- `signal_count`
+- `average_posterior_support`
+- `average_weighted_strength`
+- `stable_signal_ratio`
+- `guidance_multiplier`
+
+这一步的意义是：
+- 现在行为解释不再只是原始 debug 数据
+- 而是第一次被压缩成可以直接喂给 decision 层的稳定特征
+
+2. `run_turn()` 正式返回行为 guidance
+本轮之后，`GameController.run_turn()` 的结果中除了：
+- `behavior_debug`
+
+还会新增：
+- `behavior_guidance_profile`
+
+这意味着调用方现在不只是能看解释细节，
+还可以直接看到：
+- 当前行动者的历史行为在 posterior 上有多稳定
+- 这个稳定性最终转成了多大的 continuation guidance multiplier
+
+3. decision 层开始显式吃 `behavior_guidance_profile`
+本轮给 `DaVinciDecisionEngine` 的主路径新增了：
+- `behavior_guidance_profile` 参数
+
+具体接入点包括：
+- `evaluate_all_moves(...)`
+- `_score_single_move(...)`
+- `_evaluate_post_hit_rollout(...)`
+
+当前接法是：
+- 先照旧算 attackability / history continue rate
+- 再用 `behavior_guidance_profile.guidance_multiplier`
+- 对 continuation likelihood 做一次轻量调节并 clamp
+
+也就是说，
+这轮并没有粗暴改 immediate EV，
+而是优先让“行为解释反哺 decision”的第一落点放在：
+- continuation 分支
+- 继续猜 / 停手边界真正会吃到的那一段
+
+这比直接改总分更稳，也更容易验证。
+
+4. move / summary 输出新增 guidance 字段
+本轮之后，move 结果和 decision summary 会显式带出：
+- `behavior_guidance_multiplier`
+- `behavior_guidance_support`
+- `behavior_guidance_stable_ratio`
+- `behavior_guidance_signal_count`
+
+`decision_summary` 里也新增了：
+- `best_behavior_guidance_multiplier`
+- `best_behavior_guidance_signal_count`
+- `best_behavior_guidance_support`
+- `best_behavior_guidance_stable_ratio`
+
+这一步很关键，因为它避免了一个常见问题：
+- 虽然算法已经吃到了 guidance
+- 但外部却看不出它到底怎么影响了 decision
+
+现在这条链路已经是可见的了。
+
+5. posterior 解释第一次形成完整闭环
+本轮之后，这条链路第一次真正闭合：
+
+行为解释
+-> posterior 聚合支持度
+-> guidance profile
+-> continuation likelihood 调节
+-> move / summary 输出
+
+这意味着上一轮的 posterior 聚合解释，已经不再只是“好看”，
+而是第一次真正开始改变决策计算。
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. decision 层 guidance 生效测试
+新增测试验证：
+- 同一套 full probability matrix
+- 只改变 `behavior_guidance_profile`
+- continuation likelihood 会随 guidance multiplier 明显变化
+
+2. controller guidance 输出测试
+新增测试验证：
+- 无历史 guess 时，`behavior_guidance_profile.guidance_multiplier == 1.0`
+- 有历史 guess 时，会返回非空 guidance profile
+
+3. decision summary guidance 字段测试
+新增测试验证：
+- `decision_summary` 会显式返回 best move 的 guidance 相关字段
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 24 个测试全部通过
+
+四、本轮解决了什么问题
+1. 行为解释第一次真正影响了决策
+这是本轮最核心的推进。
+
+过去几轮已经把行为层做得越来越清楚：
+- 从 player / slot / value 拆分
+- 到 value-selection 的 anchor / boundary / progressive
+- 再到 posterior 聚合解释
+
+但直到上一轮为止，
+这些信息都还主要停留在：
+- 推理可解释性
+- debug 可观测性
+
+本轮之后，
+它们第一次开始真正反馈到：
+- continuation likelihood
+- continuation value 所依赖的那条链路
+
+2. “解释层”和“决策层”之间终于不再完全断开
+这一步虽然还很轻，
+但结构意义非常大。
+
+因为现在不是：
+- 行为解释一套
+- decision 一套
+
+而是开始出现真实的数据流：
+- posterior 行为稳定度
+- 会影响 continuation 分支强弱
+
+这正是后面继续往更强策略系统推进时必须建立的桥。
+
+3. 风险控制得比较稳
+本轮没有直接把 guidance 塞进总分所有地方，
+而是只先接到 continuation likelihood 上。
+
+这让当前推进具备两个好处：
+- 影响面可控
+- 出问题时更容易定位
+
+也就是说，
+这一步是“先把桥搭上”，
+而不是一口气把整套 decision 全部重新洗一遍。
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 让 behavior guidance 不只影响 continuation，也开始轻量影响候选动作排序
+当前 guidance 主要只反馈到 continuation 分支。
+
+下一步可以继续尝试：
+- 让稳定的 posterior 行为支持度，开始轻量影响 move ranking
+- 但仍然保持影响幅度受控
+
+2. 继续把 guidance 从“行动者整体画像”推进到“当前候选动作匹配度”
+现在 guidance 更接近：
+- 这个行动者历史上是不是一个 posterior 上稳定的人
+
+下一步可以继续推进成：
+- 当前候选动作本身是不是也符合他历史上稳定的 signal 类型
+
+3. 如果继续补这条线，保持“decision 接入 + 输出字段 + 测试 + 复盘”同步推进
+
+六、一句话总结
+本轮推进的核心成果，是把上一轮做好的 posterior 行为解释，第一次真正接回了 continuation 分支，让“历史行为在 posterior 上是否稳定”开始对 decision 层产生实际影响。

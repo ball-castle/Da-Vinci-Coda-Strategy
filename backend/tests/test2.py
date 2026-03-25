@@ -62,6 +62,70 @@ class ContinuationLikelihoodTests(unittest.TestCase):
 
 
 class StopThresholdTests(unittest.TestCase):
+    def test_evaluate_all_moves_applies_behavior_guidance_to_continuation(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 5): 0.62, ("W", 6): 0.38},
+            },
+            "side": {
+                0: {("B", 3): 0.81, ("B", 4): 0.19},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+            "side": {0: 0},
+        }
+
+        boosted_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=2,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            behavior_guidance_profile={
+                "signal_count": 2.0,
+                "average_posterior_support": 0.82,
+                "average_weighted_strength": 0.16,
+                "stable_signal_ratio": 1.0,
+                "guidance_multiplier": 1.08,
+            },
+            blocked_slots=set(),
+            rollout_depth=1,
+        )
+        damped_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=2,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            behavior_guidance_profile={
+                "signal_count": 2.0,
+                "average_posterior_support": 0.24,
+                "average_weighted_strength": 0.03,
+                "stable_signal_ratio": 0.0,
+                "guidance_multiplier": 0.95,
+            },
+            blocked_slots=set(),
+            rollout_depth=1,
+        )
+
+        self.assertGreater(
+            boosted_moves[0]["continuation_likelihood"],
+            damped_moves[0]["continuation_likelihood"],
+        )
+        self.assertGreater(
+            boosted_moves[0]["behavior_guidance_multiplier"],
+            damped_moves[0]["behavior_guidance_multiplier"],
+        )
+        self.assertGreater(
+            boosted_moves[0]["behavior_guidance_support"],
+            damped_moves[0]["behavior_guidance_support"],
+        )
+
     def test_choose_best_move_stops_on_weak_endgame_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [
