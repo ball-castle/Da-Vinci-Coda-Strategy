@@ -1,0 +1,191 @@
+2026-03-25 component support 接入 weight strength 复盘报告
+
+记录时间：2026-03-25 23:27:25 +08:00
+
+一、本轮推进目标
+按照上一轮《candidate confidence 细化复盘报告》的下一步建议，这一轮继续沿第二条分支推进：
+
+- 让 `component_support` 不只看 posterior support
+- 也开始看 component weight 强弱
+
+上一轮之后，`candidate_confidence` 已经开始综合：
+- dominant signal posterior support
+- context covered probability
+- component support
+- context focus
+
+但当时的 `component_support` 仍然有一个明显缺口：
+- 它只平均 `progressive / anchor / boundary` 的 `posterior_support`
+- 并不区分这些 component 的 `weight` 是强还是弱
+
+这会带来一个问题：
+- 两个动作的 component posterior support 可能一样
+- 但一个动作的 component weight 明显更强
+- 另一个动作虽然也“被支持”，但只是弱幅度支持
+
+如果不把 weight 强度接进来，就会出现：
+- `component_support` 看上去一样
+- 但真实上一个是强结构支撑，一个只是轻微抬升
+
+所以这一轮的目标是：
+- 不改整体 confidence 框架
+- 只让 `component_support` 变成“support + weight strength”的联合度量
+- 并把 `component_strength` 独立暴露出来，方便继续校准
+
+二、本轮核心改动
+1. 新增 `BEHAVIOR_MATCH_COMPONENT_WEIGHT_REFERENCE = 0.15`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 作为 component weight 强度的归一化基准
+- 用来把 `weight - 1.0` 映射到 0~1 区间
+
+当前含义是：
+- 如果某个 component 的正向 weight 抬升接近 `+0.15`
+- 就会被视为接近满强度 component signal
+
+2. 新增 `_behavior_match_component_strength(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 读取 `progressive / anchor / boundary` 三段的 `weight`
+- 计算它们相对 `1.0` 的正向强度
+- 再做平均，形成整体的 `component_strength`
+
+这意味着：
+- 现在不只是看 component 有没有 posterior support
+- 也开始看 component 本身是不是“强信号”
+
+3. `component_support` 现在改成“support + strength”联合度量
+之前：
+- `component_support = average(component.posterior_support)`
+
+现在：
+- 先算平均 posterior support
+- 再和 `component_strength` 做加权融合
+
+当前效果是：
+- 如果 component posterior support 不低，但权重都很弱
+- 那么 `component_support` 不会再被高估
+- 反过来，如果多个 component 不只是被支持，而且 weight 也很强
+- 那么 `component_support` 会更明显地抬升
+
+4. decision summary 补齐解释字段
+新增输出：
+- `best_behavior_match_component_strength`
+
+同时 `decision_score_breakdown` 里也补了：
+- `behavior_match_component_strength`
+
+这样后面看边界 case 时，可以直接区分：
+- 是 component posterior support 本身不足
+- 还是 support 不弱，但 weight 强度偏弱
+
+三、本轮收益
+这一轮最大的收益，是把 `component_support` 从“有没有 component 支撑”，推进成了“component 支撑是否真的够强”。
+
+之前的逻辑更像：
+- 三个 component 只要 posterior support 差不多
+- 那 `component_support` 也会差不多
+
+这轮之后变成：
+- posterior support 只是第一层
+- weight 强度也成为第二层过滤
+
+换句话说：
+- 之前更偏“这几个 component 有被支持”
+- 现在更偏“这几个 component 不只被支持，而且支持得够强”
+
+这让 `candidate_confidence` 更不容易把“弱幅度、多 component 勉强成立”的动作，高估成强支撑动作。
+
+四、测试补充
+1. 新增 component weight strength 边界测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_scales_candidate_confidence_by_component_weight_strength`
+
+验证内容：
+- 两个动作的：
+  - posterior support
+  - context covered probability
+  - context candidate count
+  都基本一致
+- 唯一关键差别是 component weight 强度
+- 结果是：
+  - weight 更强的动作可以继续
+  - weight 明显偏弱的动作会停手
+
+这条测试的价值在于，它把：
+- “被支持”
+- 和“支持得强不强”
+
+这两个维度真正拆开测了。
+
+2. 固化进 decision 回归 case
+文件：
+- `backend/tests/test_regression_cases.py`
+
+新增回归 case：
+- `weak_component_weight_strength_stop`
+
+它锁住的边界是：
+- posterior support 已经不弱
+- 但 component weight 强度不足
+- 最终仍不该被推过 continue 边界
+
+3. controller summary 字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_match_component_strength`
+
+避免 controller 输出层漏掉这次新增的解释字段。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 32 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，`candidate_confidence` 的 component 部分已经从：
+
+1. component posterior support
+
+推进成了：
+
+1. component posterior support
+2. component weight strength
+
+也就是说，现在系统已经开始区分：
+- 一个动作是“component 被支持”
+- 还是“component 被强力度支持”
+
+这会让行为层反哺 decision 时，对局部结构质量的判断更细。
+
+但边界仍然清楚：
+- 这部分细化目前仍然只进 `candidate_confidence`
+- 还没有继续送进更深一层的 next-turn 候选排序
+- 也还没有对负向 weight 强度做对称建模
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 refined `candidate_confidence` 继续送进命中后下一手候选动作排序
+目标：
+- 不只是 stop / continue 边界
+- 也让下一手候选动作本身开始共享这套 refined confidence
+
+2. 开始让 component strength 对负向 weight 也有更明确建模
+目标：
+- 不只是区分“正向强不强”
+- 也区分“负向惩罚强不强”
+
+八、一句话总结
+本轮推进的核心成果，是让 `component_support` 从只看 posterior support，推进成了同时吸收 `component weight strength` 的联合度量，让行为层对“component 支撑质量”的判断更贴近真实强度。

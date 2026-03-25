@@ -1673,6 +1673,7 @@ class DaVinciDecisionEngine:
     BEHAVIOR_MATCH_DECISION_SCALE = 0.45
     BEHAVIOR_MATCH_SUPPORT_REFERENCE = 0.10
     BEHAVIOR_MATCH_CONTEXT_COUNT_REFERENCE = 4.0
+    BEHAVIOR_MATCH_COMPONENT_WEIGHT_REFERENCE = 0.15
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -1774,6 +1775,7 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_decision_bonus": 0.0,
                 "best_behavior_match_candidate_confidence": 0.0,
                 "best_behavior_match_component_support": 0.0,
+                "best_behavior_match_component_strength": 0.0,
                 "best_behavior_match_context_focus": 0.0,
                 "best_behavior_rollout_pressure": 0.0,
                 "stop_threshold": stop_threshold,
@@ -1792,6 +1794,7 @@ class DaVinciDecisionEngine:
                     "behavior_match_decision_bonus": 0.0,
                     "behavior_match_candidate_confidence": 0.0,
                     "behavior_match_component_support": 0.0,
+                    "behavior_match_component_strength": 0.0,
                     "behavior_match_context_focus": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
@@ -1839,6 +1842,7 @@ class DaVinciDecisionEngine:
             "best_behavior_match_decision_bonus": decision_snapshot["behavior_match_decision_bonus"],
             "best_behavior_match_candidate_confidence": decision_snapshot["behavior_match_candidate_confidence"],
             "best_behavior_match_component_support": decision_snapshot["behavior_match_component_support"],
+            "best_behavior_match_component_strength": decision_snapshot["behavior_match_component_strength"],
             "best_behavior_match_context_focus": decision_snapshot["behavior_match_context_focus"],
             "best_behavior_rollout_pressure": decision_snapshot["decision_score_breakdown"]["behavior_rollout_pressure"],
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
@@ -2442,6 +2446,7 @@ class DaVinciDecisionEngine:
         )
         behavior_match_candidate_confidence = behavior_match_confidence_breakdown["candidate_confidence"]
         behavior_match_component_support = behavior_match_confidence_breakdown["component_support"]
+        behavior_match_component_strength = behavior_match_confidence_breakdown["component_strength"]
         behavior_match_context_focus = behavior_match_confidence_breakdown["context_focus"]
         behavior_match_decision_bonus = self._behavior_match_decision_bonus(
             best_move=best_move,
@@ -2544,6 +2549,7 @@ class DaVinciDecisionEngine:
             "behavior_match_decision_bonus": behavior_match_decision_bonus,
             "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
             "behavior_match_component_support": behavior_match_component_support,
+            "behavior_match_component_strength": behavior_match_component_strength,
             "behavior_match_context_focus": behavior_match_context_focus,
             "low_confidence_guard": low_confidence_guard,
             "weak_edge_guard": weak_edge_guard,
@@ -2558,6 +2564,7 @@ class DaVinciDecisionEngine:
                 "behavior_match_decision_bonus": behavior_match_decision_bonus,
                 "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
                 "behavior_match_component_support": behavior_match_component_support,
+                "behavior_match_component_strength": behavior_match_component_strength,
                 "behavior_match_context_focus": behavior_match_context_focus,
             },
         }
@@ -2572,6 +2579,7 @@ class DaVinciDecisionEngine:
             return {
                 "candidate_confidence": 1.0,
                 "component_support": 1.0,
+                "component_strength": 1.0,
                 "context_focus": 1.0,
             }
 
@@ -2580,6 +2588,7 @@ class DaVinciDecisionEngine:
             return {
                 "candidate_confidence": 1.0,
                 "component_support": 1.0,
+                "component_strength": 1.0,
                 "context_focus": 1.0,
             }
 
@@ -2594,9 +2603,13 @@ class DaVinciDecisionEngine:
             0.0,
             1.0,
         )
+        component_strength = self._behavior_match_component_strength(
+            candidate_signal=candidate_signal,
+        )
         component_support = self._behavior_match_component_support(
             candidate_signal=candidate_signal,
             dominant_signal_support=posterior_support,
+            component_strength=component_strength,
         )
         context_focus = self._behavior_match_context_focus(candidate_signal=candidate_signal)
         if (
@@ -2607,6 +2620,7 @@ class DaVinciDecisionEngine:
             return {
                 "candidate_confidence": 1.0,
                 "component_support": 1.0,
+                "component_strength": 1.0,
                 "context_focus": 1.0,
             }
         candidate_confidence = clamp(
@@ -2620,14 +2634,38 @@ class DaVinciDecisionEngine:
         return {
             "candidate_confidence": candidate_confidence,
             "component_support": component_support,
+            "component_strength": component_strength,
             "context_focus": context_focus,
         }
+
+    def _behavior_match_component_strength(
+        self,
+        *,
+        candidate_signal: Dict[str, Any],
+    ) -> float:
+        component_strengths = []
+        for component_name in ("progressive", "anchor", "boundary"):
+            component = candidate_signal.get(component_name)
+            if not isinstance(component, dict):
+                continue
+            component_strengths.append(
+                clamp(
+                    (float(component.get("weight", 1.0)) - 1.0)
+                    / self.BEHAVIOR_MATCH_COMPONENT_WEIGHT_REFERENCE,
+                    0.0,
+                    1.0,
+                )
+            )
+        if component_strengths:
+            return sum(component_strengths) / len(component_strengths)
+        return 0.0
 
     def _behavior_match_component_support(
         self,
         *,
         candidate_signal: Dict[str, Any],
         dominant_signal_support: float,
+        component_strength: float,
     ) -> float:
         component_supports = []
         for component_name in ("progressive", "anchor", "boundary"):
@@ -2638,8 +2676,14 @@ class DaVinciDecisionEngine:
                 clamp(float(component.get("posterior_support", 0.0)), 0.0, 1.0)
             )
         if component_supports:
-            return sum(component_supports) / len(component_supports)
-        return dominant_signal_support
+            average_support = sum(component_supports) / len(component_supports)
+        else:
+            average_support = dominant_signal_support
+        return clamp(
+            (0.75 * average_support) + (0.25 * component_strength),
+            0.0,
+            1.0,
+        )
 
     def _behavior_match_context_focus(
         self,

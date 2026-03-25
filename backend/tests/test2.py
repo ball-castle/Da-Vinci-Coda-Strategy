@@ -552,6 +552,93 @@ class StopThresholdTests(unittest.TestCase):
             sparse_summary["stop_score"],
         )
 
+    def test_choose_best_move_scales_candidate_confidence_by_component_weight_strength(self):
+        engine = DaVinciDecisionEngine()
+        strong_weight_move = {
+            "expected_value": 0.58,
+            "win_probability": 0.55,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.58,
+            "attackability_after_hit": 0.72,
+            "behavior_match_bonus": 0.30,
+            "behavior_match_support": 0.18,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_candidate_signal": {
+                "mode": "neighbor_top_k_posterior",
+                "context_covered_probability": 0.68,
+                "context_candidate_count": 4,
+                "dominant_signal": {
+                    "source": "local_boundary",
+                    "reason": "narrow_boundary_probe",
+                    "weight": 1.15,
+                    "posterior_support": 0.70,
+                },
+                "progressive": {"weight": 1.15, "reason": "progressive_step", "posterior_support": 0.70},
+                "anchor": {"weight": 1.15, "reason": "same_color_sandwich_exact", "posterior_support": 0.70},
+                "boundary": {"weight": 1.15, "reason": "narrow_boundary_probe", "posterior_support": 0.70},
+            },
+        }
+        weak_weight_move = {
+            "expected_value": 0.58,
+            "win_probability": 0.55,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.58,
+            "attackability_after_hit": 0.72,
+            "behavior_match_bonus": 0.30,
+            "behavior_match_support": 0.18,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_candidate_signal": {
+                "mode": "neighbor_top_k_posterior",
+                "context_covered_probability": 0.68,
+                "context_candidate_count": 4,
+                "dominant_signal": {
+                    "source": "local_boundary",
+                    "reason": "narrow_boundary_probe",
+                    "weight": 1.03,
+                    "posterior_support": 0.70,
+                },
+                "progressive": {"weight": 1.01, "reason": "progressive_step", "posterior_support": 0.70},
+                "anchor": {"weight": 1.01, "reason": "same_color_sandwich_exact", "posterior_support": 0.70},
+                "boundary": {"weight": 1.03, "reason": "narrow_boundary_probe", "posterior_support": 0.70},
+            },
+        }
+
+        strong_best_move, strong_summary = engine.choose_best_move(
+            [strong_weight_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        weak_best_move, weak_summary = engine.choose_best_move(
+            [weak_weight_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(strong_best_move)
+        self.assertFalse(strong_summary["recommend_stop"])
+        self.assertGreater(
+            strong_summary["best_behavior_match_component_strength"],
+            weak_summary["best_behavior_match_component_strength"],
+        )
+        self.assertGreater(
+            strong_summary["best_behavior_match_component_support"],
+            weak_summary["best_behavior_match_component_support"],
+        )
+        self.assertGreater(
+            strong_summary["best_behavior_match_candidate_confidence"],
+            weak_summary["best_behavior_match_candidate_confidence"],
+        )
+        self.assertGreater(
+            strong_summary["continue_score"],
+            strong_summary["stop_score"],
+        )
+        self.assertIsNone(weak_best_move)
+        self.assertTrue(weak_summary["recommend_stop"])
+        self.assertLess(
+            weak_summary["continue_score"],
+            weak_summary["stop_score"],
+        )
+
     def test_choose_best_move_scales_candidate_confidence_by_context_focus(self):
         engine = DaVinciDecisionEngine()
         focused_context_move = {

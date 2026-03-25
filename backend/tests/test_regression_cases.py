@@ -205,6 +205,51 @@ DECISION_REGRESSION_CASES = [
         max_continue_margin=0.0,
     ),
     DecisionRegressionCase(
+        name="weak_component_weight_strength_stop",
+        my_hidden_count=2,
+        moves=[
+            build_move(
+                expected_value=0.58,
+                win_probability=0.55,
+                continuation_value=0.18,
+                continuation_likelihood=0.58,
+                attackability_after_hit=0.72,
+                behavior_match_bonus=0.30,
+                behavior_match_support=0.18,
+                behavior_guidance_stable_ratio=1.0,
+                behavior_candidate_signal={
+                    "mode": "neighbor_top_k_posterior",
+                    "context_covered_probability": 0.68,
+                    "context_candidate_count": 4,
+                    "dominant_signal": {
+                        "source": "local_boundary",
+                        "reason": "narrow_boundary_probe",
+                        "weight": 1.03,
+                        "posterior_support": 0.70,
+                    },
+                    "progressive": {
+                        "weight": 1.01,
+                        "reason": "progressive_step",
+                        "posterior_support": 0.70,
+                    },
+                    "anchor": {
+                        "weight": 1.01,
+                        "reason": "same_color_sandwich_exact",
+                        "posterior_support": 0.70,
+                    },
+                    "boundary": {
+                        "weight": 1.03,
+                        "reason": "narrow_boundary_probe",
+                        "posterior_support": 0.70,
+                    },
+                },
+            ),
+        ],
+        expect_continue=False,
+        positive_breakdown_key="behavior_match_component_strength",
+        max_continue_margin=0.0,
+    ),
+    DecisionRegressionCase(
         name="diffuse_context_focus_stop",
         my_hidden_count=2,
         moves=[
