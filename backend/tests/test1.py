@@ -807,6 +807,7 @@ class GameControllerOutputTests(unittest.TestCase):
             self.assertIn("post_hit_guidance_support", result["top_moves"][0])
             self.assertIn("post_hit_guidance_stable_ratio", result["top_moves"][0])
             self.assertIn("post_hit_guidance_signal_count", result["top_moves"][0])
+            self.assertIn("post_hit_guidance_debug", result["top_moves"][0])
             self.assertIn("post_hit_top_k_expected_continue_margin", result["top_moves"][0])
             self.assertIn("post_hit_top_k_continue_margin", result["top_moves"][0])
             self.assertIn("post_hit_top_k_expected_support_ratio", result["top_moves"][0])

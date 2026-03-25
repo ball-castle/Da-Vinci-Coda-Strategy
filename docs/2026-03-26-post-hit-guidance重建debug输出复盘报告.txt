@@ -1,0 +1,215 @@
+2026-03-26 post-hit guidance 重建 debug 输出复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《post-hit 支撑增益与脆弱性拆分复盘报告》的第一条下一步建议，这一轮不再继续改 stop / continue 打分，而是把 post-hit guidance rebuild 本身独立输出成可读 debug 结构。
+
+上一轮已经把当前边界拆成了：
+
+- `support_gain`
+- `fragility_drag`
+
+但 rebuild 过程本身仍然不够透明：
+
+- 外部只能看到最后的 `post_hit_guidance_multiplier`
+- 看不到 rebuild 用了哪些 signal
+- 看不到矩阵增强了哪些已确认 slot
+- 看不到 base / rebuilt / blended 三份 profile 的关系
+
+所以这一轮的目标是：
+
+- 给 post-hit rollout 增加独立 `guidance_debug`
+- 把 rebuild 过程按阶段输出出来
+- 让外部可以直接检查 post-hit guidance 是如何形成的
+
+二、本轮核心改动
+1. `_evaluate_post_hit_rollout(...)` 新增 `guidance_debug`
+位置：
+- `backend/app/core/engine.py`
+
+本轮之后，post-hit rollout 返回值除了已有的：
+
+- `behavior_guidance_multiplier`
+- `behavior_guidance_support`
+- `behavior_guidance_stable_ratio`
+- `behavior_guidance_signal_count`
+
+还会额外返回：
+
+- `guidance_debug`
+
+并继续挂到候选动作级输出中的：
+
+- `post_hit_guidance_debug`
+
+这样外部不需要重新跑内部函数，
+就能直接看到某个候选动作的 post-hit guidance rebuild 细节。
+
+2. `_rebuild_post_hit_behavior_guidance_profile(...)` 改为返回 profile + debug
+位置：
+- `backend/app/core/engine.py`
+
+本轮之前：
+- 这个函数只返回最终 blended profile
+
+本轮之后：
+- 返回一个结构体，包含：
+  - `profile`
+  - `debug`
+
+其中 `debug` 里显式输出：
+
+- `rebuild_applied`
+- `acting_player_id`
+- `acting_signal_count`
+- `rebuilt_signal_count`
+- `augmented_known_slot_count`
+- `augmented_known_slots`
+- `signal_summaries`
+- `base_profile`
+- `rebuilt_profile`
+- `blended_profile`
+
+这意味着：
+- post-hit guidance rebuild 不再只是一个最终 multiplier
+- 而是第一次把整个中间过程都暴露出来
+
+3. `_augment_behavior_debug_matrix(...)` 开始回传增强后的已确认 slot 列表
+位置：
+- `backend/app/core/engine.py`
+
+本轮之前：
+- 只返回增强后的矩阵
+
+本轮之后：
+- 同时返回：
+  - `matrix`
+  - `augmented_known_slots`
+
+这些 `augmented_known_slots` 记录的是：
+- 哪个玩家
+- 哪个 slot
+- 被补成了哪张确定卡
+
+于是现在可以直接看到：
+- post-hit guidance rebuild 到底把哪些公开确认信息补回了 posterior debug 矩阵
+
+4. 新增 `_summarize_guidance_rebuild_signals(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 从完整 behavior debug 里
+- 只抽出 acting player 在 guidance rebuild 中真正使用的 signal 摘要
+
+当前 signal 摘要包括：
+
+- `target_player_id`
+- `target_slot_index`
+- `result`
+- `continued_turn`
+- `dominant_source`
+- `posterior_support`
+- `weighted_strength`
+- `covered_probability`
+
+这样既保留了 rebuild 线索，
+又避免直接把完整 `candidate_explanations` 整块塞进每个 move，导致输出过重。
+
+三、本轮收益
+这一轮最大的收益，是把 post-hit guidance rebuild 从“内部发生过但外部看不见”，推进成了“外部可以直接读取的一段独立调试对象”。
+
+现在一个候选动作的 post-hit guidance 已经可以直接回答这些问题：
+
+1. 这次 rebuild 有没有真的发生
+2. acting player 一共用了几条 signal
+3. 哪些已确认 slot 被重新补回矩阵
+4. rebuild 出来的 profile 长什么样
+5. blended 回 base guidance 之后最终 profile 长什么样
+
+这会直接改善后续两类工作：
+
+- 复盘
+- 调参
+
+因为之后如果 guidance 异常，
+我们终于可以先看 debug 结构，而不是先怀疑整个决策层。
+
+四、测试补充
+1. 扩展 full-history rebuild 测试
+文件：
+- `backend/tests/test2.py`
+
+增强测试：
+- `test_post_hit_rollout_rebuilds_guidance_from_full_post_hit_signal_history`
+
+新增验证：
+
+- `guidance_debug["rebuild_applied"]` 为真
+- `acting_signal_count >= 2`
+- `augmented_known_slot_count >= 1`
+- `rebuilt_profile["signal_count"] > 0`
+- `signal_summaries` 数量与 acting signal 数量一致
+
+这条测试锁住的是：
+- 这轮不是只把字段加出来
+- 而是真的把 rebuild debug 过程做成了有效输出
+
+2. controller 输出字段回归
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- 候选动作级输出包含 `post_hit_guidance_debug`
+
+这样能保证：
+- 外层 controller 返回给前端或日志系统的 top moves
+- 已经可以直接读到 post-hit guidance rebuild debug
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 42 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit guidance 这条线已经具备了两层解释能力：
+
+1. score 侧
+- `support_gain`
+- `fragility_drag`
+
+2. rebuild 侧
+- `base_profile`
+- `rebuilt_profile`
+- `blended_profile`
+- `signal_summaries`
+- `augmented_known_slots`
+
+也就是说：
+- 现在不仅知道 post-hit guidance 最后如何影响当前边界
+- 还知道它自己是怎么被重建出来的
+
+但边界仍然存在：
+
+- `support_gain / fragility_drag` 还主要在 final decision summary 里
+- 还没有下沉到候选动作级输出做横向比较
+- rebuild profile 的前后差异也还没有被整理成直接可读的 delta 字段
+
+七、下一步建议
+下一轮可以优先沿两个方向继续推进：
+
+1. 把 `support_gain / fragility_drag` 下沉到候选动作级输出
+目标：
+- 不只看 best move 的最终 summary
+- 也能直接比较 top moves 各自的 post-hit 正向支撑和负向脆弱性
+
+2. 给 `base_profile / rebuilt_profile / blended_profile` 增加 delta 输出
+目标：
+- 不只展示三份 profile
+- 还直接展示 rebuild 相对 base 到底推高了哪些指标、压低了哪些指标
+
+八、一句话总结
+本轮推进的核心成果，是把 post-hit guidance rebuild 从“只输出最终 multiplier 的内部过程”，推进成了“直接暴露 base / rebuilt / blended profile、signal 摘要和 augmented slot 的独立 debug 结构”，让这条链路第一次真正可读。

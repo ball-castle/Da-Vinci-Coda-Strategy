@@ -1955,6 +1955,10 @@ class DaVinciDecisionEngine:
         post_hit_guidance_support = 0.0
         post_hit_guidance_stable_ratio = 0.0
         post_hit_guidance_signal_count = 0.0
+        post_hit_guidance_debug: Dict[str, Any] = self._default_post_hit_guidance_rebuild_debug(
+            base_profile=behavior_guidance_profile,
+            acting_player_id=acting_player_id,
+        )
         post_hit_top_k_expected_continue_margin = 0.0
         post_hit_top_k_continue_margin = 0.0
         post_hit_top_k_expected_support_ratio = 0.0
@@ -2037,6 +2041,7 @@ class DaVinciDecisionEngine:
                 post_hit_guidance_support = post_hit_rollout["behavior_guidance_support"]
                 post_hit_guidance_stable_ratio = post_hit_rollout["behavior_guidance_stable_ratio"]
                 post_hit_guidance_signal_count = post_hit_rollout["behavior_guidance_signal_count"]
+                post_hit_guidance_debug = post_hit_rollout["guidance_debug"]
                 post_hit_top_k_expected_continue_margin = post_hit_rollout["top_k_expected_continue_margin"]
                 post_hit_top_k_continue_margin = post_hit_rollout["top_k_continue_margin"]
                 post_hit_top_k_expected_support_ratio = post_hit_rollout["top_k_expected_support_ratio"]
@@ -2150,6 +2155,7 @@ class DaVinciDecisionEngine:
             "post_hit_guidance_support": post_hit_guidance_support,
             "post_hit_guidance_stable_ratio": post_hit_guidance_stable_ratio,
             "post_hit_guidance_signal_count": post_hit_guidance_signal_count,
+            "post_hit_guidance_debug": post_hit_guidance_debug,
             "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
             "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
             "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
@@ -2229,6 +2235,10 @@ class DaVinciDecisionEngine:
         post_hit_guess_signals_by_player = guess_signals_by_player
         post_hit_behavior_map_hypothesis = None
         post_hit_behavior_guidance_profile = behavior_guidance_profile
+        post_hit_behavior_guidance_debug = self._default_post_hit_guidance_rebuild_debug(
+            base_profile=behavior_guidance_profile,
+            acting_player_id=acting_player_id,
+        )
         if game_state is not None and acting_player_id is not None:
             post_hit_context = self._build_post_hit_behavior_context(
                 game_state=game_state,
@@ -2242,7 +2252,7 @@ class DaVinciDecisionEngine:
             post_hit_game_state = post_hit_context["game_state"]
             post_hit_guess_signals_by_player = post_hit_context["guess_signals_by_player"]
             post_hit_behavior_map_hypothesis = post_hit_context["behavior_map_hypothesis"]
-            post_hit_behavior_guidance_profile = self._rebuild_post_hit_behavior_guidance_profile(
+            post_hit_guidance_rebuild = self._rebuild_post_hit_behavior_guidance_profile(
                 base_profile=behavior_guidance_profile,
                 behavior_model=behavior_model,
                 full_probability_matrix=success_matrix,
@@ -2251,6 +2261,8 @@ class DaVinciDecisionEngine:
                 behavior_map_hypothesis=post_hit_behavior_map_hypothesis,
                 acting_player_id=acting_player_id,
             )
+            post_hit_behavior_guidance_profile = post_hit_guidance_rebuild["profile"]
+            post_hit_behavior_guidance_debug = post_hit_guidance_rebuild["debug"]
         next_moves, next_risk_factor = self.evaluate_all_moves(
             full_probability_matrix=success_matrix,
             my_hidden_count=my_hidden_count,
@@ -2338,6 +2350,7 @@ class DaVinciDecisionEngine:
             "top_k_expected_support_ratio": top_k_expected_support_ratio,
             "top_k_support_ratio": top_k_support_ratio,
             "top_k_positive_count": top_k_positive_count,
+            "guidance_debug": post_hit_behavior_guidance_debug,
         }
 
     def _build_post_hit_behavior_context(
@@ -2407,7 +2420,7 @@ class DaVinciDecisionEngine:
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         behavior_map_hypothesis: Dict[str, Dict[int, Card]],
         acting_player_id: str,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         fallback_profile = {
             "signal_count": float((base_profile or {}).get("signal_count", 0.0)),
             "average_posterior_support": float((base_profile or {}).get("average_posterior_support", 0.0)),
@@ -2423,15 +2436,23 @@ class DaVinciDecisionEngine:
             "source_support_same_color_anchor": float((base_profile or {}).get("source_support_same_color_anchor", 0.0)),
             "source_support_local_boundary": float((base_profile or {}).get("source_support_local_boundary", 0.0)),
         }
+        default_debug = self._default_post_hit_guidance_rebuild_debug(
+            base_profile=fallback_profile,
+            acting_player_id=acting_player_id,
+        )
         acting_signals = guess_signals_by_player.get(acting_player_id, ())
         if not acting_signals:
-            return fallback_profile
+            return {
+                "profile": fallback_profile,
+                "debug": default_debug,
+            }
 
-        guidance_matrix = self._augment_behavior_debug_matrix(
+        guidance_matrix_context = self._augment_behavior_debug_matrix(
             full_probability_matrix=full_probability_matrix,
             game_state=game_state,
             guess_signals_by_player=guess_signals_by_player,
         )
+        guidance_matrix = guidance_matrix_context["matrix"]
         guidance_map_hypothesis = self._map_hypothesis_from_matrix(guidance_matrix)
         guidance_controller = GameController(game_state)
         behavior_debug = guidance_controller._build_behavior_debug(
@@ -2444,11 +2465,34 @@ class DaVinciDecisionEngine:
             acting_player_id=acting_player_id,
         )
         if float(rebuilt_profile.get("signal_count", 0.0)) <= 0.0:
-            return fallback_profile
-        return self._blend_behavior_guidance_profiles(
+            return {
+                "profile": fallback_profile,
+                "debug": default_debug,
+            }
+        blended_profile = self._blend_behavior_guidance_profiles(
             base_profile=fallback_profile,
             updated_profile=rebuilt_profile,
         )
+        signal_summaries = self._summarize_guidance_rebuild_signals(
+            behavior_debug_signals=behavior_debug["signals"],
+            acting_player_id=acting_player_id,
+        )
+        debug_payload = {
+            "rebuild_applied": True,
+            "acting_player_id": acting_player_id,
+            "acting_signal_count": float(len(acting_signals)),
+            "rebuilt_signal_count": float(rebuilt_profile.get("signal_count", 0.0)),
+            "augmented_known_slot_count": float(len(guidance_matrix_context["augmented_known_slots"])),
+            "augmented_known_slots": guidance_matrix_context["augmented_known_slots"],
+            "signal_summaries": signal_summaries,
+            "base_profile": dict(fallback_profile),
+            "rebuilt_profile": dict(rebuilt_profile),
+            "blended_profile": dict(blended_profile),
+        }
+        return {
+            "profile": blended_profile,
+            "debug": debug_payload,
+        }
 
     def _augment_behavior_debug_matrix(
         self,
@@ -2456,7 +2500,7 @@ class DaVinciDecisionEngine:
         full_probability_matrix: FullProbabilityMatrix,
         game_state: GameState,
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
-    ) -> FullProbabilityMatrix:
+    ) -> Dict[str, Any]:
         augmented_matrix: FullProbabilityMatrix = {
             player_id: {
                 slot_index: dict(slot_distribution)
@@ -2464,6 +2508,7 @@ class DaVinciDecisionEngine:
             }
             for player_id, probability_matrix in full_probability_matrix.items()
         }
+        augmented_known_slots: Dict[Tuple[str, int], Dict[str, Any]] = {}
         for signals in guess_signals_by_player.values():
             for signal in signals:
                 try:
@@ -2476,7 +2521,73 @@ class DaVinciDecisionEngine:
                 augmented_matrix.setdefault(signal.target_player_id, {})[signal.target_slot_index] = {
                     known_card: 1.0,
                 }
-        return augmented_matrix
+                augmented_known_slots[(signal.target_player_id, signal.target_slot_index)] = {
+                    "player_id": signal.target_player_id,
+                    "slot_index": signal.target_slot_index,
+                    "card": serialize_card(known_card),
+                }
+        return {
+            "matrix": augmented_matrix,
+            "augmented_known_slots": [
+                augmented_known_slots[key]
+                for key in sorted(augmented_known_slots)
+            ],
+        }
+
+    def _default_post_hit_guidance_rebuild_debug(
+        self,
+        *,
+        base_profile: Optional[Dict[str, float]],
+        acting_player_id: Optional[str],
+    ) -> Dict[str, Any]:
+        return {
+            "rebuild_applied": False,
+            "acting_player_id": acting_player_id,
+            "acting_signal_count": 0.0,
+            "rebuilt_signal_count": 0.0,
+            "augmented_known_slot_count": 0.0,
+            "augmented_known_slots": [],
+            "signal_summaries": [],
+            "base_profile": dict(base_profile or {}),
+            "rebuilt_profile": {
+                "signal_count": 0.0,
+                "average_posterior_support": 0.0,
+                "average_weighted_strength": 0.0,
+                "stable_signal_ratio": 0.0,
+                "guidance_multiplier": self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER,
+                "source_support_progressive": 0.0,
+                "source_support_same_color_anchor": 0.0,
+                "source_support_local_boundary": 0.0,
+            },
+            "blended_profile": dict(base_profile or {}),
+        }
+
+    def _summarize_guidance_rebuild_signals(
+        self,
+        *,
+        behavior_debug_signals: Sequence[Dict[str, Any]],
+        acting_player_id: str,
+    ) -> List[Dict[str, Any]]:
+        signal_summaries: List[Dict[str, Any]] = []
+        for signal in behavior_debug_signals:
+            if signal.get("guesser_id") != acting_player_id:
+                continue
+            dominant_signal = signal.get("value_selection", {}).get("dominant_signal", {})
+            signal_summaries.append(
+                {
+                    "target_player_id": signal.get("target_player_id"),
+                    "target_slot_index": signal.get("target_slot_index"),
+                    "result": signal.get("result"),
+                    "continued_turn": signal.get("continued_turn"),
+                    "dominant_source": dominant_signal.get("source"),
+                    "posterior_support": float(dominant_signal.get("posterior_support", 0.0)),
+                    "weighted_strength": float(dominant_signal.get("weighted_strength", 0.0)),
+                    "covered_probability": float(
+                        signal.get("value_selection", {}).get("covered_probability", 0.0)
+                    ),
+                }
+            )
+        return signal_summaries
 
     def _blend_behavior_guidance_profiles(
         self,

@@ -1426,6 +1426,17 @@ class StopThresholdTests(unittest.TestCase):
         self.assertGreaterEqual(rollout["behavior_guidance_signal_count"], 2.0)
         self.assertGreater(rollout["behavior_guidance_multiplier"], 1.0)
         self.assertGreater(rollout["behavior_guidance_support"], 0.0)
+        self.assertTrue(rollout["guidance_debug"]["rebuild_applied"])
+        self.assertGreaterEqual(rollout["guidance_debug"]["acting_signal_count"], 2.0)
+        self.assertGreaterEqual(rollout["guidance_debug"]["augmented_known_slot_count"], 1.0)
+        self.assertGreater(
+            rollout["guidance_debug"]["rebuilt_profile"]["signal_count"],
+            0.0,
+        )
+        self.assertEqual(
+            len(rollout["guidance_debug"]["signal_summaries"]),
+            int(rollout["guidance_debug"]["acting_signal_count"]),
+        )
 
     def test_choose_best_move_uses_post_hit_behavior_support_adjustment_on_narrow_edge(self):
         engine = DaVinciDecisionEngine()
