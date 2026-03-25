@@ -1,0 +1,205 @@
+2026-03-25 component strength 负向 weight 建模复盘报告
+
+记录时间：2026-03-25 23:38:57 +08:00
+
+一、本轮推进目标
+按照上一轮《component support 接入 weight strength 复盘报告》的下一步建议，这一轮继续沿第二条分支推进：
+
+- 让 component strength 对负向 weight 也有明确建模
+
+上一轮之后，系统已经能区分：
+- component posterior support 是否充足
+- component 正向 weight 强不强
+
+但仍然有一个明显缺口：
+- 负向 weight 还没有被对称建模
+
+具体来说，上一轮的 `component_strength` 只看：
+- `weight - 1.0` 的正向部分
+
+这意味着：
+- `weight = 1.00`
+- 和 `weight = 0.90`
+
+在 `component_strength` 里都可能接近同样的 0
+
+这显然不够，因为：
+- `1.00` 只是中性
+- `0.90` 已经是明确的负向信号
+
+如果不把这层区分接进来，就会出现：
+- posterior support 不低
+- 但 component weight 明显在惩罚当前动作
+- 系统仍可能把它当成“只是强度不够”，而不是“已经在主动反对”
+
+所以这一轮的目标是：
+- 不改整体 confidence 框架
+- 只补一层对称的负向 weight 建模
+- 让负向 component signal 能明确拖低 `component_support`
+
+二、本轮核心改动
+1. 新增 `BEHAVIOR_MATCH_COMPONENT_PENALTY_WEIGHT = 0.40`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 作为负向 component penalty 进入 `component_support` 的缩放系数
+
+含义是：
+- 当 component 的负向 weight 明显出现时
+- 它会直接扣减 `component_support`
+- 而不再只是“不给正向 strength 加分”
+
+2. 新增 `_behavior_match_component_penalty(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 对 `progressive / anchor / boundary` 三段的负向 weight 做归一化
+- 计算 `(1.0 - weight)` 的负向强度
+- 再做平均，形成整体 `component_penalty`
+
+这样之后，系统终于能区分：
+- 中性 component
+- 正向 component
+- 负向 component
+
+3. `component_support` 现在同时吃：
+- posterior support
+- 正向 `component_strength`
+- 负向 `component_penalty`
+
+之前：
+- `component_support = support + positive_strength`
+
+现在：
+- `component_support = support + positive_strength - negative_penalty`
+
+这一步的关键意义是：
+- component support 不再只是“支持有多强”
+- 也开始表示“是否存在明确反对当前动作的 component 结构”
+
+也就是说：
+- 现在 `component_support` 是一个更对称的结构质量指标
+
+4. decision summary 补齐解释字段
+新增输出：
+- `best_behavior_match_component_penalty`
+
+同时 `decision_score_breakdown` 里也补了：
+- `behavior_match_component_penalty`
+
+这样后面看边界 case 时，可以直接区分：
+- 是 support 不足
+- 是正向强度不够
+- 还是负向 signal 明显在拖累
+
+三、本轮收益
+这一轮最大的收益，是把 component 级别的结构判断从“只会加分”，推进成了“既会加分，也会减分”。
+
+之前的逻辑更像：
+- 正向强 signal 会抬升
+- 负向 signal 只是“不抬升”
+
+这轮之后变成：
+- 正向 signal 会抬升
+- 负向 signal 会明确压低
+
+换句话说：
+- 之前更偏“支持强不强”
+- 现在更偏“支持与反对的净结构强弱”
+
+这会让 `candidate_confidence` 更不容易把：
+- posterior support 不低
+- 但 component weight 已经明显指向负面
+
+的动作，误判成可继续动作。
+
+四、测试补充
+1. 新增负向 weight 边界测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_penalizes_negative_component_weight_strength`
+
+验证内容：
+- 两个动作的：
+  - posterior support
+  - covered probability
+  - context candidate count
+  都一致
+- 一个是中性 component weight
+- 一个是明显负向 component weight
+- 结果是：
+  - 中性动作可以继续
+  - 负向动作会被压回停手
+
+这条测试的价值在于，它把：
+- “没有正向加分”
+- 和“存在明确负向惩罚”
+
+这两个状态真正区分开了。
+
+2. 固化进 decision 回归 case
+文件：
+- `backend/tests/test_regression_cases.py`
+
+新增回归 case：
+- `negative_component_weight_penalty_stop`
+
+它锁住的边界是：
+- posterior support 本身不弱
+- 但 component weight 已经明显为负
+- 最终仍应停手
+
+3. controller summary 字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_match_component_penalty`
+
+避免 controller 输出层漏掉这次新增的解释字段。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 33 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，component 级别的 refined confidence 结构已经变成：
+
+1. posterior support
+2. 正向 weight strength
+3. 负向 weight penalty
+
+也就是说，现在系统已经能区分：
+- component 有支持
+- component 支持得很强
+- component 其实在主动反对当前动作
+
+这让 `candidate_confidence` 对局部结构质量的判断更接近“净效果”。
+
+但边界仍然清楚：
+- 这部分 refined confidence 目前仍然主要用于当前回合的 confidence / decision bonus / rollout pressure
+- 还没有继续送进命中后下一手候选动作排序
+- 也还没有把正负 component 净效应显式接回 move ranking
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 refined `candidate_confidence` 继续送进命中后下一手候选动作排序
+目标：
+- 不只是 stop / continue 边界
+- 也让 next-turn candidate ranking 共享这套 refined confidence
+
+2. 把 component 的净强度开始轻量接回当前 move ranking
+目标：
+- 不只影响 decision 阶段
+- 也影响当前候选动作本身的排序稳定性
+
+八、一句话总结
+本轮推进的核心成果，是给 `component strength` 补上了对称的负向 weight 建模，让 component 级结构判断从“只会加分”推进成“既会加分，也会减分”，从而让 `candidate_confidence` 更能反映局部结构的净效果。
