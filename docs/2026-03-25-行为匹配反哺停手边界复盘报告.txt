@@ -1,0 +1,172 @@
+2026-03-25 行为匹配反哺停手边界复盘报告
+
+记录时间：2026-03-25 22:49:53 +08:00
+
+一、本轮推进目标
+按照上一轮《候选动作 neighbor posterior 匹配复盘报告》的下一步建议，这一轮不再继续扩展候选动作上下文，而是开始做第二条分支：
+
+- 让 `behavior_match_bonus` 不只影响候选动作排序
+- 开始轻量影响 `stop / continue` 边界
+
+推进原因很直接：
+- 上一轮已经把“当前动作 signal 匹配”从 MAP 单点推进到了邻近 slot 的 posterior 近似
+- 这意味着当前动作的 `behavior_match_bonus` 已经比之前更稳
+- 如果它仍然只参与排序，不参与停手判断，那么行为层对最终回合决策的影响还是断开的
+
+所以这一轮的目标是：
+- 不重写 `should_stop` 结构
+- 只增加一个低权重、可解释、可回归的 decision bonus
+- 让“稳定的历史行为匹配”开始轻量推动继续猜边界
+
+二、本轮核心改动
+1. 新增 `behavior_match_decision_bonus`
+位置：
+- `backend/app/core/engine.py`
+
+新增常量：
+- `BEHAVIOR_MATCH_DECISION_SCALE = 0.45`
+- `BEHAVIOR_MATCH_SUPPORT_REFERENCE = 0.10`
+
+新增方法：
+- `_behavior_match_decision_bonus(best_move=...)`
+
+逻辑很简单：
+- 先读取当前最佳动作已有的 `behavior_match_bonus`
+- 再结合：
+  - `behavior_match_support`
+  - `behavior_guidance_stable_ratio`
+- 做一次低权重缩放
+
+当前公式的含义是：
+- 如果历史行为匹配很弱，或者稳定性不足，这个 bonus 会非常小
+- 如果历史行为匹配稳定、支撑也足，那么它会给 `continue_score` 一点正向抬升
+- 但这个抬升明显低于排序阶段直接使用的 `behavior_match_bonus`
+
+也就是说，这不是把行为层“硬塞进停手逻辑”，而是：
+- 只在原本已经比较接近 stop 边界的局面里
+- 给稳定行为信号一个轻量的 tie-break / edge boost
+
+2. `continue_score` 正式接入这部分 bonus
+之前：
+- `continue_score = best_move["expected_value"]`
+
+现在：
+- `continue_score = best_move["expected_value"] + behavior_match_decision_bonus`
+
+这意味着：
+- 行为匹配不再只影响“哪一个动作排第一”
+- 也开始影响“排第一的这个动作，值不值得继续压”
+
+3. decision summary 和 breakdown 补齐可解释输出
+这轮没有只做隐式改动，而是把新项完整暴露出来：
+
+- `best_behavior_match_decision_bonus`
+- `decision_score_breakdown["behavior_match_decision_bonus"]`
+
+这样后面看回合结果时，可以直接区分：
+- 是 EV 本身把动作推过停手线
+- 还是行为匹配提供了额外边际支撑
+
+三、本轮收益
+这一轮的真正价值，不是“继续加 heuristic”，而是把行为层和 decision 层接得更完整了一步。
+
+之前的链路是：
+- 历史行为解释
+- 提炼 guidance profile
+- 候选动作匹配
+- 排序
+
+但停手判断仍然主要只看：
+- expected value
+- continuation rollout
+- attackability
+
+现在的链路变成：
+- 历史行为解释
+- guidance profile
+- 当前动作 posterior-aware signal 匹配
+- 排序
+- 再轻量反哺 `continue_score`
+
+也就是说：
+- 行为层第一次开始直接影响 stop / continue 边界
+- 但仍然保持“轻量、可解释、不会压过主评分体系”的工程边界
+
+四、测试补充
+1. 新增决策单测
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_uses_stable_behavior_match_in_continue_boundary`
+
+这条测试验证：
+- 同样一个接近 stop 阈值的动作
+- 当 `behavior_match_bonus` 一样时
+- 稳定且有支撑的行为匹配，能够把它从“建议停手”推到“允许继续”
+- 弱行为匹配则推不过去
+
+这条测试的价值在于，它测的是“行为是否改变最终决策边界”，而不只是测中间字段有没有出现。
+
+2. 固化进回归 case
+文件：
+- `backend/tests/test_regression_cases.py`
+
+新增 decision 回归 case：
+- `stable_behavior_match_continue`
+
+这样后面如果继续改：
+- behavior match 公式
+- stop / continue 边界
+- 决策系数
+
+都能直接知道有没有把这类“稳定行为信号推过临界值”的能力改没了。
+
+3. controller summary 字段检查同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_match_decision_bonus`
+
+保证 controller 输出层不会漏掉这次新增的 decision 解释字段。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 27 个测试全部通过
+
+六、当前阶段判断
+这一轮完成后，行为层对最终决策的接入状态可以概括为：
+
+1. 已经影响候选动作排序
+2. 已经开始轻量影响 stop / continue 边界
+3. 但还没有进入更深的 rollout 结构
+
+当前边界仍然很清楚：
+- 行为匹配只是给 `continue_score` 一个小幅补偿
+- 还没有直接改 `stop_score`
+- 也没有直接进入 `post-hit rollout` 的深层继续判断
+
+这意味着当前实现仍然比较克制：
+- 先验证行为信号是否确实能提升临界局面的决策质量
+- 再决定是否要把它继续接进更深层的 continuation 结构
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 `behavior_match_decision_bonus` 继续接进 `post-hit` 的 continue 边界
+目标：
+- 不只影响当前回合是否继续
+- 也影响“命中后下一手是否值得继续压”
+
+2. 让 behavior match 的 decision bonus 不只看历史稳定性，也看当前动作 posterior 解释稳定性
+目标：
+- 把当前已经算出来的 `context_covered_probability`
+- `dominant_signal.posterior_support`
+- 等上下文稳定性因素，也接入 decision bonus
+
+八、一句话总结
+本轮推进的核心成果，是让稳定的 `behavior_match_bonus` 第一次开始轻量反哺 `stop / continue` 边界，使行为层不再只影响动作排序，而是开始参与最终的回合决策。

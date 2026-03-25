@@ -1669,6 +1669,8 @@ class DaVinciDecisionEngine:
     DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER = 1.0
     DEFAULT_BEHAVIOR_MATCH_MULTIPLIER = 1.0
     BEHAVIOR_MATCH_CONTEXT_TOP_K = 3
+    BEHAVIOR_MATCH_DECISION_SCALE = 0.45
+    BEHAVIOR_MATCH_SUPPORT_REFERENCE = 0.10
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -1767,6 +1769,7 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_multiplier": self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER,
                 "best_behavior_match_bonus": 0.0,
                 "best_behavior_match_support": 0.0,
+                "best_behavior_match_decision_bonus": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -1779,6 +1782,7 @@ class DaVinciDecisionEngine:
                     "fragile_rollout_pressure": 0.0,
                     "top_k_rollout_pressure": 0.0,
                     "attackability_pressure": 0.0,
+                    "behavior_match_decision_bonus": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -1822,6 +1826,7 @@ class DaVinciDecisionEngine:
             "best_behavior_match_multiplier": best_move.get("behavior_match_multiplier", self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER),
             "best_behavior_match_bonus": best_move.get("behavior_match_bonus", 0.0),
             "best_behavior_match_support": best_move.get("behavior_match_support", 0.0),
+            "best_behavior_match_decision_bonus": decision_snapshot["behavior_match_decision_bonus"],
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
             "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
@@ -2418,6 +2423,7 @@ class DaVinciDecisionEngine:
         my_hidden_count: int,
     ) -> Dict[str, Any]:
         best_gap = best_move["expected_value"] - (second_move["expected_value"] if second_move else 0.0)
+        behavior_match_decision_bonus = self._behavior_match_decision_bonus(best_move=best_move)
 
         edge_pressure = 0.0
         if second_move is not None and best_gap < self.STOP_EDGE_REFERENCE:
@@ -2475,7 +2481,7 @@ class DaVinciDecisionEngine:
             + top_k_rollout_pressure
             + attackability_pressure
         )
-        continue_score = best_move["expected_value"]
+        continue_score = best_move["expected_value"] + behavior_match_decision_bonus
         continue_margin = continue_score - stop_score
 
         low_confidence_guard = (
@@ -2501,6 +2507,7 @@ class DaVinciDecisionEngine:
             "stop_score": stop_score,
             "continue_margin": continue_margin,
             "best_gap": best_gap,
+            "behavior_match_decision_bonus": behavior_match_decision_bonus,
             "low_confidence_guard": low_confidence_guard,
             "weak_edge_guard": weak_edge_guard,
             "decision_score_breakdown": {
@@ -2510,8 +2517,30 @@ class DaVinciDecisionEngine:
                 "fragile_rollout_pressure": fragile_rollout_pressure,
                 "top_k_rollout_pressure": top_k_rollout_pressure,
                 "attackability_pressure": attackability_pressure,
+                "behavior_match_decision_bonus": behavior_match_decision_bonus,
             },
         }
+
+    def _behavior_match_decision_bonus(
+        self,
+        *,
+        best_move: Dict[str, Any],
+    ) -> float:
+        raw_bonus = max(0.0, best_move.get("behavior_match_bonus", 0.0))
+        if raw_bonus <= 0.0:
+            return 0.0
+
+        support_scale = min(
+            1.0,
+            max(0.0, float(best_move.get("behavior_match_support", 0.0)))
+            / self.BEHAVIOR_MATCH_SUPPORT_REFERENCE,
+        )
+        stable_ratio = clamp(
+            float(best_move.get("behavior_guidance_stable_ratio", 0.0)),
+            0.0,
+            1.0,
+        )
+        return raw_bonus * self.BEHAVIOR_MATCH_DECISION_SCALE * support_scale * stable_ratio
 
     def _stop_threshold(
         self,
