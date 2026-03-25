@@ -1,0 +1,210 @@
+2026-03-25 candidate confidence 细化复盘报告
+
+记录时间：2026-03-25 23:19:11 +08:00
+
+一、本轮推进目标
+按照上一轮《candidate confidence 接入 post-hit 续压复盘报告》的下一步建议，这一轮继续沿“细化 `candidate_confidence` 来源”推进。
+
+上一轮之前，`candidate_confidence` 主要依赖：
+- `context_covered_probability`
+- `dominant_signal.posterior_support`
+
+这已经比最初只看单个 dominant signal 更稳，但还不够细，因为它仍然忽略了两个现实问题：
+
+1. 当前动作是不是只靠一个 component 勉强成立
+也就是：
+- dominant signal 看着不弱
+- 但 `progressive / anchor / boundary` 里只有一段站得住
+- 其余 component 几乎没有 posterior 支撑
+
+2. 当前动作的 posterior 上下文是不是过于发散
+也就是：
+- `context_covered_probability` 可能不低
+- 但 `context_candidate_count` 很大
+- 说明是很多局部 hypothesis 一起把它托起来，而不是少量集中上下文稳定支持
+
+所以这一轮的目标是：
+- 不重写当前 decision 框架
+- 继续保留 `candidate_confidence`
+- 但把它从粗糙的双指标，细化成更可解释的局部置信度
+
+二、本轮核心改动
+1. 新增 `BEHAVIOR_MATCH_CONTEXT_COUNT_REFERENCE = 4.0`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 作为 `context_focus` 的基准
+- 用来衡量当前动作的局部 posterior 上下文是否“过散”
+
+当前设计里：
+- context 候选数不大于 4 时，`context_focus` 可以保持在 1 附近
+- 候选数继续升高时，`context_focus` 会按平方根衰减
+
+这意味着：
+- 同样的 covered probability
+- 如果是少量上下文集中支撑，可信度更高
+- 如果是大量上下文稀释支撑，可信度更低
+
+2. 把 `candidate_confidence` 拆成 breakdown
+新增方法：
+- `_behavior_match_candidate_confidence_breakdown(...)`
+- `_behavior_match_component_support(...)`
+- `_behavior_match_context_focus(...)`
+
+其中：
+- `component_support`
+  - 读取 `progressive / anchor / boundary` 三段的 `posterior_support`
+  - 做平均，反映当前动作是不是有更广的 component 级支撑
+- `context_focus`
+  - 从 `context_candidate_count` 推导
+  - 反映当前动作是不是依赖过于发散的局部 hypothesis 集合
+
+新的 `candidate_confidence` 现在综合：
+- dominant signal posterior support
+- context covered probability
+- component support
+- context focus
+
+这一步的意义是：
+- 当前动作不再只看“最强那一个 signal 强不强”
+- 而开始看“是不是多个 component 也在一起支撑”
+- 以及“支撑它的上下文是不是够集中”
+
+3. decision summary 补齐解释字段
+新增输出：
+- `best_behavior_match_component_support`
+- `best_behavior_match_context_focus`
+
+同时 `decision_score_breakdown` 里也新增：
+- `behavior_match_component_support`
+- `behavior_match_context_focus`
+
+这样后面看边界 case 时，可以直接区分：
+- 是 component 支撑太单薄
+- 还是 context 太发散
+- 还是两者都在拖低 `candidate_confidence`
+
+三、本轮收益
+这一轮最大的收益，是把 `candidate_confidence` 从“粗粒度稳定性”推进成了更接近局部结构质量的置信度。
+
+之前的逻辑更像：
+- dominant signal 看起来还行
+- covered probability 也不差
+- 那就给较高 confidence
+
+现在的逻辑变成：
+- dominant signal 不只是自己强
+- 还要看其他 component 有没有共同支撑
+- 同时也要看支撑它的上下文是不是足够集中
+
+换句话说：
+- 之前更偏“这条 signal 本身像不像”
+- 现在更偏“这条 signal 是不是在多个 component 和更聚焦的局部上下文里都站得住”
+
+这让 `candidate_confidence` 更不容易被：
+- 单一 component 偶然抬高
+- 或大量分散 context 稀释出来的表面稳定性
+所误导
+
+四、测试补充
+1. 新增 component support 边界测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_scales_candidate_confidence_by_component_support`
+
+验证内容：
+- 两个动作的 dominant support 和 covered probability 基本一致
+- 唯一关键差别是 component posterior support 是否更完整
+- 结果是：
+  - component 支撑更完整的动作可以继续
+  - 只有单一 boundary 支撑、其余 component 近乎空白的动作会停手
+
+2. 新增 context focus 边界测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_scales_candidate_confidence_by_context_focus`
+
+验证内容：
+- 两个动作的 dominant support、covered probability、component support 都一致
+- 唯一差别是 `context_candidate_count`
+- 结果是：
+  - context 更聚焦的动作可以继续
+  - context 过于发散的动作会停手
+
+3. 固化进 decision 回归 case
+文件：
+- `backend/tests/test_regression_cases.py`
+
+新增回归 case：
+- `sparse_component_support_stop`
+- `diffuse_context_focus_stop`
+
+这样后面如果继续调：
+- confidence 公式
+- component support 权重
+- context focus 基准
+
+都能直接知道有没有把这两类边界改坏。
+
+4. controller summary 字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_match_component_support`
+- `best_behavior_match_context_focus`
+
+避免 controller 输出层漏掉这次新增的解释字段。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 31 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，`candidate_confidence` 的来源已经从：
+
+1. dominant signal posterior support
+2. context covered probability
+
+推进成了：
+
+1. dominant signal posterior support
+2. context covered probability
+3. component support
+4. context focus
+
+也就是说，当前动作 posterior 稳定性现在开始同时受：
+- signal 主支撑
+- component 广度支撑
+- 局部上下文聚焦程度
+
+这三层共同约束。
+
+但边界仍然清楚：
+- 这些信息目前仍然只用于当前回合的 confidence / bonus / rollout pressure
+- 还没有继续深入到“命中后下一手候选动作排序”的内部
+- 也还没有进一步吸收 component 权重强度本身
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 refined `candidate_confidence` 继续接进 post-hit 下一手候选动作排序
+目标：
+- 不只是 stop / continue 边界
+- 也让下一手候选动作本身开始共享这套 refined confidence 约束
+
+2. 让 component support 不只看 posterior support，也看 component weight 强弱
+目标：
+- 不只是“是否被支持”
+- 还要区分“被支持得强不强”
+
+八、一句话总结
+本轮推进的核心成果，是把 `candidate_confidence` 从只看 dominant support 和 covered probability，细化成同时吸收 `component_support` 与 `context_focus` 的局部置信度，让行为层反哺决策时的稳定性判断更细、更稳。

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from math import log2
+from math import log2, sqrt
 from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from app.core.state import (
@@ -1672,6 +1672,7 @@ class DaVinciDecisionEngine:
     BEHAVIOR_MATCH_CONTEXT_TOP_K = 3
     BEHAVIOR_MATCH_DECISION_SCALE = 0.45
     BEHAVIOR_MATCH_SUPPORT_REFERENCE = 0.10
+    BEHAVIOR_MATCH_CONTEXT_COUNT_REFERENCE = 4.0
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -1772,6 +1773,8 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_support": 0.0,
                 "best_behavior_match_decision_bonus": 0.0,
                 "best_behavior_match_candidate_confidence": 0.0,
+                "best_behavior_match_component_support": 0.0,
+                "best_behavior_match_context_focus": 0.0,
                 "best_behavior_rollout_pressure": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
@@ -1788,6 +1791,8 @@ class DaVinciDecisionEngine:
                     "behavior_rollout_pressure": 0.0,
                     "behavior_match_decision_bonus": 0.0,
                     "behavior_match_candidate_confidence": 0.0,
+                    "behavior_match_component_support": 0.0,
+                    "behavior_match_context_focus": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -1833,6 +1838,8 @@ class DaVinciDecisionEngine:
             "best_behavior_match_support": best_move.get("behavior_match_support", 0.0),
             "best_behavior_match_decision_bonus": decision_snapshot["behavior_match_decision_bonus"],
             "best_behavior_match_candidate_confidence": decision_snapshot["behavior_match_candidate_confidence"],
+            "best_behavior_match_component_support": decision_snapshot["behavior_match_component_support"],
+            "best_behavior_match_context_focus": decision_snapshot["behavior_match_context_focus"],
             "best_behavior_rollout_pressure": decision_snapshot["decision_score_breakdown"]["behavior_rollout_pressure"],
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
             "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
@@ -2430,7 +2437,12 @@ class DaVinciDecisionEngine:
         my_hidden_count: int,
     ) -> Dict[str, Any]:
         best_gap = best_move["expected_value"] - (second_move["expected_value"] if second_move else 0.0)
-        behavior_match_candidate_confidence = self._behavior_match_candidate_confidence(best_move=best_move)
+        behavior_match_confidence_breakdown = self._behavior_match_candidate_confidence_breakdown(
+            best_move=best_move,
+        )
+        behavior_match_candidate_confidence = behavior_match_confidence_breakdown["candidate_confidence"]
+        behavior_match_component_support = behavior_match_confidence_breakdown["component_support"]
+        behavior_match_context_focus = behavior_match_confidence_breakdown["context_focus"]
         behavior_match_decision_bonus = self._behavior_match_decision_bonus(
             best_move=best_move,
             candidate_confidence=behavior_match_candidate_confidence,
@@ -2531,6 +2543,8 @@ class DaVinciDecisionEngine:
             "best_gap": best_gap,
             "behavior_match_decision_bonus": behavior_match_decision_bonus,
             "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
+            "behavior_match_component_support": behavior_match_component_support,
+            "behavior_match_context_focus": behavior_match_context_focus,
             "low_confidence_guard": low_confidence_guard,
             "weak_edge_guard": weak_edge_guard,
             "decision_score_breakdown": {
@@ -2543,21 +2557,31 @@ class DaVinciDecisionEngine:
                 "behavior_rollout_pressure": behavior_rollout_pressure,
                 "behavior_match_decision_bonus": behavior_match_decision_bonus,
                 "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
+                "behavior_match_component_support": behavior_match_component_support,
+                "behavior_match_context_focus": behavior_match_context_focus,
             },
         }
 
-    def _behavior_match_candidate_confidence(
+    def _behavior_match_candidate_confidence_breakdown(
         self,
         *,
         best_move: Dict[str, Any],
-    ) -> float:
+    ) -> Dict[str, float]:
         candidate_signal = best_move.get("behavior_candidate_signal")
         if not isinstance(candidate_signal, dict):
-            return 1.0
+            return {
+                "candidate_confidence": 1.0,
+                "component_support": 1.0,
+                "context_focus": 1.0,
+            }
 
         mode = str(candidate_signal.get("mode", ""))
         if mode == "map_context_fallback":
-            return 1.0
+            return {
+                "candidate_confidence": 1.0,
+                "component_support": 1.0,
+                "context_focus": 1.0,
+            }
 
         dominant_signal = candidate_signal.get("dominant_signal", {})
         posterior_support = clamp(
@@ -2570,13 +2594,66 @@ class DaVinciDecisionEngine:
             0.0,
             1.0,
         )
+        component_support = self._behavior_match_component_support(
+            candidate_signal=candidate_signal,
+            dominant_signal_support=posterior_support,
+        )
+        context_focus = self._behavior_match_context_focus(candidate_signal=candidate_signal)
         if (
             mode != "neighbor_top_k_posterior"
             and posterior_support <= 0.0
             and context_covered_probability <= 0.0
         ):
-            return 1.0
-        return 0.5 * (posterior_support + context_covered_probability)
+            return {
+                "candidate_confidence": 1.0,
+                "component_support": 1.0,
+                "context_focus": 1.0,
+            }
+        candidate_confidence = clamp(
+            (0.30 * posterior_support)
+            + (0.30 * context_covered_probability)
+            + (0.25 * component_support)
+            + (0.15 * context_focus),
+            0.0,
+            1.0,
+        )
+        return {
+            "candidate_confidence": candidate_confidence,
+            "component_support": component_support,
+            "context_focus": context_focus,
+        }
+
+    def _behavior_match_component_support(
+        self,
+        *,
+        candidate_signal: Dict[str, Any],
+        dominant_signal_support: float,
+    ) -> float:
+        component_supports = []
+        for component_name in ("progressive", "anchor", "boundary"):
+            component = candidate_signal.get(component_name)
+            if not isinstance(component, dict):
+                continue
+            component_supports.append(
+                clamp(float(component.get("posterior_support", 0.0)), 0.0, 1.0)
+            )
+        if component_supports:
+            return sum(component_supports) / len(component_supports)
+        return dominant_signal_support
+
+    def _behavior_match_context_focus(
+        self,
+        *,
+        candidate_signal: Dict[str, Any],
+    ) -> float:
+        context_candidate_count = max(
+            1.0,
+            float(candidate_signal.get("context_candidate_count", 1.0)),
+        )
+        return min(
+            1.0,
+            sqrt(self.BEHAVIOR_MATCH_CONTEXT_COUNT_REFERENCE / context_candidate_count),
+        )
 
     def _behavior_match_decision_bonus(
         self,
