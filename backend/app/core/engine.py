@@ -1794,6 +1794,10 @@ class DaVinciDecisionEngine:
                 "best_post_hit_stop_score": 0.0,
                 "best_post_hit_continue_margin": 0.0,
                 "best_post_hit_best_gap": 0.0,
+                "best_post_hit_guidance_multiplier": self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER,
+                "best_post_hit_guidance_support": 0.0,
+                "best_post_hit_guidance_stable_ratio": 0.0,
+                "best_post_hit_guidance_signal_count": 0.0,
                 "best_post_hit_top_k_expected_continue_margin": 0.0,
                 "best_post_hit_top_k_continue_margin": 0.0,
                 "best_post_hit_top_k_expected_support_ratio": 0.0,
@@ -1880,6 +1884,10 @@ class DaVinciDecisionEngine:
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
             "best_post_hit_continue_margin": best_move.get("post_hit_continue_margin", 0.0),
             "best_post_hit_best_gap": best_move.get("post_hit_best_gap", 0.0),
+            "best_post_hit_guidance_multiplier": best_move.get("post_hit_guidance_multiplier", self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER),
+            "best_post_hit_guidance_support": best_move.get("post_hit_guidance_support", 0.0),
+            "best_post_hit_guidance_stable_ratio": best_move.get("post_hit_guidance_stable_ratio", 0.0),
+            "best_post_hit_guidance_signal_count": best_move.get("post_hit_guidance_signal_count", 0.0),
             "best_post_hit_top_k_expected_continue_margin": best_move.get("post_hit_top_k_expected_continue_margin", 0.0),
             "best_post_hit_top_k_continue_margin": best_move.get("post_hit_top_k_continue_margin", 0.0),
             "best_post_hit_top_k_expected_support_ratio": best_move.get("post_hit_top_k_expected_support_ratio", 0.0),
@@ -1928,6 +1936,10 @@ class DaVinciDecisionEngine:
         post_hit_should_continue = False
         post_hit_best_gap = 0.0
         post_hit_gap_adjustment = 1.0
+        post_hit_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
+        post_hit_guidance_support = 0.0
+        post_hit_guidance_stable_ratio = 0.0
+        post_hit_guidance_signal_count = 0.0
         post_hit_top_k_expected_continue_margin = 0.0
         post_hit_top_k_continue_margin = 0.0
         post_hit_top_k_expected_support_ratio = 0.0
@@ -2006,6 +2018,10 @@ class DaVinciDecisionEngine:
                 post_hit_continue_margin = post_hit_rollout["continue_margin"]
                 post_hit_should_continue = post_hit_rollout["should_continue"]
                 post_hit_best_gap = post_hit_rollout["best_gap"]
+                post_hit_guidance_multiplier = post_hit_rollout["behavior_guidance_multiplier"]
+                post_hit_guidance_support = post_hit_rollout["behavior_guidance_support"]
+                post_hit_guidance_stable_ratio = post_hit_rollout["behavior_guidance_stable_ratio"]
+                post_hit_guidance_signal_count = post_hit_rollout["behavior_guidance_signal_count"]
                 post_hit_top_k_expected_continue_margin = post_hit_rollout["top_k_expected_continue_margin"]
                 post_hit_top_k_continue_margin = post_hit_rollout["top_k_continue_margin"]
                 post_hit_top_k_expected_support_ratio = post_hit_rollout["top_k_expected_support_ratio"]
@@ -2115,6 +2131,10 @@ class DaVinciDecisionEngine:
             "post_hit_should_continue": post_hit_should_continue,
             "post_hit_best_gap": post_hit_best_gap,
             "post_hit_gap_adjustment": post_hit_gap_adjustment,
+            "post_hit_guidance_multiplier": post_hit_guidance_multiplier,
+            "post_hit_guidance_support": post_hit_guidance_support,
+            "post_hit_guidance_stable_ratio": post_hit_guidance_stable_ratio,
+            "post_hit_guidance_signal_count": post_hit_guidance_signal_count,
             "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
             "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
             "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
@@ -2154,6 +2174,10 @@ class DaVinciDecisionEngine:
                 "post_hit_continue_margin": post_hit_continue_margin,
                 "post_hit_best_gap": post_hit_best_gap,
                 "post_hit_gap_adjustment": post_hit_gap_adjustment,
+                "post_hit_guidance_multiplier": post_hit_guidance_multiplier,
+                "post_hit_guidance_support": post_hit_guidance_support,
+                "post_hit_guidance_stable_ratio": post_hit_guidance_stable_ratio,
+                "post_hit_guidance_signal_count": post_hit_guidance_signal_count,
                 "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
                 "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
                 "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
@@ -2189,6 +2213,7 @@ class DaVinciDecisionEngine:
         post_hit_game_state = None
         post_hit_guess_signals_by_player = guess_signals_by_player
         post_hit_behavior_map_hypothesis = None
+        post_hit_behavior_guidance_profile = behavior_guidance_profile
         if game_state is not None and acting_player_id is not None:
             post_hit_context = self._build_post_hit_behavior_context(
                 game_state=game_state,
@@ -2202,6 +2227,14 @@ class DaVinciDecisionEngine:
             post_hit_game_state = post_hit_context["game_state"]
             post_hit_guess_signals_by_player = post_hit_context["guess_signals_by_player"]
             post_hit_behavior_map_hypothesis = post_hit_context["behavior_map_hypothesis"]
+            post_hit_behavior_guidance_profile = self._rebuild_post_hit_behavior_guidance_profile(
+                base_profile=behavior_guidance_profile,
+                behavior_model=behavior_model,
+                game_state=post_hit_game_state,
+                guess_signals_by_player=post_hit_guess_signals_by_player,
+                behavior_map_hypothesis=post_hit_behavior_map_hypothesis,
+                acting_player_id=acting_player_id,
+            )
         next_moves, next_risk_factor = self.evaluate_all_moves(
             full_probability_matrix=success_matrix,
             my_hidden_count=my_hidden_count,
@@ -2209,7 +2242,7 @@ class DaVinciDecisionEngine:
             behavior_model=behavior_model,
             guess_signals_by_player=post_hit_guess_signals_by_player,
             acting_player_id=acting_player_id,
-            behavior_guidance_profile=behavior_guidance_profile,
+            behavior_guidance_profile=post_hit_behavior_guidance_profile,
             game_state=post_hit_game_state,
             behavior_map_hypothesis=post_hit_behavior_map_hypothesis,
             blocked_slots=set(),
@@ -2260,6 +2293,30 @@ class DaVinciDecisionEngine:
             "stop_score": stop_score,
             "continue_margin": next_summary.get("continue_margin", 0.0),
             "best_gap": next_summary.get("best_gap", 0.0),
+            "behavior_guidance_multiplier": float(
+                (post_hit_behavior_guidance_profile or {}).get(
+                    "guidance_multiplier",
+                    self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER,
+                )
+            ),
+            "behavior_guidance_support": float(
+                (post_hit_behavior_guidance_profile or {}).get(
+                    "average_posterior_support",
+                    0.0,
+                )
+            ),
+            "behavior_guidance_stable_ratio": float(
+                (post_hit_behavior_guidance_profile or {}).get(
+                    "stable_signal_ratio",
+                    0.0,
+                )
+            ),
+            "behavior_guidance_signal_count": float(
+                (post_hit_behavior_guidance_profile or {}).get(
+                    "signal_count",
+                    0.0,
+                )
+            ),
             "top_k_expected_continue_margin": top_k_expected_continue_margin,
             "top_k_continue_margin": top_k_continue_margin,
             "top_k_expected_support_ratio": top_k_expected_support_ratio,
@@ -2323,6 +2380,81 @@ class DaVinciDecisionEngine:
             "guess_signals_by_player": behavior_model.build_guess_signals(post_hit_game_state),
             "behavior_map_hypothesis": self._map_hypothesis_from_matrix(success_matrix),
         }
+
+    def _rebuild_post_hit_behavior_guidance_profile(
+        self,
+        *,
+        base_profile: Optional[Dict[str, float]],
+        behavior_model: BehavioralLikelihoodModel,
+        game_state: GameState,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        behavior_map_hypothesis: Dict[str, Dict[int, Card]],
+        acting_player_id: str,
+    ) -> Dict[str, float]:
+        profile = {
+            "signal_count": float((base_profile or {}).get("signal_count", 0.0)),
+            "average_posterior_support": float((base_profile or {}).get("average_posterior_support", 0.0)),
+            "average_weighted_strength": float((base_profile or {}).get("average_weighted_strength", 0.0)),
+            "stable_signal_ratio": float((base_profile or {}).get("stable_signal_ratio", 0.0)),
+            "guidance_multiplier": float(
+                (base_profile or {}).get(
+                    "guidance_multiplier",
+                    self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER,
+                )
+            ),
+            "source_support_progressive": float((base_profile or {}).get("source_support_progressive", 0.0)),
+            "source_support_same_color_anchor": float((base_profile or {}).get("source_support_same_color_anchor", 0.0)),
+            "source_support_local_boundary": float((base_profile or {}).get("source_support_local_boundary", 0.0)),
+        }
+        acting_signals = guess_signals_by_player.get(acting_player_id, ())
+        if not acting_signals:
+            return profile
+
+        latest_signal = acting_signals[-1]
+        explanation = behavior_model.explain_signal(
+            behavior_map_hypothesis,
+            game_state,
+            latest_signal,
+        )
+        dominant_signal = explanation["value_selection"].get("dominant_signal", {})
+        source = str(dominant_signal.get("source", "neutral"))
+        if source == "neutral":
+            return profile
+
+        source_key = {
+            "progressive": "source_support_progressive",
+            "same_color_anchor": "source_support_same_color_anchor",
+            "local_boundary": "source_support_local_boundary",
+        }.get(source)
+        if source_key is None:
+            return profile
+
+        base_count = max(0.0, profile["signal_count"])
+        new_count = base_count + 1.0
+        resolved_support = 1.0
+        weighted_strength = max(
+            0.0,
+            abs(float(dominant_signal.get("weight", 1.0)) - 1.0),
+        )
+        stable_count = (profile["stable_signal_ratio"] * base_count) + 1.0
+        profile["signal_count"] = new_count
+        profile["average_posterior_support"] = (
+            (profile["average_posterior_support"] * base_count) + resolved_support
+        ) / new_count
+        profile["average_weighted_strength"] = (
+            (profile["average_weighted_strength"] * base_count) + weighted_strength
+        ) / new_count
+        profile["stable_signal_ratio"] = stable_count / new_count
+        profile[source_key] = ((profile[source_key] * base_count) + resolved_support) / new_count
+        profile["guidance_multiplier"] = clamp(
+            0.95
+            + (0.08 * profile["average_posterior_support"])
+            + (0.07 * profile["stable_signal_ratio"])
+            + (0.14 * profile["average_weighted_strength"]),
+            0.93,
+            1.12,
+        )
+        return profile
 
     def _map_hypothesis_from_matrix(
         self,

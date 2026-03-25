@@ -1289,6 +1289,70 @@ class StopThresholdTests(unittest.TestCase):
             fallback_rollout["top_k_continue_margin"],
         )
 
+    def test_post_hit_rollout_rebuilds_guidance_from_confirmed_signal(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=6, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+        success_matrix = {
+            "side": {
+                0: {("W", 5): 0.85, ("W", 7): 0.15},
+            },
+        }
+        neutral_guidance_profile = {
+            "signal_count": 0.0,
+            "average_posterior_support": 0.0,
+            "average_weighted_strength": 0.0,
+            "stable_signal_ratio": 0.0,
+            "guidance_multiplier": 1.0,
+            "source_support_progressive": 0.0,
+            "source_support_same_color_anchor": 0.0,
+            "source_support_local_boundary": 0.0,
+        }
+        guess_signals_by_player = model.build_guess_signals(game_state)
+
+        rollout = engine._evaluate_post_hit_rollout(
+            success_matrix=success_matrix,
+            my_hidden_count=2,
+            behavior_model=model,
+            guess_signals_by_player=guess_signals_by_player,
+            acting_player_id="me",
+            behavior_guidance_profile=neutral_guidance_profile,
+            game_state=game_state,
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("W", 5),
+            rollout_depth=0,
+        )
+
+        self.assertGreater(rollout["behavior_guidance_multiplier"], 1.0)
+        self.assertGreater(rollout["behavior_guidance_signal_count"], 0.0)
+        self.assertGreater(rollout["behavior_guidance_support"], 0.0)
+        self.assertGreater(
+            rollout["top_k_continue_margin"],
+            rollout["top_k_expected_continue_margin"],
+        )
+
     def test_choose_best_move_continues_on_strong_continuation_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

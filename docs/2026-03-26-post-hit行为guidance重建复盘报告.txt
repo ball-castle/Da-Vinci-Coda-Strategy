@@ -1,0 +1,199 @@
+2026-03-26 post-hit 行为 guidance 重建复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《净结构强度接入 post-hit 候选排序复盘报告》的下一步建议，这一轮继续沿第一条分支推进：
+
+- 让 post-hit rollout 内部
+- 开始重建更完整的 behavior guidance profile
+
+上一轮已经做到：
+- 命中后下一手候选动作开始共享 behavior ranking / `net_structure`
+- `top_k_continue_margin` 也开始吃 `ranking_score`
+
+但上一轮之后仍然有一个缺口：
+- post-hit rollout 虽然已经有了近似 state / hypothesis
+- 但 `behavior_guidance_profile` 仍然基本沿用当前轮传下来的旧值
+- 也就是说，命中后新确认出来的行为 signal，还没有真正进入下一手 guidance
+
+所以这一轮的目标是：
+- 不一口气重跑整套 post-hit behavior debug
+- 先做一个更小、更稳的闭环
+- 让命中后新确认的 signal，开始显式更新 rollout guidance
+
+二、本轮核心改动
+1. `_evaluate_post_hit_rollout(...)` 不再只复用旧 guidance
+位置：
+- `backend/app/core/engine.py`
+
+本轮之后，post-hit rollout 在构造完：
+- `post_hit_game_state`
+- `post_hit_guess_signals_by_player`
+- `post_hit_behavior_map_hypothesis`
+
+之后，不再直接把当前轮的 `behavior_guidance_profile` 原样往下传，
+而是会先尝试重建一版 post-hit guidance。
+
+这一步的意义是：
+- 下一手 rollout 不再只沿用“命中前”的行为画像
+- 而是开始吸收“刚刚这次命中”带来的新确认行为证据
+
+2. 新增 `_rebuild_post_hit_behavior_guidance_profile(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 以当前 guidance profile 为 base
+- 取 post-hit 历史中的最新一条 acting-player signal
+- 用 post-hit state + MAP hypothesis 做解释
+- 抽出它的 dominant signal
+- 然后把这条已确认 signal 合并回新的 guidance profile
+
+当前合并内容包括：
+- `signal_count`
+- `average_posterior_support`
+- `average_weighted_strength`
+- `stable_signal_ratio`
+- `source_support_*`
+- `guidance_multiplier`
+
+这一步的关键点是：
+- 现在 post-hit guidance 已经不再是纯静态复用
+- 而是开始随着“新命中的已确认 signal”发生更新
+
+3. 当前实现采用“confirmed signal 增量重建”而不是“整套 debug 全量重跑”
+这是本轮有意采取的保守边界。
+
+当前不是：
+- 对 post-hit 所有历史 guess 再做一遍完整 posterior 聚合解释
+
+而是：
+- 先把最新一条 confirmed signal 增量合并进 guidance
+
+这样做的好处是：
+- 风险更低
+- 影响路径清晰
+- 测试更容易锁住
+
+它的工程意义在于：
+- 先把桥搭上
+- 再考虑下一轮是否把 post-hit guidance 继续推进成更完整的 posterior 重建
+
+4. rollout 返回值 / move / summary 补齐 post-hit guidance 字段
+新增输出：
+- `post_hit_guidance_multiplier`
+- `post_hit_guidance_support`
+- `post_hit_guidance_stable_ratio`
+- `post_hit_guidance_signal_count`
+
+`decision_summary` 同步新增：
+- `best_post_hit_guidance_multiplier`
+- `best_post_hit_guidance_support`
+- `best_post_hit_guidance_stable_ratio`
+- `best_post_hit_guidance_signal_count`
+
+这样现在回看一轮 continuation 时，可以直接分清：
+- 当前轮 guidance 是多少
+- post-hit guidance 有没有被新确认 signal 推高
+- 这个推高最终有没有改变下一手 rollout 支撑
+
+三、本轮收益
+这一轮最大的收益，是让 post-hit rollout 的行为画像第一次开始随“命中后的新确认行为信号”更新。
+
+之前的结构更像：
+- 当前轮有一份 guidance
+- 下一手 rollout 直接沿用
+
+这会带来一个问题：
+- 当前这一手如果刚好验证了某类稳定 signal
+- rollout 内部却还在用命中前的旧 guidance
+
+这轮之后变成：
+- 当前轮 guidance 仍然是 base
+- 但命中后新增 confirmed signal 会把 post-hit guidance 往新状态推一步
+
+换句话说：
+- 之前更像“rollout guidance 静态继承”
+- 现在更像“rollout guidance 开始动态吸收已确认行为证据”
+
+这让 post-hit continuation 的行为约束更接近真实回合推进过程。
+
+四、测试补充
+1. 新增 post-hit guidance 重建测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_post_hit_rollout_rebuilds_guidance_from_confirmed_signal`
+
+验证内容：
+- base guidance 完全中性
+- 当前命中动作本身形成明确的 anchor 类 confirmed signal
+- 进入 post-hit rollout 后
+  - `behavior_guidance_multiplier` 会高于 1.0
+  - `behavior_guidance_signal_count` 会大于 0
+  - `behavior_guidance_support` 会大于 0
+  - `top_k_continue_margin` 会高于纯 EV 视角
+
+这条测试的价值在于，它锁住了：
+- post-hit guidance 不是继续吃旧 profile
+- 而是真的开始吸收新确认 signal
+
+2. controller 输出字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_post_hit_guidance_multiplier`
+- `best_post_hit_guidance_support`
+- `best_post_hit_guidance_stable_ratio`
+- `best_post_hit_guidance_signal_count`
+- `post_hit_guidance_multiplier`
+- `post_hit_guidance_support`
+- `post_hit_guidance_stable_ratio`
+- `post_hit_guidance_signal_count`
+
+避免 controller 输出层把这次新增的 post-hit guidance 字段漏掉。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 40 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit continuation 已经开始共享三层行为约束：
+
+1. 当前轮 guidance
+2. 命中后下一手的 behavior ranking / `net_structure`
+3. 命中后新增 confirmed signal 对 guidance 的增量更新
+
+也就是说：
+- 当前动作像不像
+- 下一手结构稳不稳
+- 命中后行为画像有没有被新证据修正
+
+现在都已经开始进入同一条 rollout 链路。
+
+但边界仍然清楚：
+- 这轮还是“增量 guidance 重建”
+- 不是完整的 post-hit posterior guidance 重建
+- 也还没有把这份新 guidance 更直接反馈回当前 stop / continue pressure
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 post-hit guidance 从“confirmed signal 增量重建”推进到“更完整的 posterior guidance 重建”
+目标：
+- 不只吃最新一条 confirmed signal
+- 也让 post-hit 整段行为历史重新做更完整聚合
+
+2. 把 post-hit 的 ranking-aware support 和新 guidance 更直接反馈回当前 stop / continue pressure
+目标：
+- 不只是间接通过 continuation value 传回来
+- 而是让当前边界显式看到 post-hit 行为支撑到底有多稳
+
+八、一句话总结
+本轮推进的核心成果，是让 post-hit rollout 的 behavior guidance 不再只是静态继承当前轮 profile，而是开始吸收“刚刚命中后新确认的行为 signal”，让下一手续压评估第一次具备了增量更新的行为画像。
