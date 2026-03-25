@@ -1437,6 +1437,14 @@ class StopThresholdTests(unittest.TestCase):
             len(rollout["guidance_debug"]["signal_summaries"]),
             int(rollout["guidance_debug"]["acting_signal_count"]),
         )
+        self.assertGreater(
+            rollout["guidance_debug"]["rebuilt_delta_from_base"]["signal_count"],
+            0.0,
+        )
+        self.assertGreater(
+            rollout["guidance_debug"]["blended_delta_from_base"]["guidance_multiplier"],
+            0.0,
+        )
 
     def test_choose_best_move_uses_post_hit_behavior_support_adjustment_on_narrow_edge(self):
         engine = DaVinciDecisionEngine()

@@ -1,0 +1,185 @@
+2026-03-26 post-hit guidance profile delta 输出复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《post-hit 支撑项下沉到候选动作级复盘报告》的第一条下一步建议，这一轮继续加强 post-hit guidance rebuild 的可读性，把 `base_profile / rebuilt_profile / blended_profile` 之间的差值直接输出出来。
+
+上一轮已经可以直接看到三份 profile：
+
+- `base_profile`
+- `rebuilt_profile`
+- `blended_profile`
+
+但复盘时仍然有一个明显问题：
+
+- 需要人眼手动对照三份 profile
+- 才能知道 rebuild 到底把什么推高了、把什么压低了
+
+所以这一轮的目标是：
+
+- 直接输出 profile delta
+- 让 rebuild 的影响变成一眼可读
+
+二、本轮核心改动
+1. 新增 `_behavior_guidance_profile_delta(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 计算两份 behavior guidance profile 之间的数值差
+
+当前覆盖字段包括：
+
+- `signal_count`
+- `average_posterior_support`
+- `average_weighted_strength`
+- `stable_signal_ratio`
+- `guidance_multiplier`
+- `source_support_progressive`
+- `source_support_same_color_anchor`
+- `source_support_local_boundary`
+
+这一步的意义是：
+- 之后不需要手动做 profile 对照
+- rebuild 相对 base 的变化量可以直接读
+
+2. `post_hit_guidance_debug` 新增两组 delta 输出
+位置：
+- `backend/app/core/engine.py`
+- `backend/tests/test1.py`
+- `backend/tests/test2.py`
+
+本轮新增：
+
+- `rebuilt_delta_from_base`
+- `blended_delta_from_base`
+
+其中：
+
+- `rebuilt_delta_from_base`
+  - 表示纯 rebuild 相对 base guidance 改了多少
+
+- `blended_delta_from_base`
+  - 表示与 base 融合后，最终 profile 相对 base 留下了多少净变化
+
+这让现在的 debug 结构从：
+
+- 只输出三份 profile
+
+推进成了：
+
+- 三份 profile
+- 再加两份差值摘要
+
+3. 默认 debug 结构补齐 delta 空值
+位置：
+- `backend/app/core/engine.py`
+
+本轮同时把默认 `post_hit_guidance_debug` 也补齐了 delta 字段，
+避免出现：
+
+- rebuild 没发生时字段缺失
+- 外部还要额外判断对象结构
+
+于是现在无论 rebuild 是否发生，
+`post_hit_guidance_debug` 的结构都是完整一致的。
+
+三、本轮收益
+这一轮最大的收益，是把 post-hit guidance rebuild 从“能看见三份 profile”，推进成了“能直接看见变化量”。
+
+现在面对一个 candidate 或 best move，
+可以直接回答：
+
+1. rebuild 比 base 多了多少 signal
+2. `guidance_multiplier` 被推高了多少
+3. 哪个 source support 被明显抬高
+4. rebuild 的变化有多少真正保留到了 blended profile
+
+这会直接降低复盘的认知成本。
+
+之前如果 guidance 有变化，
+你需要：
+
+- 先看 base
+- 再看 rebuilt
+- 再看 blended
+- 最后自己心算差值
+
+现在可以直接读 delta。
+
+四、测试补充
+1. full-history rebuild delta 回归
+文件：
+- `backend/tests/test2.py`
+
+增强测试：
+- `test_post_hit_rollout_rebuilds_guidance_from_full_post_hit_signal_history`
+
+新增验证：
+
+- `rebuilt_delta_from_base["signal_count"] > 0`
+- `blended_delta_from_base["guidance_multiplier"] > 0`
+
+这条测试锁住的是：
+- delta 字段不仅存在
+- 而且在真实 rebuild 链路里确实反映出了正向变化
+
+2. controller 输出结构回归
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `post_hit_guidance_debug` 内包含
+  - `rebuilt_delta_from_base`
+  - `blended_delta_from_base`
+
+这保证了外层 top moves 现在也可以直接读这些差值。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 42 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit guidance rebuild 的 debug 能力已经变成：
+
+1. 输入侧
+- `signal_summaries`
+- `augmented_known_slots`
+
+2. profile 侧
+- `base_profile`
+- `rebuilt_profile`
+- `blended_profile`
+
+3. delta 侧
+- `rebuilt_delta_from_base`
+- `blended_delta_from_base`
+
+也就是说：
+- 现在不仅知道 guidance 是怎么重建出来的
+- 还知道重建后到底改变了什么
+
+但边界仍然存在：
+
+- 这些信息目前主要还在 move 级 debug 对象里
+- `decision_summary` 还没有 best move 的轻量 rebuild 摘要
+
+七、下一步建议
+下一轮可以优先沿两个方向继续推进：
+
+1. 给 `decision_summary` 增加 best move 的 post-hit rebuild 轻量摘要
+目标：
+- 不展开完整 debug
+- 也能快速看到是否 rebuild、用了几条 signal、增强了几个 confirmed slot、multiplier 净增多少
+
+2. 给 delta 增加方向标签或主导变化摘要
+目标：
+- 不只输出数值变化
+- 还直接标记“本轮 rebuild 主要强化 progressive / anchor / boundary 哪一类支撑”
+
+八、一句话总结
+本轮推进的核心成果，是给 post-hit guidance rebuild 补上了 `rebuilt_delta_from_base` 和 `blended_delta_from_base`，让这条链路从“能看到三份 profile”进一步推进到了“能直接看到 rebuild 改变了什么”的可读状态。

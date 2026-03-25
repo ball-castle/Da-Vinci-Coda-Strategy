@@ -811,6 +811,14 @@ class GameControllerOutputTests(unittest.TestCase):
             self.assertIn("post_hit_behavior_support_adjustment", result["top_moves"][0])
             self.assertIn("post_hit_behavior_support_gain", result["top_moves"][0])
             self.assertIn("post_hit_behavior_fragility_drag", result["top_moves"][0])
+            self.assertIn(
+                "rebuilt_delta_from_base",
+                result["top_moves"][0]["post_hit_guidance_debug"],
+            )
+            self.assertIn(
+                "blended_delta_from_base",
+                result["top_moves"][0]["post_hit_guidance_debug"],
+            )
             self.assertIn("post_hit_top_k_expected_continue_margin", result["top_moves"][0])
             self.assertIn("post_hit_top_k_continue_margin", result["top_moves"][0])
             self.assertIn("post_hit_top_k_expected_support_ratio", result["top_moves"][0])

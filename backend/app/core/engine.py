@@ -2530,6 +2530,14 @@ class DaVinciDecisionEngine:
             "base_profile": dict(fallback_profile),
             "rebuilt_profile": dict(rebuilt_profile),
             "blended_profile": dict(blended_profile),
+            "rebuilt_delta_from_base": self._behavior_guidance_profile_delta(
+                base_profile=fallback_profile,
+                updated_profile=rebuilt_profile,
+            ),
+            "blended_delta_from_base": self._behavior_guidance_profile_delta(
+                base_profile=fallback_profile,
+                updated_profile=blended_profile,
+            ),
         }
         return {
             "profile": blended_profile,
@@ -2602,6 +2610,14 @@ class DaVinciDecisionEngine:
                 "source_support_local_boundary": 0.0,
             },
             "blended_profile": dict(base_profile or {}),
+            "rebuilt_delta_from_base": self._behavior_guidance_profile_delta(
+                base_profile=base_profile or {},
+                updated_profile=None,
+            ),
+            "blended_delta_from_base": self._behavior_guidance_profile_delta(
+                base_profile=base_profile or {},
+                updated_profile=base_profile or {},
+            ),
         }
 
     def _summarize_guidance_rebuild_signals(
@@ -2630,6 +2646,28 @@ class DaVinciDecisionEngine:
                 }
             )
         return signal_summaries
+
+    def _behavior_guidance_profile_delta(
+        self,
+        *,
+        base_profile: Dict[str, float],
+        updated_profile: Optional[Dict[str, float]],
+    ) -> Dict[str, float]:
+        keys = (
+            "signal_count",
+            "average_posterior_support",
+            "average_weighted_strength",
+            "stable_signal_ratio",
+            "guidance_multiplier",
+            "source_support_progressive",
+            "source_support_same_color_anchor",
+            "source_support_local_boundary",
+        )
+        reference_profile = updated_profile or {}
+        return {
+            key: float(reference_profile.get(key, 0.0)) - float(base_profile.get(key, 0.0))
+            for key in keys
+        }
 
     def _blend_behavior_guidance_profiles(
         self,
