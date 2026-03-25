@@ -1807,6 +1807,7 @@ class DaVinciDecisionEngine:
                 "best_post_hit_guidance_rebuild_signal_count": 0.0,
                 "best_post_hit_guidance_augmented_slot_count": 0.0,
                 "best_post_hit_guidance_multiplier_delta": 0.0,
+                "best_post_hit_guidance_source_shift": "neutral",
                 "best_post_hit_top_k_expected_continue_margin": 0.0,
                 "best_post_hit_top_k_continue_margin": 0.0,
                 "best_post_hit_top_k_expected_support_ratio": 0.0,
@@ -1922,6 +1923,10 @@ class DaVinciDecisionEngine:
                 "post_hit_guidance_debug",
                 {},
             ).get("blended_delta_from_base", {}).get("guidance_multiplier", 0.0),
+            "best_post_hit_guidance_source_shift": best_move.get(
+                "post_hit_guidance_debug",
+                {},
+            ).get("blended_dominant_source_shift", "neutral"),
             "best_post_hit_top_k_expected_continue_margin": best_move.get("post_hit_top_k_expected_continue_margin", 0.0),
             "best_post_hit_top_k_continue_margin": best_move.get("post_hit_top_k_continue_margin", 0.0),
             "best_post_hit_top_k_expected_support_ratio": best_move.get("post_hit_top_k_expected_support_ratio", 0.0),
@@ -2557,6 +2562,18 @@ class DaVinciDecisionEngine:
                 base_profile=fallback_profile,
                 updated_profile=blended_profile,
             ),
+            "rebuilt_dominant_source_shift": self._dominant_guidance_source_shift(
+                self._behavior_guidance_profile_delta(
+                    base_profile=fallback_profile,
+                    updated_profile=rebuilt_profile,
+                )
+            ),
+            "blended_dominant_source_shift": self._dominant_guidance_source_shift(
+                self._behavior_guidance_profile_delta(
+                    base_profile=fallback_profile,
+                    updated_profile=blended_profile,
+                )
+            ),
         }
         return {
             "profile": blended_profile,
@@ -2637,6 +2654,8 @@ class DaVinciDecisionEngine:
                 base_profile=base_profile or {},
                 updated_profile=base_profile or {},
             ),
+            "rebuilt_dominant_source_shift": "neutral",
+            "blended_dominant_source_shift": "neutral",
         }
 
     def _summarize_guidance_rebuild_signals(
@@ -2687,6 +2706,23 @@ class DaVinciDecisionEngine:
             key: float(reference_profile.get(key, 0.0)) - float(base_profile.get(key, 0.0))
             for key in keys
         }
+
+    def _dominant_guidance_source_shift(
+        self,
+        delta_profile: Dict[str, float],
+    ) -> str:
+        source_key_mapping = {
+            "progressive": float(delta_profile.get("source_support_progressive", 0.0)),
+            "same_color_anchor": float(delta_profile.get("source_support_same_color_anchor", 0.0)),
+            "local_boundary": float(delta_profile.get("source_support_local_boundary", 0.0)),
+        }
+        dominant_source, dominant_delta = max(
+            source_key_mapping.items(),
+            key=lambda item: (item[1], item[0]),
+        )
+        if dominant_delta <= 0.0:
+            return "neutral"
+        return dominant_source
 
     def _blend_behavior_guidance_profiles(
         self,

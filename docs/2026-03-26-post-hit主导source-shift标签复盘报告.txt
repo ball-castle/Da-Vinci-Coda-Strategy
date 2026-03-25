@@ -1,0 +1,168 @@
+2026-03-26 post-hit 主导 source-shift 标签复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《best move post-hit 重建摘要接入 summary 复盘报告》的第一条下一步建议，这一轮继续把 post-hit rebuild 的 delta 从“纯数值”推进到“带方向标签”的可读结构。
+
+上一轮之后，虽然已经能看到：
+
+- `rebuilt_delta_from_base`
+- `blended_delta_from_base`
+
+但仍然要自己看三条 source support 的变化量，才能判断：
+
+- 这次 rebuild 主要强化的是 `progressive`
+- 还是 `same_color_anchor`
+- 还是 `local_boundary`
+
+所以这一轮的目标是：
+
+- 直接输出主导 source-shift 标签
+- 让 summary 和 debug 都能一眼看出这次 rebuild 的主要强化方向
+
+二、本轮核心改动
+1. 新增 `_dominant_guidance_source_shift(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 从 profile delta 中提取 source support 变化最大的方向
+
+当前比较的来源包括：
+
+- `progressive`
+- `same_color_anchor`
+- `local_boundary`
+
+规则是：
+
+- 取 delta 最大的 source support
+- 如果最大变化量仍然不大于 0，则标为 `neutral`
+
+这样 post-hit rebuild 的方向性就不再需要人眼去读三条数值。
+
+2. `post_hit_guidance_debug` 新增 source-shift 标签
+位置：
+- `backend/app/core/engine.py`
+- `backend/tests/test1.py`
+- `backend/tests/test2.py`
+
+本轮新增：
+
+- `rebuilt_dominant_source_shift`
+- `blended_dominant_source_shift`
+
+分别表示：
+
+- 纯 rebuild 相对 base 的主导变化方向
+- blended profile 相对 base 的主导净变化方向
+
+这使得当前 debug 对象除了有原始 delta 外，
+还第一次具备了方向标签。
+
+3. `decision_summary` 新增 best move 的 source-shift 摘要
+位置：
+- `backend/app/core/engine.py`
+- `backend/tests/test1.py`
+
+本轮新增：
+
+- `best_post_hit_guidance_source_shift`
+
+它读取的是 best move 的：
+
+- `post_hit_guidance_debug["blended_dominant_source_shift"]`
+
+这意味着现在不展开完整 debug，
+只看 best move 的 summary，
+也能直接知道这次 post-hit rebuild 主要偏向哪类支撑。
+
+三、本轮收益
+这一轮最大的收益，是把 post-hit rebuild 的 profile delta 从“只能看数值”，推进成了“数值 + 主导方向标签”。
+
+现在面对一个 move 或 best move，
+可以更快回答：
+
+1. rebuild 主要强化的是哪类 source support
+2. 融合回 base 之后，最终保留下来的主导方向是什么
+
+这会直接提升两类工作效率：
+
+- 复盘时的快速阅读
+- 后续规则调参时的归因判断
+
+因为很多时候你并不需要先看精确数值，
+只想先知道：
+
+- 这次像是 progressive-driven
+- 还是 anchor-driven
+- 还是 boundary-driven
+
+这一轮之后，已经可以直接回答这个问题。
+
+四、测试补充
+1. full-history rebuild 标签回归
+文件：
+- `backend/tests/test2.py`
+
+增强测试：
+- `test_post_hit_rollout_rebuilds_guidance_from_full_post_hit_signal_history`
+
+新增验证：
+- `blended_dominant_source_shift` 落在允许集合内
+
+这条测试锁住的是：
+- rebuild debug 不只是 delta 数值存在
+- 主导方向标签也会稳定产出
+
+2. controller summary / move 输出回归
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+
+- `decision_summary` 包含 `best_post_hit_guidance_source_shift`
+- `post_hit_guidance_debug` 包含
+  - `rebuilt_dominant_source_shift`
+  - `blended_dominant_source_shift`
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 42 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit rebuild 的解释结构已经有三层可读性：
+
+1. 原始 profile
+2. profile delta
+3. 主导 source-shift 标签
+
+也就是说：
+- 现在不仅能看到 rebuild 改了什么
+- 还能够更快知道“主要往哪个方向改”
+
+但边界仍然存在：
+
+- 当前 source-shift 只给出单个主导标签
+- 还没有给出“变化强度摘要”
+- 也还没有把 support_gain / fragility_drag 与 source-shift 直接联动成一句更高层解释
+
+七、下一步建议
+下一轮可以优先沿两个方向继续推进：
+
+1. 给 source-shift 增加强度摘要
+目标：
+- 不只知道方向
+- 还知道这次主导变化到底是轻微、中等还是强烈
+
+2. 给 best move summary 增加一句式 post-hit rebuild 解释
+目标：
+- 例如“post-hit rebuild 主要强化 progressive，净提升 multiplier 0.03”
+- 让日志和人工复盘更省心
+
+八、一句话总结
+本轮推进的核心成果，是给 post-hit guidance rebuild 的 delta 补上了主导 `source-shift` 标签，让这条链路从“数值可读”进一步推进到了“方向可读”，并把这个标签直接接进了 best move 的 `decision_summary`。
