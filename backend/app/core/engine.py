@@ -931,9 +931,11 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_WEAK_CONTINUATION = 0.16
     STOP_MARGIN_WEAK_EDGE = 0.22
     STOP_MARGIN_WEAK_ROLLOUT = 0.24
+    STOP_MARGIN_FRAGILE_POST_HIT = 0.18
     STOP_MARGIN_LOW_ATTACKABILITY = 0.18
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
+    POST_HIT_GAP_REFERENCE = 0.22
     LOW_CONFIDENCE_GUARD_MARGIN = 0.22
     WEAK_EDGE_GUARD_MARGIN = 0.18
     ATTACKABILITY_REFERENCE = BehavioralLikelihoodModel.ATTACKABILITY_TIGHT_THRESHOLD
@@ -1030,6 +1032,7 @@ class DaVinciDecisionEngine:
                     "base_stop_threshold": stop_threshold,
                     "edge_pressure": 0.0,
                     "rollout_pressure": 0.0,
+                    "fragile_rollout_pressure": 0.0,
                     "attackability_pressure": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
@@ -1070,6 +1073,7 @@ class DaVinciDecisionEngine:
             "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
             "best_post_hit_continue_margin": best_move.get("post_hit_continue_margin", 0.0),
+            "best_post_hit_best_gap": best_move.get("post_hit_best_gap", 0.0),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -1109,6 +1113,8 @@ class DaVinciDecisionEngine:
         post_hit_stop_score = 0.0
         post_hit_continue_margin = 0.0
         post_hit_should_continue = False
+        post_hit_best_gap = 0.0
+        post_hit_gap_adjustment = 1.0
 
         success_matrix = self._success_posterior(full_probability_matrix, player_id, slot_index, card)
         if success_matrix:
@@ -1138,10 +1144,17 @@ class DaVinciDecisionEngine:
                 post_hit_stop_score = post_hit_rollout["stop_score"]
                 post_hit_continue_margin = post_hit_rollout["continue_margin"]
                 post_hit_should_continue = post_hit_rollout["should_continue"]
+                post_hit_best_gap = post_hit_rollout["best_gap"]
+                if post_hit_continue_margin > 0.0 and post_hit_best_gap < self.POST_HIT_GAP_REFERENCE:
+                    post_hit_gap_adjustment = max(
+                        0.35,
+                        post_hit_best_gap / self.POST_HIT_GAP_REFERENCE,
+                    )
                 post_hit_continuation_value = (
                     self.CONTINUATION_DISCOUNT
                     * continuation_likelihood
                     * max(0.0, post_hit_continue_margin)
+                    * post_hit_gap_adjustment
                 )
                 continuation_value = probability * post_hit_continuation_value
 
@@ -1169,6 +1182,8 @@ class DaVinciDecisionEngine:
             "post_hit_stop_score": post_hit_stop_score,
             "post_hit_continue_margin": post_hit_continue_margin,
             "post_hit_should_continue": post_hit_should_continue,
+            "post_hit_best_gap": post_hit_best_gap,
+            "post_hit_gap_adjustment": post_hit_gap_adjustment,
             "history_continue_rate": history_continue_rate,
             "hit_reward": hit_reward,
             "miss_penalty": miss_penalty,
@@ -1185,6 +1200,8 @@ class DaVinciDecisionEngine:
                 "post_hit_continue_score": post_hit_continue_score,
                 "post_hit_stop_score": post_hit_stop_score,
                 "post_hit_continue_margin": post_hit_continue_margin,
+                "post_hit_best_gap": post_hit_best_gap,
+                "post_hit_gap_adjustment": post_hit_gap_adjustment,
             },
             "recommendation_reason": self._build_reason(
                 probability,
@@ -1227,6 +1244,7 @@ class DaVinciDecisionEngine:
             "continue_score": next_summary.get("continue_score", 0.0),
             "stop_score": next_summary.get("stop_score", next_summary.get("stop_threshold", 0.0)),
             "continue_margin": next_summary.get("continue_margin", 0.0),
+            "best_gap": next_summary.get("best_gap", 0.0),
         }
 
     def _hidden_index_by_player_from_matrix(
@@ -1265,6 +1283,17 @@ class DaVinciDecisionEngine:
                 (-post_hit_continue_margin) / self.ROLLOUT_MARGIN_REFERENCE,
             )
 
+        post_hit_best_gap = best_move.get("post_hit_best_gap", 0.0)
+        fragile_rollout_pressure = 0.0
+        if (
+            best_move.get("post_hit_stop_score", 0.0) > 0.0
+            and post_hit_continue_margin > 0.0
+            and post_hit_best_gap < self.POST_HIT_GAP_REFERENCE
+        ):
+            fragile_rollout_pressure = self.STOP_MARGIN_FRAGILE_POST_HIT * (
+                (self.POST_HIT_GAP_REFERENCE - max(0.0, post_hit_best_gap)) / self.POST_HIT_GAP_REFERENCE
+            )
+
         attackability_after_hit = best_move.get("attackability_after_hit", 0.0)
         attackability_pressure = 0.0
         if best_move.get("post_hit_stop_score", 0.0) <= 0.0 and attackability_after_hit < self.ATTACKABILITY_REFERENCE:
@@ -1273,7 +1302,7 @@ class DaVinciDecisionEngine:
                 / max(self.ATTACKABILITY_REFERENCE, 1e-9)
             )
 
-        stop_score = stop_threshold + edge_pressure + rollout_pressure + attackability_pressure
+        stop_score = stop_threshold + edge_pressure + rollout_pressure + fragile_rollout_pressure + attackability_pressure
         continue_score = best_move["expected_value"]
         continue_margin = continue_score - stop_score
 
@@ -1306,6 +1335,7 @@ class DaVinciDecisionEngine:
                 "base_stop_threshold": stop_threshold,
                 "edge_pressure": edge_pressure,
                 "rollout_pressure": rollout_pressure,
+                "fragile_rollout_pressure": fragile_rollout_pressure,
                 "attackability_pressure": attackability_pressure,
             },
         }

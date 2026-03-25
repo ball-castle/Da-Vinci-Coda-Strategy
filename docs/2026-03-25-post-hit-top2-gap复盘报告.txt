@@ -1,0 +1,152 @@
+3/25-post-hit-top2-gap复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 11:25:03 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的下一步建议推进：
+
+把 post-hit rollout 从“下一手 continue_margin 是正是负”
+继续推进到
+“下一手的 top-2 候选质量差是不是足够稳”。
+
+也就是说，这轮开始处理一个更细的问题：
+- 命中后下一手看起来还能继续
+- 但如果那一手只是靠一个非常脆的唯一答案撑起来
+
+那么当前这手是否还应该把这部分价值算得那么乐观？
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+- backend/tests/test2.py
+
+具体推进如下：
+
+1. post-hit rollout 新增 best_gap 输出
+本轮让 `_evaluate_post_hit_rollout(...)` 不再只返回：
+- continue_score
+- stop_score
+- continue_margin
+
+还额外返回：
+- best_gap
+
+它代表：
+- 命中后下一手的最佳动作
+- 与次优动作之间的 expected_value 差距
+
+这样，当前动作第一次不仅知道：
+- 命中后还能不能继续
+
+还开始知道：
+- 命中后的继续建议是不是建立在一个脆弱、易翻转的单点答案上
+
+2. continuation value 引入 gap 调整
+本轮新增：
+- post_hit_best_gap
+- post_hit_gap_adjustment
+
+当命中后下一手虽然 `continue_margin > 0`，
+但 `best_gap` 很小的时候，
+系统会主动压低当前动作的 `post_hit_continuation_value`。
+
+这意味着：
+- 并不是只要命中后还能勉强继续，就给当前动作加同样多的 continuation 分
+- 而是会区分“稳的可续压”与“脆的可续压”
+
+3. stop_score 新增 fragile_rollout_pressure
+本轮在 `decision_score_breakdown` 中新增：
+- fragile_rollout_pressure
+
+其含义是：
+- 命中后下一手虽然表面上还能继续
+- 但最佳动作与次优动作差距过小
+- 说明这条续压链路的稳定性不足
+
+这种情况下，系统会显式抬高当前 stop_score。
+
+这样本轮的 stop_score 已经不再只分：
+- 负的 post-hit margin
+- 低 attackability
+
+还开始区分：
+- 正的 post-hit margin，但质量差距过窄
+
+4. 候选动作解释字段继续扩展
+本轮为 move 新增：
+- post_hit_best_gap
+- post_hit_gap_adjustment
+
+因此后续做 case review 时，可以直接看出：
+- 命中后下一手到底是不是一个稳定优势
+- 这部分 continuation value 有没有因为 gap 过小而被打折
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. controller 输出包含新的 post-hit gap 字段
+验证 top_move 中已经可以看到：
+- post_hit_best_gap
+
+2. 强 continuation edge 且 post-hit gap 稳定时仍然继续
+验证高 continuation likelihood、高 continuation margin 且 `best_gap` 足够稳定时，系统仍然会给继续建议。
+
+3. fragile positive margin 会触发 fragile_rollout_pressure
+新增测试覆盖：
+- post-hit continue_margin 仍然为正
+- 但 post-hit best_gap 极小
+
+此时系统会通过 `fragile_rollout_pressure` 抬高当前 stop_score，并最终建议停手。
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 9 个测试全部通过
+
+四、本轮解决了什么问题
+1. post-hit rollout 不再只看“能否继续”，开始看“能否稳定继续”
+这是本轮最大的推进。
+
+过去的隐含风险是：
+- 命中后只要还有一手略微可打
+- continuation value 就可能偏乐观
+
+本轮之后，系统开始识别：
+- 这是不是一个真正稳定的 follow-up
+- 还是一个很容易被次优动作反超的脆弱结论
+
+2. continuation value 的保守性进一步提升
+通过 gap 调整之后，
+当前动作获得的 continuation 加分，更接近：
+- 命中后下一手的真实可兑现度
+
+而不是单纯基于“存在一个最优动作”就默认这条链路可靠。
+
+3. should_stop 更接近真实控回合逻辑
+这轮之后，当前 stop_score 已经同时受到：
+- 当前动作质量
+- post-hit continue_margin
+- post-hit top-2 gap 稳定性
+- 风险敞口
+共同影响。
+
+这比上一轮只看 post-hit margin 又更接近真实策略判断。
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 建立一组固定 case 集，专门回归：
+- fragile positive margin
+- strong positive margin
+- negative post-hit margin
+- high-risk endgame stop
+
+2. 继续把行为层从 heuristic 近似推进成更完整的动作似然模型
+
+3. 如果性能允许，再把 rollout 从单个 best move 扩展到更轻量的 top-k follow-up 聚合
+
+六、一句话总结
+本轮推进的核心成果，是让系统第一次能区分“命中后还能继续”和“命中后能稳定继续”，把 post-hit top-2 gap 真正接进 continuation value 和 stop_score，让 should_stop 对脆弱续压链路更敏感。

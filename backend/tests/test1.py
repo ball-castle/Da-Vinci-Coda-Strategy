@@ -180,6 +180,7 @@ class GameControllerOutputTests(unittest.TestCase):
             self.assertIn("post_hit_continue_score", result["top_moves"][0])
             self.assertIn("post_hit_stop_score", result["top_moves"][0])
             self.assertIn("post_hit_continue_margin", result["top_moves"][0])
+            self.assertIn("post_hit_best_gap", result["top_moves"][0])
 
 
 if __name__ == "__main__":
