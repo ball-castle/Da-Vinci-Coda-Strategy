@@ -1,0 +1,152 @@
+3/25-动作似然player-slot结构化复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 20:55:20 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的下一步建议推进：
+
+继续把行为层从 heuristic 近似推进成更完整的动作似然模型。
+
+这一轮不再继续往更深 rollout 抢跑，
+而是回到行为建模本身，补上此前一直缺的两块：
+- 为什么猜这个 player
+- 为什么猜这个 slot
+
+这样，当前行为层终于不再只是：
+- 猜值是否合理
+- continued_turn 是否合理
+
+而是开始更接近：
+- 猜谁
+- 猜哪张
+- 猜什么
+- 是否继续
+四部分共同组成的动作似然近似。
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+
+具体推进如下：
+
+1. 新增 target player 选择评分
+本轮在 `BehavioralLikelihoodModel` 中新增：
+- `_score_target_player_selection(...)`
+
+它的作用是：
+- 对历史中的一次猜测动作
+- 不只看“猜的值像不像人会猜”
+- 还看“这个被选中的目标玩家，在当时是不是一个合理的攻击对象”
+
+做法上，当前会先估计每个可攻击玩家的 attackability，
+再比较：
+- 被选中的 player
+- 与场上其他可攻击 player
+之间的相对合理性。
+
+如果被选中的 player 明显就是当时最值得打的对象，
+会给予 bonus；
+如果场上明明有更好打的对象却没有被选，
+则给予 penalty。
+
+2. 新增 target slot 选择评分
+本轮还新增：
+- `_score_target_slot_selection(...)`
+
+它的作用是：
+- 在同一个目标玩家内部
+- 比较被猜的 slot 是否属于更合理的攻击位
+
+当前的近似标准是：
+- 槽位 interval 是否更紧
+- 槽位 attackability 是否更高
+
+如果被猜的 slot 本身就更像“应该优先打的那一张”，
+则给予 bonus；
+如果同玩家内部明显有更好打的 slot，
+当前被选中的 slot 就会被轻度惩罚。
+
+3. 行为层现在更接近四段式动作似然
+本轮之后，`_score_signal(...)` 中已经显式串起了：
+- self-hand consistency
+- target-player selection fit
+- target-slot selection fit
+- target-card/value fit
+- continue-decision fit
+
+这意味着行为层第一次从“只有猜值和继续信号”
+推进成了更接近：
+`P(select player, select slot, guess value, continue | state)`
+的结构化近似。
+
+虽然还不是完整概率模型，
+但方向已经比此前更清楚。
+
+三、本轮测试验证
+本轮新增测试点包括：
+
+1. target player 选择偏好
+新增测试验证：
+- 当历史动作选择的目标玩家确实更可攻击时
+- 行为模型会给予更高评分
+
+2. target slot 选择偏好
+新增测试验证：
+- 当同一玩家内部，被猜中的 slot 明显更紧、更像合理攻击位时
+- 行为模型会给予更高评分
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 13 个测试全部通过
+
+四、本轮解决了什么问题
+1. 行为模型终于不再只解释“猜几”
+这是本轮最关键的推进点。
+
+过去的行为层虽然已经比最早强很多，
+但仍然主要集中在：
+- 这个 guessed value 合不合理
+- continued_turn 合不合理
+
+这会导致一个问题：
+- 即便系统认为“这个值猜得像人”
+- 也还没解释“为什么会先选这个人、这张牌”
+
+本轮之后，这个缺口开始被补上了。
+
+2. 动作似然的分解结构更完整
+当前虽然还不是完整的 `P(action | state)`，
+但至少已经能把动作拆成：
+- player selection
+- slot selection
+- value selection
+- continuation
+
+这让后续继续往完整动作似然推进时，
+不必再从零开始拆结构。
+
+3. 为下一步更完整的行为模型打好了接口
+因为现在 player / slot / value / continue 都已经分别有了显式评分位，
+所以下一步继续强化时，
+可以更自然地替换或增强其中某一部分，
+而不是继续堆一团混在一起的 heuristic。
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 继续把行为层从“结构化 heuristic”推进到更明确的动作似然近似
+优先顺序可以是：
+- 先补 player 选择的更细信号
+- 再补 slot 选择的更细信号
+- 最后再考虑 value 选择里的更强换位思考
+
+2. 把新的行为层变化继续纳入当前固定 regression case 集验证
+
+3. 如果后面继续补 rollout，也尽量建立在这套更清晰的动作分解上
+
+六、一句话总结
+本轮推进的核心成果，是把行为层从“猜值 + 是否继续”的局部信号，推进成了包含“猜谁 / 猜哪张 / 猜什么 / 是否继续”的四段式动作似然近似，让 `P(action | state)` 的结构第一次开始真正成形。

@@ -139,6 +139,144 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(tight_score, loose_score)
 
+    def test_target_player_selection_prefers_more_attackable_target(self):
+        model = BehavioralLikelihoodModel()
+
+        focused_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                )
+            ],
+        )
+        distracted_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                )
+            ],
+        )
+
+        focused_signals = model.build_guess_signals(focused_world)
+        distracted_signals = model.build_guess_signals(distracted_world)
+        focused_score = model.score_hypothesis(
+            {"opp": {1: ("W", 2)}, "side": {1: ("W", 10)}},
+            focused_signals,
+            focused_world,
+        )
+        distracted_score = model.score_hypothesis(
+            {"opp": {1: ("W", 2)}, "side": {1: ("W", 8)}},
+            distracted_signals,
+            distracted_world,
+        )
+
+        self.assertGreater(focused_score, distracted_score)
+
+    def test_target_slot_selection_prefers_tighter_slot_on_same_player(self):
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=4, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                )
+            ],
+        )
+
+        signals = model.build_guess_signals(game_state)
+        tight_slot_score = model.score_hypothesis(
+            {"opp": {1: ("W", 2), 2: ("W", 3), 3: ("W", 9)}},
+            signals,
+            game_state,
+        )
+        loose_slot_score = model.score_hypothesis(
+            {"opp": {1: ("W", 2), 2: ("W", 8), 3: ("W", 9)}},
+            signals,
+            game_state,
+        )
+
+        self.assertGreater(tight_slot_score, loose_slot_score)
+
 
 class GameControllerOutputTests(unittest.TestCase):
     def test_controller_returns_decision_summary_and_reasoning(self):

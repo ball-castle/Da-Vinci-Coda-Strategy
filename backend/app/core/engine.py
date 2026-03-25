@@ -168,6 +168,14 @@ class BehavioralLikelihoodModel:
     SELF_EXACT_GUESS_PENALTY = 0.14
     SELF_ADJACENT_ANCHOR_BONUS = 1.08
 
+    TARGET_PLAYER_BEST_MATCH_BONUS = 1.07
+    TARGET_PLAYER_CLOSE_MATCH_BONUS = 1.03
+    TARGET_PLAYER_WEAK_CHOICE_PENALTY = 0.94
+
+    TARGET_SLOT_BEST_MATCH_BONUS = 1.08
+    TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
+    TARGET_SLOT_WEAK_CHOICE_PENALTY = 0.91
+
     TARGET_IN_INTERVAL_BONUS = 1.15
     TARGET_NARROW_INTERVAL_BONUS = 1.10
     TARGET_OUTSIDE_INTERVAL_PENALTY = 0.80
@@ -322,27 +330,15 @@ class BehavioralLikelihoodModel:
         for player_id in game_state.inference_player_ids():
             if acting_player_id is not None and player_id == acting_player_id:
                 continue
-
-            for slot in game_state.resolved_ordered_slots(player_id):
-                if slot.known_card() is not None:
-                    continue
-                key = slot_key(player_id, slot.slot_index)
-                if exclude_slot is not None and key == exclude_slot:
-                    continue
-
-                low, high, width = self._slot_numeric_interval(
+            best = max(
+                best,
+                self._player_attackability(
                     game_state,
                     hypothesis_by_player,
                     player_id,
-                    slot.slot_index,
-                )
-                color_bonus = 1.0
-                if getattr(slot, "color", None) is not None:
-                    color_bonus = 1.12
-                confidence = color_bonus / max(1.0, float(width + 1))
-                if low is not None and high is not None and width <= 2:
-                    confidence *= 1.08
-                best = max(best, confidence)
+                    exclude_slot=exclude_slot,
+                ),
+            )
         return best
 
     def estimate_matrix_attackability(
@@ -393,6 +389,16 @@ class BehavioralLikelihoodModel:
             hypothesis_by_player.get(signal.guesser_id, {}),
         )
         weight *= self._score_self_hand(guesser_cards, signal.guessed_card)
+        weight *= self._score_target_player_selection(
+            game_state,
+            hypothesis_by_player,
+            signal,
+        )
+        weight *= self._score_target_slot_selection(
+            game_state,
+            hypothesis_by_player,
+            signal,
+        )
         weight *= self._score_target_slot(
             game_state,
             hypothesis_by_player,
@@ -444,6 +450,71 @@ class BehavioralLikelihoodModel:
         if (guessed_numeric - 1) in same_color_values or (guessed_numeric + 1) in same_color_values:
             weight *= self.SELF_ADJACENT_ANCHOR_BONUS
         return weight
+
+    def _score_target_player_selection(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+    ) -> float:
+        candidate_scores: Dict[str, float] = {}
+        for player_id in game_state.players:
+            if player_id == signal.guesser_id:
+                continue
+            player_score = self._player_attackability(
+                game_state,
+                hypothesis_by_player,
+                player_id,
+            )
+            if player_score > 0.0:
+                candidate_scores[player_id] = player_score
+
+        if len(candidate_scores) <= 1:
+            return 1.0
+
+        chosen_score = candidate_scores.get(signal.target_player_id)
+        if chosen_score is None:
+            return 1.0
+
+        best_score = max(candidate_scores.values())
+        if chosen_score >= best_score - self.EPSILON:
+            return self.TARGET_PLAYER_BEST_MATCH_BONUS
+        if chosen_score >= best_score * 0.85:
+            return self.TARGET_PLAYER_CLOSE_MATCH_BONUS
+        return self.TARGET_PLAYER_WEAK_CHOICE_PENALTY
+
+    def _score_target_slot_selection(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+    ) -> float:
+        candidate_scores: Dict[int, float] = {}
+        for slot in game_state.resolved_ordered_slots(signal.target_player_id):
+            if slot.known_card() is not None:
+                continue
+            score = self._slot_attackability(
+                game_state,
+                hypothesis_by_player,
+                signal.target_player_id,
+                slot.slot_index,
+            )
+            if score > 0.0:
+                candidate_scores[slot.slot_index] = score
+
+        if len(candidate_scores) <= 1:
+            return 1.0
+
+        chosen_score = candidate_scores.get(signal.target_slot_index)
+        if chosen_score is None:
+            return 1.0
+
+        best_score = max(candidate_scores.values())
+        if chosen_score >= best_score - self.EPSILON:
+            return self.TARGET_SLOT_BEST_MATCH_BONUS
+        if chosen_score >= best_score * 0.85:
+            return self.TARGET_SLOT_CLOSE_MATCH_BONUS
+        return self.TARGET_SLOT_WEAK_CHOICE_PENALTY
 
     def _score_target_slot(
         self,
@@ -516,6 +587,62 @@ class BehavioralLikelihoodModel:
         if attackability < self.ATTACKABILITY_TIGHT_THRESHOLD:
             return self.STOP_LOW_ATTACKABILITY_BONUS
         return self.STOP_HIGH_ATTACKABILITY_PENALTY
+
+    def _player_attackability(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        player_id: str,
+        *,
+        exclude_slot: Optional[SlotKey] = None,
+    ) -> float:
+        best = 0.0
+        for slot in game_state.resolved_ordered_slots(player_id):
+            if slot.known_card() is not None:
+                continue
+            key = slot_key(player_id, slot.slot_index)
+            if exclude_slot is not None and key == exclude_slot:
+                continue
+            best = max(
+                best,
+                self._slot_attackability(
+                    game_state,
+                    hypothesis_by_player,
+                    player_id,
+                    slot.slot_index,
+                ),
+            )
+        return best
+
+    def _slot_attackability(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        player_id: str,
+        slot_index: int,
+    ) -> float:
+        try:
+            slot = game_state.get_slot(player_id, slot_index)
+        except ValueError:
+            return 0.0
+
+        if slot.known_card() is not None:
+            return 0.0
+
+        low, high, width = self._slot_numeric_interval(
+            game_state,
+            hypothesis_by_player,
+            player_id,
+            slot_index,
+        )
+        color_bonus = 1.0
+        if getattr(slot, "color", None) is not None:
+            color_bonus = 1.12
+
+        confidence = color_bonus / max(1.0, float(width + 1))
+        if low is not None and high is not None and width <= 2:
+            confidence *= 1.08
+        return confidence
 
     def _slot_numeric_interval(
         self,
