@@ -1,0 +1,175 @@
+3/25-动作似然anchor-boundary取值复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 21:30:29 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的下一步建议推进：
+
+继续补 value 选择里的更强换位思考。
+
+上一轮虽然已经接上了：
+- 同 slot 失败后的 progressive probing
+
+但还缺两类更像人类真实报数的信号：
+- guesser 自身同色 anchor 形成的卡位感
+- 当前 target slot 局部边界带来的报数落点
+
+所以本轮目标很明确：
+- 不是再补 player / slot 选择
+- 而是把 value-selection 继续从“数值推进”推进到“为什么这个值像人会喊出来”
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+- backend/tests/test_regression_cases.py
+
+具体推进如下：
+
+1. 把 value-selection 拆成更清楚的三段式评分
+本轮 `BehavioralLikelihoodModel._score_target_value_selection(...)` 不再只在一个函数里堆零散 bonus，
+而是显式拆成：
+- progressive probing 评分
+- same-color anchor 评分
+- local-boundary 评分
+
+新增 helper 包括：
+- `_score_same_color_anchor_value_fit(...)`
+- `_score_local_boundary_value_fit(...)`
+- `_same_color_numeric_values(...)`
+
+这意味着当前 value-selection 的结构已经更清楚了：
+- 先看是不是沿失败历史自然推进
+- 再看 guesser 自己的同色牌有没有把这个值卡出来
+- 最后看 target slot 的边界是否让这个值更像合理试探
+
+2. 新增 same-color sandwich / gap-fill 取值逻辑
+本轮对 guesser 自身同色 anchor 的处理，不再只是“相邻就轻微加分”。
+
+现在会显式检查：
+- 猜的这个值左边有没有同色 anchor
+- 右边有没有同色 anchor
+- 这个值是不是刚好在两张同色 anchor 中间
+
+新增权重包括：
+- `TARGET_VALUE_SANDWICH_EXACT_BONUS`
+- `TARGET_VALUE_SANDWICH_FILL_BONUS`
+
+这一步解决的是：
+- 以前系统只会觉得“他手里有相邻牌，所以这个值不算乱猜”
+- 现在系统开始能识别“他手里两张同色牌把这个值精确卡出来了”
+
+也就是说，
+value 层第一次开始区分：
+- 只是沾着一个 anchor
+- 还是被两个 anchor 夹出来的更强报数理由
+
+3. 新增 wide-gap center probe 的边界逻辑
+本轮对 target slot 的局部边界，也不再只在窄区间里给一点边缘 bonus。
+
+现在会显式处理：
+- 窄区间时，靠近局部边界的值更像试探点
+- 大缝隙时，靠近区间中部的值更像人类盲猜兜底
+
+新增权重包括：
+- `TARGET_VALUE_WIDE_GAP_CENTER_BONUS`
+- `TARGET_VALUE_WIDE_GAP_EDGE_PENALTY`
+- `TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS`
+
+这一步的意义是：
+- 系统开始真正吃到“边界与填缝理论”的另一半
+- 不只是看自己的 anchor
+- 还开始看 target slot 当下这个区间，什么值最像人会先试探
+
+4. 新信号纳入固定 regression case 集
+本轮不是只补了单测，
+还把这两类新的人类报数偏好纳入固定回归集：
+- `same_color_anchor_sandwich`
+- `wide_gap_center_probe`
+
+这样后续如果继续改动作似然模型，
+就能直接防止下面两类边界被悄悄打坏：
+- 两侧同色 anchor 夹出的值
+- 大缝隙中更接近中心的试探值
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. same-color sandwich anchor 偏好
+新增测试验证：
+- 当两个假设下，target 真值与动作都相同
+- 但一个假设里 guesser 的同色牌能把猜测值夹出来
+- 另一个假设只能提供单侧 anchor
+- 模型会偏好前者
+
+2. wide-gap center probe 偏好
+新增测试验证：
+- 当两个猜值与 target 真值距离相同
+- 也同样落在合法 interval 内
+- 位于大缝隙中心附近的猜值会高于偏边的猜值
+
+3. behavior regression case 集
+本轮固定回归集现在已经覆盖：
+- same_player_focus
+- same_slot_retry
+- progressive_value_step
+- same_color_anchor_sandwich
+- wide_gap_center_probe
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 19 个测试全部通过
+
+四、本轮解决了什么问题
+1. value-selection 不再只靠“推进一步”解释
+上一轮已经能说清：
+- 为什么这个值是沿失败链继续推进出来的
+
+本轮之后，
+系统还能进一步说清：
+- 为什么这个值被 guesser 的同色牌卡出来
+- 为什么这个值符合 target slot 当前边界下的试探习惯
+
+2. 行为层第一次更明确地区分“精确卡位”和“盲猜填缝”
+这其实是很关键的结构推进。
+
+因为人类报数时，
+有时是：
+- 我手里的同色牌把这个值夹得很死
+
+有时则是：
+- 这个区间太大，我先从中间探一枪
+
+本轮之后，
+系统已经开始显式区分这两种来源不同的 value 选择理由。
+
+3. 新 heuristic 不是裸加，而是带着测试底座落地
+本轮继续保持了前几轮的推进方式：
+- 先补结构化评分
+- 再补隔离性单测
+- 再补命名 regression case
+
+这样后面继续补动作似然时，
+不会因为一条新 heuristic 把旧的人类报数边界冲掉却没人发现。
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 继续把 value-selection 的理由显式化
+下一步可以继续尝试：
+- 区分“anchor 精确卡位”与“boundary 盲探填缝”的来源标签
+- 在 debug 输出里看到当前动作到底主要吃了哪类 value 信号
+
+2. 让更强的行为似然开始更深反馈到 decision 层
+现在 value-selection 已经明显更完整了，
+下一步可以开始尝试：
+- 把这些更强的行为权重更深地反馈给候选动作排序
+- 观察它们是否会稳定改变 best move / should_stop 的边界
+
+3. 如果继续补行为层，保持所有新边界都进入固定 regression case 集
+
+六、一句话总结
+本轮推进的核心成果，是把 value-selection 从“失败后继续推进一步”，进一步升级成“同时识别同色 anchor 卡位和局部边界填缝”的更强换位思考近似，让系统更像是在回答：为什么一个人会在这一刻报出这个值。

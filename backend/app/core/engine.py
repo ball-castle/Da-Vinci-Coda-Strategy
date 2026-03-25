@@ -189,6 +189,11 @@ class BehavioralLikelihoodModel:
     TARGET_VALUE_DIRECTIONAL_BONUS = 1.03
     TARGET_VALUE_STALLED_PENALTY = 0.90
     TARGET_VALUE_WRONG_DIRECTION_PENALTY = 0.92
+    TARGET_VALUE_SANDWICH_EXACT_BONUS = 1.12
+    TARGET_VALUE_SANDWICH_FILL_BONUS = 1.06
+    TARGET_VALUE_WIDE_GAP_CENTER_BONUS = 1.05
+    TARGET_VALUE_WIDE_GAP_EDGE_PENALTY = 0.96
+    TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS = 1.03
     WRONG_COLOR_SLOT_PENALTY = 0.88
 
     CONTINUE_HIGH_ATTACKABILITY_BONUS = 1.10
@@ -636,25 +641,88 @@ class BehavioralLikelihoodModel:
                 else:
                     weight *= self.TARGET_VALUE_WRONG_DIRECTION_PENALTY
 
-        same_color_values = sorted(
-            numeric_card_value(card)
-            for card in guesser_cards
-            if card[0] == signal.guessed_card[0] and numeric_card_value(card) is not None
+        same_color_values = self._same_color_numeric_values(guesser_cards, signal.guessed_card[0])
+        weight *= self._score_same_color_anchor_value_fit(
+            guessed_numeric,
+            same_color_values,
         )
-        same_color_values = [value for value in same_color_values if value is not None]
-
-        if same_color_values and width <= 4:
-            nearest_anchor_distance = min(abs(guessed_numeric - value) for value in same_color_values)
-            if nearest_anchor_distance == 1:
-                weight *= self.SELF_ADJACENT_ANCHOR_BONUS
-            elif nearest_anchor_distance >= 4:
-                weight *= 0.97
-
-        if low is not None and high is not None and width <= 3:
-            if guessed_numeric in {low + 1, high - 1}:
-                weight *= 1.03
+        weight *= self._score_local_boundary_value_fit(
+            guessed_numeric,
+            low,
+            high,
+            width,
+        )
 
         return weight
+
+    def _score_same_color_anchor_value_fit(
+        self,
+        guessed_numeric: int,
+        same_color_values: Sequence[int],
+    ) -> float:
+        if not same_color_values:
+            return 1.0
+
+        weight = 1.0
+        nearest_anchor_distance = min(abs(guessed_numeric - value) for value in same_color_values)
+        if nearest_anchor_distance >= 4:
+            weight *= 0.97
+
+        left_anchor = max((value for value in same_color_values if value < guessed_numeric), default=None)
+        right_anchor = min((value for value in same_color_values if value > guessed_numeric), default=None)
+
+        if left_anchor is None or right_anchor is None:
+            return weight
+
+        anchor_gap = right_anchor - left_anchor
+        midpoint = (left_anchor + right_anchor) / 2.0
+        if anchor_gap == 2 and guessed_numeric == left_anchor + 1:
+            weight *= self.TARGET_VALUE_SANDWICH_EXACT_BONUS
+        elif 2 < anchor_gap <= 4 and left_anchor < guessed_numeric < right_anchor:
+            weight *= self.TARGET_VALUE_SANDWICH_FILL_BONUS
+        elif anchor_gap >= 6 and abs(guessed_numeric - midpoint) <= 1.0:
+            weight *= self.TARGET_VALUE_WIDE_GAP_CENTER_BONUS
+        return weight
+
+    def _score_local_boundary_value_fit(
+        self,
+        guessed_numeric: int,
+        low: Optional[int],
+        high: Optional[int],
+        width: int,
+    ) -> float:
+        if low is None and high is None:
+            return 1.0
+
+        weight = 1.0
+        if low is not None and high is not None:
+            if width <= 3 and guessed_numeric in {low + 1, high - 1}:
+                weight *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
+            elif width >= 6:
+                midpoint = (low + high) / 2.0
+                if abs(guessed_numeric - midpoint) <= 1.0:
+                    weight *= self.TARGET_VALUE_WIDE_GAP_CENTER_BONUS
+                elif guessed_numeric in {low + 1, high - 1}:
+                    weight *= self.TARGET_VALUE_WIDE_GAP_EDGE_PENALTY
+            return weight
+
+        if low is not None and guessed_numeric == low + 1:
+            weight *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
+        if high is not None and guessed_numeric == high - 1:
+            weight *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
+        return weight
+
+    def _same_color_numeric_values(
+        self,
+        player_cards: Sequence[Card],
+        color: str,
+    ) -> List[int]:
+        values = sorted(
+            numeric_card_value(card)
+            for card in player_cards
+            if card[0] == color and numeric_card_value(card) is not None
+        )
+        return [value for value in values if value is not None]
 
     def _score_continue_decision(
         self,

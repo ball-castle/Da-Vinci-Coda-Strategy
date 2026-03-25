@@ -523,6 +523,123 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(progressive_score, jump_score)
 
+    def test_target_value_selection_prefers_same_color_sandwich_anchor(self):
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+            ],
+        )
+
+        preferred_hypothesis = {
+            "me": {0: ("W", 4), 1: ("W", 6)},
+            "opp": {1: ("W", 5)},
+        }
+        alternative_hypothesis = {
+            "me": {0: ("W", 4), 1: ("W", 9)},
+            "opp": {1: ("W", 5)},
+        }
+        guess_signals = model.build_guess_signals(game_state)
+
+        preferred_score = model.score_hypothesis(
+            preferred_hypothesis,
+            guess_signals,
+            game_state,
+        )
+        alternative_score = model.score_hypothesis(
+            alternative_hypothesis,
+            guess_signals,
+            game_state,
+        )
+
+        self.assertGreater(preferred_score, alternative_score)
+
+    def test_target_value_selection_prefers_center_probe_in_wide_gap(self):
+        model = BehavioralLikelihoodModel()
+        center_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        )
+        edge_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=center_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=4,
+                    result=False,
+                ),
+            ],
+        )
+
+        hypothesis = {"opp": {1: ("W", 5)}}
+        center_score = model.score_hypothesis(
+            hypothesis,
+            model.build_guess_signals(center_world),
+            center_world,
+        )
+        edge_score = model.score_hypothesis(
+            hypothesis,
+            model.build_guess_signals(edge_world),
+            edge_world,
+        )
+
+        self.assertGreater(center_score, edge_score)
+
 
 class GameControllerOutputTests(unittest.TestCase):
     def test_controller_returns_decision_summary_and_reasoning(self):
