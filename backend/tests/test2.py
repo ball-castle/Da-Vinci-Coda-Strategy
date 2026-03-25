@@ -91,6 +91,8 @@ class StopThresholdTests(unittest.TestCase):
         self.assertTrue(summary["recommend_stop"])
         self.assertIn("建议停手", summary["stop_reason"])
         self.assertGreater(summary["stop_threshold"], 0.62)
+        self.assertGreater(summary["stop_score"], summary["continue_score"])
+        self.assertLess(summary["continue_margin"], 0.0)
 
     def test_choose_best_move_continues_on_strong_continuation_edge(self):
         engine = DaVinciDecisionEngine()
@@ -120,6 +122,31 @@ class StopThresholdTests(unittest.TestCase):
         self.assertIsNotNone(best_move)
         self.assertFalse(summary["recommend_stop"])
         self.assertGreater(summary["best_continuation_likelihood"], 0.70)
+        self.assertGreater(summary["continue_score"], summary["stop_score"])
+        self.assertGreater(summary["continue_margin"], 0.0)
+
+    def test_choose_best_move_stops_when_attackability_cannot_support_pressing(self):
+        engine = DaVinciDecisionEngine()
+        all_moves = [
+            {
+                "expected_value": 0.79,
+                "win_probability": 0.55,
+                "continuation_value": 0.18,
+                "continuation_likelihood": 0.51,
+                "attackability_after_hit": 0.05,
+            },
+        ]
+
+        best_move, summary = engine.choose_best_move(
+            all_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNone(best_move)
+        self.assertTrue(summary["recommend_stop"])
+        self.assertGreater(summary["stop_score"], summary["stop_threshold"])
+        self.assertLess(summary["continue_margin"], 0.0)
 
 
 if __name__ == "__main__":

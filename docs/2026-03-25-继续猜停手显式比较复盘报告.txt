@@ -1,0 +1,144 @@
+3/25-继续猜停手显式比较复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 10:06:44 +08:00
+
+一、本轮推进目标
+本轮继续沿着 `docs/复盘报告.txt` 里明确写出的第一优先级推进：
+把 continuation likelihood 真正接入 should_stop / continue 决策逻辑。
+
+这轮不再满足于：
+- continuation value 只作为 expected_value 的一个组成部分
+- should_stop 仍然主要依赖 stop threshold 和几个 guard
+
+而是进一步把“继续进攻”和“现在停手”放到同一套显式评分里比较。
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+- backend/tests/test2.py
+
+具体推进如下：
+
+1. 决策层从阈值判断升级为显式 continue vs stop 比较
+在 `DaVinciDecisionEngine.choose_best_move(...)` 中新增一层决策评估：
+- continue_score = 当前最佳动作的 expected_value
+- stop_score = 基础 stop_threshold + edge_pressure + attackability_pressure
+- continue_margin = continue_score - stop_score
+
+这意味着当前推荐不再只是：
+- “这一步 EV 有没有过线”
+
+而是变成：
+- “继续打这一手的综合收益，是否真的高于现在停手的保守收益”
+
+2. stop_score 的构成进一步结构化
+本轮把停手分拆成可解释的三部分：
+- base_stop_threshold
+- edge_pressure
+- attackability_pressure
+
+其中新增的关键量是：
+- attackability_pressure
+
+它会在“命中后虽然有一点 continuation value，但后续并没有足够可攻击目标”的局面里抬高停手分。
+
+这样，continuation likelihood 和 attackability 不再只是挂在 move 上做展示，
+而是开始真正反向影响 should_stop 主判断。
+
+3. 候选动作解释字段继续补强
+本轮为单个候选动作新增：
+- immediate_expected_value
+- post_hit_continuation_value
+- next_best_immediate_value
+
+并扩充 `score_breakdown`，让外部更容易分辨：
+- 当前这手是靠单步收益在撑
+- 还是靠 hit 后的续压价值在撑
+
+4. decision_summary 增加新的决策解释字段
+本轮在 controller 输出的 `decision_summary` 中新增：
+- stop_score
+- continue_score
+- continue_margin
+- decision_score_breakdown
+- best_immediate_value
+
+这样后续做 case review 时，可以直接看出：
+- 为什么继续
+- 为什么停手
+- 是 gap 太小、attackability 太弱，还是基础风险太高
+
+三、本轮测试验证
+本轮新增/补强的测试点包括：
+
+1. controller 输出包含新的 decision 字段
+验证：
+- `stop_score`
+- `continue_score`
+- `continue_margin`
+- `decision_score_breakdown`
+已经对外可见。
+
+2. 强 continuation edge 仍然能继续
+验证高 continuation likelihood、高 continuation value 的场景下，系统仍然保持进攻建议。
+
+3. 低 attackability 场景会更稳地停手
+新增测试覆盖：
+- 虽然 expected_value 仍为正
+- 但 hit 后 attackability 明显偏弱
+
+此时系统会因为 `attackability_pressure` 抬高 `stop_score`，最终建议停手。
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 7 个测试全部通过
+
+四、本轮解决了什么问题
+1. continuation 真正进入了 should_stop 主逻辑
+这是本轮最核心的推进点。
+
+之前 continuation 更像：
+- 影响排序
+- 影响解释
+- 轻度影响 stop threshold
+
+现在它开始更像：
+- 继续决策与停手决策显式对比中的主变量之一
+
+2. “命中后能不能继续打”被更明确地区分开了
+过去 move 的 continuation_value 是个合并量，不容易看清来源。
+
+本轮之后，至少可以分清：
+- 当下单步值
+- hit 后的续压值
+- 下一手 immediate EV
+
+这让 continuation rollout 的下一步扩展更自然。
+
+3. 停手推荐比之前更像真实控回合逻辑
+现在系统不只是问：
+- “当前这手是不是正收益”
+
+而是开始问：
+- “当前继续分是否真的高于停手分”
+- “命中后是否还有足够的后续攻击空间”
+
+五、下一步建议
+按照当前主线，下一步最值得继续推进的是：
+
+1. 把 stop_score 的 attackability 判定继续推进为更浅层的 rollout
+也就是不只看 hit 后 attackability，
+还要更明确看：
+- hit 后 next move 的质量
+- next move 是否值得继续
+
+2. 继续把行为层从 heuristic 近似推进到更完整的 P(action | state)
+
+3. 用固定 case 集继续校准 continue_score / stop_score 边界
+
+六、一句话总结
+本轮推进的核心成果，是把“继续进攻”和“现在停手”第一次放进同一套显式评分里比较，让 continuation likelihood 不再只是解释字段，而是开始真正主导 should_stop 决策。

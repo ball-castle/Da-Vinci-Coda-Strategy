@@ -929,6 +929,12 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_SHORT_HAND = 0.22
     STOP_MARGIN_LOW_CONFIDENCE = 0.28
     STOP_MARGIN_WEAK_CONTINUATION = 0.16
+    STOP_MARGIN_WEAK_EDGE = 0.22
+    STOP_MARGIN_LOW_ATTACKABILITY = 0.18
+    STOP_EDGE_REFERENCE = 0.18
+    LOW_CONFIDENCE_GUARD_MARGIN = 0.22
+    WEAK_EDGE_GUARD_MARGIN = 0.18
+    ATTACKABILITY_REFERENCE = BehavioralLikelihoodModel.ATTACKABILITY_TIGHT_THRESHOLD
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -999,18 +1005,28 @@ class DaVinciDecisionEngine:
         my_hidden_count: int,
     ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         if not all_moves:
+            stop_threshold = self._stop_threshold(
+                risk_factor=risk_factor,
+                my_hidden_count=my_hidden_count,
+                best_move=None,
+            )
             return None, {
                 "evaluated_move_count": 0,
+                "best_immediate_value": 0.0,
                 "best_expected_value": 0.0,
                 "best_win_probability": 0.0,
                 "best_continuation_value": 0.0,
                 "best_continuation_likelihood": 0.0,
-                "stop_threshold": self._stop_threshold(
-                    risk_factor=risk_factor,
-                    my_hidden_count=my_hidden_count,
-                    best_move=None,
-                ),
+                "stop_threshold": stop_threshold,
+                "stop_score": stop_threshold,
+                "continue_score": 0.0,
+                "continue_margin": -stop_threshold,
                 "recommend_stop": True,
+                "decision_score_breakdown": {
+                    "base_stop_threshold": stop_threshold,
+                    "edge_pressure": 0.0,
+                    "attackability_pressure": 0.0,
+                },
                 "stop_reason": "没有可评估的候选动作。",
             }
 
@@ -1021,45 +1037,41 @@ class DaVinciDecisionEngine:
             my_hidden_count=my_hidden_count,
             best_move=best_move,
         )
-        best_gap = best_move["expected_value"] - (second_move["expected_value"] if second_move else 0.0)
-
-        low_confidence_guard = (
-            my_hidden_count <= 2
-            and best_move["win_probability"] < 0.45
-            and best_move["continuation_likelihood"] < 0.55
-        )
-        weak_edge_guard = (
-            second_move is not None
-            and best_gap < 0.18
-            and best_move["expected_value"] < (stop_threshold + 0.30)
-        )
-
-        should_continue = (
-            best_move["expected_value"] > stop_threshold
-            and not low_confidence_guard
-            and not weak_edge_guard
+        decision_snapshot = self._evaluate_continue_decision(
+            best_move=best_move,
+            second_move=second_move,
+            stop_threshold=stop_threshold,
+            my_hidden_count=my_hidden_count,
         )
         stop_reason = self._build_stop_reason(
-            should_continue=should_continue,
+            should_continue=decision_snapshot["should_continue"],
             best_move=best_move,
             stop_threshold=stop_threshold,
-            low_confidence_guard=low_confidence_guard,
-            weak_edge_guard=weak_edge_guard,
+            stop_score=decision_snapshot["stop_score"],
+            continue_score=decision_snapshot["continue_score"],
+            continue_margin=decision_snapshot["continue_margin"],
+            low_confidence_guard=decision_snapshot["low_confidence_guard"],
+            weak_edge_guard=decision_snapshot["weak_edge_guard"],
         )
 
         decision_summary = {
             "evaluated_move_count": len(all_moves),
+            "best_immediate_value": best_move.get("immediate_expected_value", best_move["expected_value"]),
             "best_expected_value": best_move["expected_value"],
             "best_win_probability": best_move["win_probability"],
             "best_continuation_value": best_move.get("continuation_value", 0.0),
             "best_continuation_likelihood": best_move.get("continuation_likelihood", 0.0),
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
-            "best_gap": best_gap,
+            "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
-            "recommend_stop": not should_continue,
+            "stop_score": decision_snapshot["stop_score"],
+            "continue_score": decision_snapshot["continue_score"],
+            "continue_margin": decision_snapshot["continue_margin"],
+            "recommend_stop": not decision_snapshot["should_continue"],
+            "decision_score_breakdown": decision_snapshot["decision_score_breakdown"],
             "stop_reason": stop_reason,
         }
-        return (best_move if should_continue else None), decision_summary
+        return (best_move if decision_snapshot["should_continue"] else None), decision_summary
 
     def _score_single_move(
         self,
@@ -1082,6 +1094,8 @@ class DaVinciDecisionEngine:
         continuation_likelihood = 0.0
         attackability_after_hit = 0.0
         history_continue_rate = behavior_model.CONTINUATION_PRIOR_BASE
+        next_best_immediate_ev = 0.0
+        post_hit_continuation_value = 0.0
 
         success_matrix = self._success_posterior(full_probability_matrix, player_id, slot_index, card)
         if success_matrix:
@@ -1098,17 +1112,21 @@ class DaVinciDecisionEngine:
             continuation_likelihood = continuation_assessment["continue_likelihood"]
             attackability_after_hit = continuation_assessment["attackability"]
             history_continue_rate = continuation_assessment["history_continue_rate"]
-            continuation_value = (
-                probability
-                * self.CONTINUATION_DISCOUNT
+            post_hit_continuation_value = (
+                self.CONTINUATION_DISCOUNT
                 * continuation_likelihood
                 * max(0.0, next_best_immediate_ev)
+            )
+            continuation_value = (
+                probability
+                * post_hit_continuation_value
             )
 
         hit_reward = probability * self.HIT_REWARD
         miss_penalty = (1.0 - probability) * risk_factor
         info_bonus = info_gain * self.INFORMATION_GAIN_WEIGHT
-        expected_value = hit_reward - miss_penalty + info_bonus + continuation_value
+        immediate_expected_value = hit_reward - miss_penalty + info_bonus
+        expected_value = immediate_expected_value + continuation_value
 
         return {
             "target_player_id": player_id,
@@ -1116,9 +1134,12 @@ class DaVinciDecisionEngine:
             "target_slot_index": slot_index,
             "guess_card": serialize_card(card),
             "win_probability": probability,
+            "immediate_expected_value": immediate_expected_value,
             "expected_value": expected_value,
             "information_gain": info_gain,
             "continuation_value": continuation_value,
+            "post_hit_continuation_value": post_hit_continuation_value,
+            "next_best_immediate_value": next_best_immediate_ev,
             "continuation_likelihood": continuation_likelihood,
             "attackability_after_hit": attackability_after_hit,
             "history_continue_rate": history_continue_rate,
@@ -1128,7 +1149,10 @@ class DaVinciDecisionEngine:
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
                 "information_gain_bonus": info_bonus,
+                "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
+                "post_hit_continuation_value": post_hit_continuation_value,
+                "next_best_immediate_value": next_best_immediate_ev,
                 "continuation_likelihood": continuation_likelihood,
                 "attackability_after_hit": attackability_after_hit,
             },
@@ -1140,6 +1164,66 @@ class DaVinciDecisionEngine:
                 continuation_likelihood,
             ),
             "target_scope": "player_slots",
+        }
+
+    def _evaluate_continue_decision(
+        self,
+        *,
+        best_move: Dict[str, Any],
+        second_move: Optional[Dict[str, Any]],
+        stop_threshold: float,
+        my_hidden_count: int,
+    ) -> Dict[str, Any]:
+        best_gap = best_move["expected_value"] - (second_move["expected_value"] if second_move else 0.0)
+
+        edge_pressure = 0.0
+        if second_move is not None and best_gap < self.STOP_EDGE_REFERENCE:
+            edge_pressure = self.STOP_MARGIN_WEAK_EDGE * (
+                (self.STOP_EDGE_REFERENCE - max(0.0, best_gap)) / self.STOP_EDGE_REFERENCE
+            )
+
+        attackability_after_hit = best_move.get("attackability_after_hit", 0.0)
+        attackability_pressure = 0.0
+        if attackability_after_hit < self.ATTACKABILITY_REFERENCE:
+            attackability_pressure = self.STOP_MARGIN_LOW_ATTACKABILITY * (
+                (self.ATTACKABILITY_REFERENCE - attackability_after_hit)
+                / max(self.ATTACKABILITY_REFERENCE, 1e-9)
+            )
+
+        stop_score = stop_threshold + edge_pressure + attackability_pressure
+        continue_score = best_move["expected_value"]
+        continue_margin = continue_score - stop_score
+
+        low_confidence_guard = (
+            my_hidden_count <= 2
+            and best_move["win_probability"] < 0.45
+            and best_move.get("continuation_likelihood", 0.0) < 0.55
+            and continue_margin < self.LOW_CONFIDENCE_GUARD_MARGIN
+        )
+        weak_edge_guard = (
+            second_move is not None
+            and best_gap < 0.10
+            and continue_margin < self.WEAK_EDGE_GUARD_MARGIN
+        )
+
+        should_continue = (
+            continue_margin > 0.0
+            and not low_confidence_guard
+            and not weak_edge_guard
+        )
+        return {
+            "should_continue": should_continue,
+            "continue_score": continue_score,
+            "stop_score": stop_score,
+            "continue_margin": continue_margin,
+            "best_gap": best_gap,
+            "low_confidence_guard": low_confidence_guard,
+            "weak_edge_guard": weak_edge_guard,
+            "decision_score_breakdown": {
+                "base_stop_threshold": stop_threshold,
+                "edge_pressure": edge_pressure,
+                "attackability_pressure": attackability_pressure,
+            },
         }
 
     def _stop_threshold(
@@ -1168,17 +1252,28 @@ class DaVinciDecisionEngine:
         should_continue: bool,
         best_move: Dict[str, Any],
         stop_threshold: float,
+        stop_score: float,
+        continue_score: float,
+        continue_margin: float,
         low_confidence_guard: bool,
         weak_edge_guard: bool,
     ) -> str:
         if should_continue:
             if best_move.get("continuation_value", 0.0) > 0.0:
-                return "最佳动作不仅单步收益为正，命中后继续收益也支持进攻。"
-            return "最佳动作期望收益超过停手阈值，可以继续进攻。"
+                return (
+                    f"继续评分 {continue_score:.2f} 高于停手评分 {stop_score:.2f}，"
+                    "命中后继续收益也支持进攻。"
+                )
+            return f"继续评分 {continue_score:.2f} 高于停手评分 {stop_score:.2f}，可以继续进攻。"
         if low_confidence_guard:
             return "当前属于高暴露局面，命中率与续压潜力都偏弱，建议停手。"
         if weak_edge_guard:
             return "最佳动作与次优动作差距过小，当前进攻边际优势不足，建议停手。"
+        if stop_score > stop_threshold:
+            return (
+                f"继续评分 {continue_score:.2f} 仍低于停手评分 {stop_score:.2f}；"
+                f"当前续压空间不足，净优势 {continue_margin:.2f}。"
+            )
         return f"最佳动作期望收益 {best_move['expected_value']:.2f} 未超过停手阈值 {stop_threshold:.2f}。"
 
     def _build_reason(

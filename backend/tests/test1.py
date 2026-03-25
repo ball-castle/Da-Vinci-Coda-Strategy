@@ -168,9 +168,15 @@ class GameControllerOutputTests(unittest.TestCase):
         result = GameController(game_state).run_turn()
         self.assertIn("decision_summary", result)
         self.assertIn("evaluated_move_count", result["decision_summary"])
+        self.assertIn("stop_score", result["decision_summary"])
+        self.assertIn("continue_score", result["decision_summary"])
+        self.assertIn("continue_margin", result["decision_summary"])
+        self.assertIn("decision_score_breakdown", result["decision_summary"])
         if result["top_moves"]:
             self.assertIn("recommendation_reason", result["top_moves"][0])
             self.assertIn("score_breakdown", result["top_moves"][0])
+            self.assertIn("immediate_expected_value", result["top_moves"][0])
+            self.assertIn("post_hit_continuation_value", result["top_moves"][0])
 
 
 if __name__ == "__main__":
