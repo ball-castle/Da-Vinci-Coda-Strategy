@@ -769,7 +769,13 @@ class GameControllerOutputTests(unittest.TestCase):
         result = GameController(game_state).run_turn()
         self.assertIn("decision_summary", result)
         self.assertIn("behavior_debug", result)
+        self.assertEqual(
+            result["behavior_debug"]["hypothesis_source"],
+            "target_slot_top_k_posterior_with_map_context",
+        )
+        self.assertEqual(result["behavior_debug"]["aggregation_top_k"], 3)
         self.assertEqual(result["behavior_debug"]["signal_count"], 0)
+        self.assertEqual(result["behavior_debug"]["map_signals"], [])
         self.assertIn("evaluated_move_count", result["decision_summary"])
         self.assertIn("stop_score", result["decision_summary"])
         self.assertIn("continue_score", result["decision_summary"])
@@ -821,14 +827,77 @@ class GameControllerOutputTests(unittest.TestCase):
 
         result = GameController(game_state).run_turn()
 
-        self.assertEqual(result["behavior_debug"]["hypothesis_source"], "map_blended_posterior")
+        self.assertEqual(
+            result["behavior_debug"]["hypothesis_source"],
+            "target_slot_top_k_posterior_with_map_context",
+        )
+        self.assertEqual(result["behavior_debug"]["aggregation_top_k"], 3)
         self.assertEqual(result["behavior_debug"]["signal_count"], 1)
+        self.assertEqual(len(result["behavior_debug"]["map_signals"]), 1)
         self.assertEqual(len(result["behavior_debug"]["signals"]), 1)
         self.assertIn("component_weights", result["behavior_debug"]["signals"][0])
         self.assertIn("value_selection", result["behavior_debug"]["signals"][0])
+        self.assertIn("candidate_explanations", result["behavior_debug"]["signals"][0])
+        self.assertEqual(
+            result["behavior_debug"]["signals"][0]["aggregation_mode"],
+            "target_slot_top_k_posterior",
+        )
         self.assertIn(
             "dominant_signal",
             result["behavior_debug"]["signals"][0]["value_selection"],
+        )
+        self.assertEqual(
+            result["behavior_debug"]["signals"][0]["value_selection"]["mode"],
+            "target_slot_top_k_posterior",
+        )
+        self.assertGreaterEqual(
+            result["behavior_debug"]["signals"][0]["candidate_count"],
+            1,
+        )
+
+    def test_controller_aggregates_behavior_debug_across_top_k_posterior_candidates(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        )
+
+        result = GameController(game_state).run_turn()
+        signal_debug = result["behavior_debug"]["signals"][0]
+
+        self.assertEqual(signal_debug["candidate_count"], 3)
+        self.assertGreater(signal_debug["covered_probability"], 0.0)
+        self.assertEqual(len(signal_debug["candidate_explanations"]), 3)
+        self.assertIn("reason_support", signal_debug["value_selection"])
+        self.assertIn("source_support", signal_debug["value_selection"])
+        self.assertIn("map_explanation", signal_debug)
+        self.assertIn("dominant_signal", signal_debug["value_selection"])
+        self.assertGreater(
+            signal_debug["value_selection"]["dominant_signal"]["posterior_support"],
+            0.0,
         )
 
 

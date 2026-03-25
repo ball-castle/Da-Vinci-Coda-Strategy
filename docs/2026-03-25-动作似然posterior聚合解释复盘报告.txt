@@ -1,0 +1,199 @@
+3/25-动作似然posterior聚合解释复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 22:12:27 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的下一步建议推进：
+
+把行为解释从 MAP 单世界推进到更稳的 posterior 聚合解释。
+
+上一轮虽然已经把：
+- progressive
+- anchor
+- boundary
+
+这些 value 信号显式输出到了 `behavior_debug`，
+但解释仍然有一个明显问题：
+- 它只建立在 blended posterior 的单个 MAP 世界上
+
+这意味着一旦：
+- 某个 target slot 本身还存在多个高概率候选
+- 而 MAP 只是在其中随便赢了一个很窄的概率差
+
+那么行为解释就会显得过于“单点化”，
+容易把本来还不稳的理由说得太确定。
+
+所以本轮目标很明确：
+- 不是继续加 heuristic
+- 而是把 `behavior_debug` 从单个 MAP 解释推进成 top-k posterior 聚合解释
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+
+具体推进如下：
+
+1. `behavior_debug` 正式从 MAP-only 升级为 posterior 聚合模式
+本轮在 `GameController` 中新增：
+- `BEHAVIOR_DEBUG_TOP_K`
+- `_build_behavior_debug(...)`
+- `_aggregate_behavior_signal_debug(...)`
+- `_replace_hypothesis_card(...)`
+- `_dominant_posterior_signal(...)`
+
+现在 `run_turn()` 返回的 `behavior_debug` 不再只是：
+- 直接拿一个 MAP hypothesis 去解释全部动作
+
+而是会对每条历史 guess：
+- 先拿目标 slot 的 posterior 分布
+- 取 top-k 候选 card
+- 再在“其他上下文仍用 MAP”的前提下
+- 聚合这些候选解释的共同 value signal
+
+这里要特别说明当前实现边界：
+- 这还不是“全世界 top-k 假设聚合”
+- 更准确地说，是“target slot top-k posterior + MAP 其余上下文”
+
+这是本轮故意采取的最小可验证推进路径。
+
+2. 返回结构新增 MAP 与 posterior 双视角
+本轮之后，`behavior_debug` 会显式返回：
+- `hypothesis_source`
+- `aggregation_top_k`
+- `map_signals`
+- `signals`
+
+其中：
+- `map_signals` 保留原来的单世界解释
+- `signals` 则是新的 posterior 聚合解释
+
+这一步的意义是：
+- 现在可以直接比较 MAP 单解释和 posterior 聚合解释
+- 不会因为新结构接进来，就把旧解释视角完全丢掉
+
+3. 每条 signal 现在会返回聚合候选解释
+新的 posterior 聚合 signal debug 中，当前会输出：
+- `aggregation_mode`
+- `candidate_count`
+- `covered_probability`
+- `candidate_explanations`
+- `value_selection.reason_support`
+- `value_selection.source_support`
+- `value_selection.dominant_signal`
+- `map_explanation`
+
+也就是说，
+现在一条历史 guess 已经不再只是：
+- “在一个世界里它为什么合理”
+
+而是开始变成：
+- “在当前 posterior 的前几个高概率候选里，它为什么仍然大致合理”
+
+4. 行为解释开始支持 posterior 支持度
+本轮新增的 `reason_support` / `source_support`，
+会把 top-k 候选中的共同信号按 posterior 权重聚合起来。
+
+这意味着系统开始能显式回答：
+- 哪个 value reason 只是在某个单候选里出现
+- 哪个 value reason 是多个高概率候选共同支持出来的
+
+这是和上一轮 MAP debug 相比最关键的结构提升。
+
+5. 解释输出继续纳入测试
+本轮不是只改结构，
+还同步补了 controller 级测试，验证：
+- `behavior_debug` 的 source 已经切到 posterior 聚合模式
+- `aggregation_top_k` 和 `map_signals` 会返回
+- 聚合后的 signal 会返回 `candidate_explanations`
+- `reason_support` / `source_support` / `dominant_signal` 都存在
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. controller 默认调试结构
+测试验证：
+- 即使没有历史 guess
+- `behavior_debug` 也会带上 posterior 聚合模式的结构字段
+
+2. posterior 聚合 signal 输出
+测试验证：
+- 有历史 guess 时
+- `behavior_debug.signals` 中会返回 `aggregation_mode`
+- 也会带上 `candidate_explanations`
+
+3. top-k posterior 候选聚合
+新增测试验证：
+- 当前 signal debug 会聚合 3 个 top-k posterior 候选
+- 会输出 `covered_probability`
+- 会输出 `reason_support` / `source_support`
+- 会输出 posterior 视角下的 `dominant_signal`
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 23 个测试全部通过
+
+四、本轮解决了什么问题
+1. 行为解释不再过度依赖单个 MAP 世界
+这是本轮最核心的推进。
+
+过去 `behavior_debug` 最大的问题不是没有解释，
+而是解释太容易被单个 MAP 候选绑架。
+
+本轮之后，
+解释已经开始回答：
+- 这条动作是不是被多个高概率 target-card 候选共同支持
+
+而不是只回答：
+- 在某一个最优候选里它看起来像不像
+
+2. “为什么他会报这个值”开始具备 posterior 稳定性
+上一轮能回答：
+- 在某个世界里，这条动作为什么合理
+
+本轮则进一步回答：
+- 在当前 posterior 前几个最可能的 target 候选里，这种解释是不是稳定成立
+
+这会让行为 debug 更适合真实调参与复盘。
+
+3. 为下一步把解释信号反馈到 decision 层打好了基础
+因为现在解释已经不再只是单点标签，
+而是带上了：
+- posterior support
+- weighted strength
+- top-k 候选覆盖度
+
+这意味着后面如果要把这些解释信号更深反馈给 decision 层，
+会更容易判断：
+- 哪些信号只是偶然的
+- 哪些信号是 posterior 上稳定成立的
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 继续把 posterior 聚合解释从“target slot 层”推进到“更完整假设层”
+当前实现仍然是：
+- target slot top-k posterior
+- 其余上下文仍用 MAP
+
+下一步可以继续尝试：
+- 在不把计算量做爆的前提下
+- 引入更完整的 top-k hypothesis 近似
+
+2. 开始让 posterior 解释信号反哺 decision 层
+现在已经有了：
+- posterior support
+- dominant signal
+- weighted strength
+
+下一步可以尝试：
+- 把这些稳定解释信号接入候选动作排序
+- 或继续猜 / 停手边界
+
+3. 如果继续补行为层，保持“新聚合结构 + 新测试 + 新复盘”同步推进
+
+六、一句话总结
+本轮推进的核心成果，是把 `behavior_debug` 从单个 MAP 世界解释，推进成了“target slot top-k posterior + MAP 上下文”的聚合解释，让系统开始回答：这条动作的 value 信号，是否被多个高概率候选共同支持。

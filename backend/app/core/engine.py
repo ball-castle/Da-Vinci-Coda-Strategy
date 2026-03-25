@@ -2139,6 +2139,8 @@ class DaVinciDecisionEngine:
 class GameController:
     """Coordinate hard inference, soft weighting, posterior blending, and move scoring."""
 
+    BEHAVIOR_DEBUG_TOP_K = 3
+
     def __init__(self, game_state: GameState):
         self.game_state = game_state
         self.inference_engine = DaVinciInferenceEngine(game_state)
@@ -2168,8 +2170,10 @@ class GameController:
                 "opponent_hidden_count": 0,
                 "risk_factor": default_risk,
                 "behavior_debug": {
-                    "hypothesis_source": "map_blended_posterior",
+                    "hypothesis_source": "target_slot_top_k_posterior_with_map_context",
+                    "aggregation_top_k": self.BEHAVIOR_DEBUG_TOP_K,
                     "signal_count": 0,
+                    "map_signals": [],
                     "signals": [],
                 },
                 "should_stop": True,
@@ -2203,16 +2207,10 @@ class GameController:
         target_player_id = getattr(self.game_state, "target_player_id", None)
         target_probability_matrix = full_probability_matrix.get(target_player_id, {})
         target_hard_matrix = hard_full_probability_matrix.get(target_player_id, {})
-        behavior_debug_hypothesis = self._map_hypothesis_from_matrix(full_probability_matrix)
-        behavior_debug = {
-            "hypothesis_source": "map_blended_posterior",
-            "signal_count": sum(len(signals) for signals in guess_signals_by_player.values()),
-            "signals": self.behavior_model.explain_guess_signals(
-                behavior_debug_hypothesis,
-                guess_signals_by_player,
-                self.game_state,
-            ),
-        }
+        behavior_debug = self._build_behavior_debug(
+            full_probability_matrix=full_probability_matrix,
+            guess_signals_by_player=guess_signals_by_player,
+        )
 
         return {
             "best_move": best_move,
@@ -2307,3 +2305,209 @@ class GameController:
             if player_hypothesis:
                 hypothesis_by_player[player_id] = player_hypothesis
         return hypothesis_by_player
+
+    def _build_behavior_debug(
+        self,
+        *,
+        full_probability_matrix: FullProbabilityMatrix,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+    ) -> Dict[str, Any]:
+        map_hypothesis = self._map_hypothesis_from_matrix(full_probability_matrix)
+        map_signals = self.behavior_model.explain_guess_signals(
+            map_hypothesis,
+            guess_signals_by_player,
+            self.game_state,
+        )
+        aggregated_signals = [
+            self._aggregate_behavior_signal_debug(
+                signal=signal,
+                full_probability_matrix=full_probability_matrix,
+                map_hypothesis=map_hypothesis,
+            )
+            for player_id in sorted(guess_signals_by_player)
+            for signal in guess_signals_by_player[player_id]
+        ]
+        return {
+            "hypothesis_source": "target_slot_top_k_posterior_with_map_context",
+            "aggregation_top_k": self.BEHAVIOR_DEBUG_TOP_K,
+            "signal_count": sum(len(signals) for signals in guess_signals_by_player.values()),
+            "map_signals": map_signals,
+            "signals": aggregated_signals,
+        }
+
+    def _aggregate_behavior_signal_debug(
+        self,
+        *,
+        signal: GuessSignal,
+        full_probability_matrix: FullProbabilityMatrix,
+        map_hypothesis: Dict[str, Dict[int, Card]],
+    ) -> Dict[str, Any]:
+        map_explanation = self.behavior_model.explain_signal(
+            map_hypothesis,
+            self.game_state,
+            signal,
+        )
+        slot_distribution = (
+            full_probability_matrix
+            .get(signal.target_player_id, {})
+            .get(signal.target_slot_index, {})
+        )
+        ranked_candidates = sorted(
+            slot_distribution.items(),
+            key=lambda item: (-item[1], card_sort_key(item[0])),
+        )[: self.BEHAVIOR_DEBUG_TOP_K]
+        covered_probability = sum(probability for _, probability in ranked_candidates)
+        if not ranked_candidates or covered_probability <= 0.0:
+            fallback_value_selection = dict(map_explanation["value_selection"])
+            fallback_value_selection.update(
+                {
+                    "mode": "map_only_fallback",
+                    "covered_probability": 0.0,
+                    "candidate_count": 0,
+                    "reason_support": [],
+                    "source_support": [],
+                }
+            )
+            return {
+                **map_explanation,
+                "aggregation_mode": "map_only_fallback",
+                "candidate_count": 0,
+                "covered_probability": 0.0,
+                "candidate_explanations": [],
+                "map_explanation": map_explanation,
+                "value_selection": fallback_value_selection,
+            }
+
+        normalized_total = max(self.behavior_model.EPSILON, covered_probability)
+        weighted_component_sums: DefaultDict[str, float] = defaultdict(float)
+        weighted_value_component_sums: DefaultDict[str, float] = defaultdict(float)
+        reason_support: DefaultDict[str, float] = defaultdict(float)
+        source_support: DefaultDict[str, float] = defaultdict(float)
+        source_strength: DefaultDict[str, float] = defaultdict(float)
+        candidate_explanations: List[Dict[str, Any]] = []
+
+        for card, probability in ranked_candidates:
+            normalized_weight = probability / normalized_total
+            candidate_hypothesis = self._replace_hypothesis_card(
+                map_hypothesis,
+                signal.target_player_id,
+                signal.target_slot_index,
+                card,
+            )
+            explanation = self.behavior_model.explain_signal(
+                candidate_hypothesis,
+                self.game_state,
+                signal,
+            )
+            candidate_explanations.append(
+                {
+                    "hypothesis_target_card": serialize_card(card),
+                    "posterior_probability": probability,
+                    "normalized_weight": normalized_weight,
+                    "dominant_signal": explanation["value_selection"]["dominant_signal"],
+                    "signal_tags": explanation["value_selection"]["signal_tags"],
+                    "value_selection_total_weight": explanation["value_selection"]["total_weight"],
+                }
+            )
+            for component_name, weight in explanation["component_weights"].items():
+                weighted_component_sums[component_name] += normalized_weight * weight
+
+            value_selection = explanation["value_selection"]
+            weighted_value_component_sums["total_weight"] += normalized_weight * value_selection["total_weight"]
+            weighted_value_component_sums["progressive"] += normalized_weight * value_selection["progressive"]["weight"]
+            weighted_value_component_sums["anchor"] += normalized_weight * value_selection["anchor"]["weight"]
+            weighted_value_component_sums["boundary"] += normalized_weight * value_selection["boundary"]["weight"]
+            for reason in value_selection["signal_tags"]:
+                reason_support[reason] += normalized_weight
+
+            dominant_signal = value_selection["dominant_signal"]
+            source = str(dominant_signal.get("source", "neutral"))
+            source_support[source] += normalized_weight
+            source_strength[source] += normalized_weight * abs(float(dominant_signal.get("weight", 1.0)) - 1.0)
+
+        aggregated_value_selection = {
+            "mode": "target_slot_top_k_posterior",
+            "covered_probability": covered_probability,
+            "candidate_count": len(candidate_explanations),
+            "total_weight": weighted_value_component_sums["total_weight"],
+            "expected_component_weights": {
+                "progressive": weighted_value_component_sums["progressive"],
+                "anchor": weighted_value_component_sums["anchor"],
+                "boundary": weighted_value_component_sums["boundary"],
+            },
+            "reason_support": [
+                {
+                    "reason": reason,
+                    "posterior_support": support,
+                }
+                for reason, support in sorted(
+                    reason_support.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ],
+            "source_support": [
+                {
+                    "source": source,
+                    "posterior_support": source_support[source],
+                    "weighted_strength": source_strength[source],
+                }
+                for source in sorted(
+                    source_support,
+                    key=lambda item: (-source_strength[item], -source_support[item], item),
+                )
+            ],
+        }
+        aggregated_value_selection["dominant_signal"] = self._dominant_posterior_signal(
+            aggregated_value_selection["source_support"],
+            aggregated_value_selection["reason_support"],
+        )
+
+        return {
+            **map_explanation,
+            "aggregation_mode": "target_slot_top_k_posterior",
+            "candidate_count": len(candidate_explanations),
+            "covered_probability": covered_probability,
+            "candidate_explanations": candidate_explanations,
+            "component_weights": dict(weighted_component_sums),
+            "map_explanation": map_explanation,
+            "value_selection": aggregated_value_selection,
+        }
+
+    def _replace_hypothesis_card(
+        self,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        player_id: str,
+        slot_index: int,
+        card: Card,
+    ) -> Dict[str, Dict[int, Card]]:
+        cloned = {
+            hypothesis_player_id: dict(cards_by_slot)
+            for hypothesis_player_id, cards_by_slot in hypothesis_by_player.items()
+        }
+        player_hypothesis = cloned.setdefault(player_id, {})
+        player_hypothesis[slot_index] = card
+        return cloned
+
+    def _dominant_posterior_signal(
+        self,
+        source_support: Sequence[Dict[str, Any]],
+        reason_support: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not source_support:
+            return {
+                "source": "neutral",
+                "reason": "neutral",
+                "posterior_support": 0.0,
+                "weighted_strength": 0.0,
+            }
+
+        strongest_source = source_support[0]
+        strongest_reason = reason_support[0]["reason"] if reason_support else "neutral"
+        strongest_reason_support = reason_support[0]["posterior_support"] if reason_support else 0.0
+        return {
+            "source": strongest_source["source"],
+            "reason": strongest_reason,
+            "posterior_support": strongest_source["posterior_support"],
+            "weighted_strength": strongest_source["weighted_strength"],
+            "reason_support": strongest_reason_support,
+        }
