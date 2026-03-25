@@ -445,6 +445,84 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(retry_weight, fresh_weight)
 
+    def test_target_value_selection_prefers_progressive_step_after_failed_guess(self):
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        )
+        jump_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=game_state.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=False,
+                ),
+            ],
+        )
+
+        hypothesis = {"opp": {1: ("W", 7)}}
+        progressive_signals = model.build_guess_signals(game_state)
+        jump_signals = model.build_guess_signals(jump_world)
+        progressive_score = model.score_hypothesis(
+            hypothesis,
+            progressive_signals,
+            game_state,
+        )
+        jump_score = model.score_hypothesis(
+            hypothesis,
+            jump_signals,
+            jump_world,
+        )
+
+        self.assertGreater(progressive_score, jump_score)
+
 
 class GameControllerOutputTests(unittest.TestCase):
     def test_controller_returns_decision_summary_and_reasoning(self):

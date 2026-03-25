@@ -185,6 +185,10 @@ class BehavioralLikelihoodModel:
     TARGET_NEIGHBOR_BONUS = 1.10
     TARGET_CLOSE_BONUS = 1.04
     TARGET_FAR_PENALTY = 0.97
+    TARGET_VALUE_PROGRESSIVE_STEP_BONUS = 1.08
+    TARGET_VALUE_DIRECTIONAL_BONUS = 1.03
+    TARGET_VALUE_STALLED_PENALTY = 0.90
+    TARGET_VALUE_WRONG_DIRECTION_PENALTY = 0.92
     WRONG_COLOR_SLOT_PENALTY = 0.88
 
     CONTINUE_HIGH_ATTACKABILITY_BONUS = 1.10
@@ -405,6 +409,13 @@ class BehavioralLikelihoodModel:
             hypothesis_by_player,
             signal,
         )
+        weight *= self._score_target_value_selection(
+            game_state,
+            hypothesis_by_player,
+            signal,
+            target_card,
+            guesser_cards,
+        )
         weight *= self._score_target_slot(
             game_state,
             hypothesis_by_player,
@@ -583,6 +594,68 @@ class BehavioralLikelihoodModel:
             return weight * self.TARGET_CLOSE_BONUS
         return weight * (self.TARGET_FAR_PENALTY ** max(1, distance - 2))
 
+    def _score_target_value_selection(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+        target_card: Card,
+        guesser_cards: Sequence[Card],
+    ) -> float:
+        guessed_numeric = numeric_card_value(signal.guessed_card)
+        target_numeric = numeric_card_value(target_card)
+        if guessed_numeric is None or target_numeric is None:
+            return 1.0
+
+        weight = 1.0
+        low, high, width = self._slot_numeric_interval(
+            game_state,
+            hypothesis_by_player,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
+
+        prior_failed_values = self._prior_failed_numeric_guesses_on_slot(game_state, signal)
+        if prior_failed_values:
+            latest_failed = prior_failed_values[-1]
+            direction = 0
+            if target_numeric > latest_failed:
+                direction = 1
+            elif target_numeric < latest_failed:
+                direction = -1
+
+            if direction != 0:
+                expected_progress = latest_failed + direction
+                delta = guessed_numeric - latest_failed
+                if guessed_numeric == expected_progress:
+                    weight *= self.TARGET_VALUE_PROGRESSIVE_STEP_BONUS
+                elif delta == 0:
+                    weight *= self.TARGET_VALUE_STALLED_PENALTY
+                elif delta * direction > 0:
+                    weight *= self.TARGET_VALUE_DIRECTIONAL_BONUS
+                else:
+                    weight *= self.TARGET_VALUE_WRONG_DIRECTION_PENALTY
+
+        same_color_values = sorted(
+            numeric_card_value(card)
+            for card in guesser_cards
+            if card[0] == signal.guessed_card[0] and numeric_card_value(card) is not None
+        )
+        same_color_values = [value for value in same_color_values if value is not None]
+
+        if same_color_values and width <= 4:
+            nearest_anchor_distance = min(abs(guessed_numeric - value) for value in same_color_values)
+            if nearest_anchor_distance == 1:
+                weight *= self.SELF_ADJACENT_ANCHOR_BONUS
+            elif nearest_anchor_distance >= 4:
+                weight *= 0.97
+
+        if low is not None and high is not None and width <= 3:
+            if guessed_numeric in {low + 1, high - 1}:
+                weight *= 1.03
+
+        return weight
+
     def _score_continue_decision(
         self,
         game_state: GameState,
@@ -706,6 +779,14 @@ class BehavioralLikelihoodModel:
         game_state: GameState,
         signal: GuessSignal,
     ) -> bool:
+        return bool(self._prior_failed_numeric_guesses_on_slot(game_state, signal))
+
+    def _prior_failed_numeric_guesses_on_slot(
+        self,
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> List[int]:
+        failed_values: List[int] = []
         guess_action_index = 0
         for action in getattr(game_state, "actions", ()):
             if getattr(action, "action_type", None) != "guess":
@@ -719,10 +800,13 @@ class BehavioralLikelihoodModel:
                 and getattr(action, "target_slot_index", None) == signal.target_slot_index
                 and not bool(getattr(action, "result", False))
             ):
-                return True
+                guessed_card = action.guessed_card()
+                guessed_numeric = numeric_card_value(guessed_card)
+                if guessed_numeric is not None:
+                    failed_values.append(guessed_numeric)
 
             guess_action_index += 1
-        return False
+        return failed_values
 
     def _slot_numeric_interval(
         self,

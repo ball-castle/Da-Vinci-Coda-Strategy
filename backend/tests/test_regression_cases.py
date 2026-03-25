@@ -7,7 +7,8 @@ from typing import Dict, List, Optional
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.core.engine import DaVinciDecisionEngine
+from app.core.engine import BehavioralLikelihoodModel, DaVinciDecisionEngine
+from app.core.state import CardSlot, GameState, GuessAction, PlayerState
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,15 @@ class DecisionRegressionCase:
     positive_breakdown_key: Optional[str] = None
     min_continue_margin: Optional[float] = None
     max_continue_margin: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class BehaviorRegressionCase:
+    name: str
+    preferred_state: GameState
+    alternative_state: GameState
+    preferred_hypothesis: Dict[str, Dict[int, tuple]]
+    alternative_hypothesis: Dict[str, Dict[int, tuple]]
 
 
 def build_move(**overrides: float) -> Dict[str, float]:
@@ -183,6 +193,259 @@ DECISION_REGRESSION_CASES = [
 ]
 
 
+BEHAVIOR_REGRESSION_CASES = [
+    BehaviorRegressionCase(
+        name="same_player_focus",
+        preferred_state=GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        ),
+        alternative_state=GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        ),
+        preferred_hypothesis={"opp": {1: ("W", 3)}, "side": {1: ("W", 10)}},
+        alternative_hypothesis={"opp": {1: ("W", 3)}, "side": {1: ("W", 10)}},
+    ),
+    BehaviorRegressionCase(
+        name="same_slot_retry",
+        preferred_state=GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        ),
+        alternative_state=GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=2,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        ),
+        preferred_hypothesis={"opp": {1: ("W", 3), 2: ("W", 9)}},
+        alternative_hypothesis={"opp": {1: ("W", 3), 2: ("W", 9)}},
+    ),
+    BehaviorRegressionCase(
+        name="progressive_value_step",
+        preferred_state=GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        ),
+        alternative_state=GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=False,
+                ),
+            ],
+        ),
+        preferred_hypothesis={"opp": {1: ("W", 7)}},
+        alternative_hypothesis={"opp": {1: ("W", 7)}},
+    ),
+]
+
+
 class DecisionRegressionCaseTests(unittest.TestCase):
     def test_decision_regression_cases(self):
         engine = DaVinciDecisionEngine()
@@ -209,6 +472,25 @@ class DecisionRegressionCaseTests(unittest.TestCase):
                     self.assertGreater(summary["continue_margin"], case.min_continue_margin)
                 if case.max_continue_margin is not None:
                     self.assertLess(summary["continue_margin"], case.max_continue_margin)
+
+
+class BehaviorRegressionCaseTests(unittest.TestCase):
+    def test_behavior_regression_cases(self):
+        model = BehavioralLikelihoodModel()
+
+        for case in BEHAVIOR_REGRESSION_CASES:
+            with self.subTest(case=case.name):
+                preferred_score = model.score_hypothesis(
+                    case.preferred_hypothesis,
+                    model.build_guess_signals(case.preferred_state),
+                    case.preferred_state,
+                )
+                alternative_score = model.score_hypothesis(
+                    case.alternative_hypothesis,
+                    model.build_guess_signals(case.alternative_state),
+                    case.alternative_state,
+                )
+                self.assertGreater(preferred_score, alternative_score)
 
 
 if __name__ == "__main__":

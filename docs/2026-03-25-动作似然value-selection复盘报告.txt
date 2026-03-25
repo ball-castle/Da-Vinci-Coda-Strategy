@@ -1,0 +1,170 @@
+3/25-动作似然value-selection复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 21:15:24 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的下一步建议推进：
+
+继续补 value 选择里的更强换位思考。
+
+这一轮要解决的问题是：
+- 当前系统虽然已经能判断“这个值落不落在 interval 里”
+- 也能判断“这个值离真实 target 近不近”
+
+但它还没有更明确回答：
+- 站在 guesser 当时的视角
+- 为什么他会在这一刻报出这个值
+
+所以本轮重点，不是继续补 player / slot，
+而是让 value 选择开始具备：
+- 失败后沿正确方向逼近
+- 同 slot 连续试探时的数值推进逻辑
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+- backend/tests/test_regression_cases.py
+
+具体推进如下：
+
+1. 新增显式的 value 选择评分
+本轮在 `BehavioralLikelihoodModel` 中新增：
+- `_score_target_value_selection(...)`
+
+并把它正式接入 `_score_signal(...)`。
+
+这意味着行为层现在在结构上已经显式拆成：
+- self-hand consistency
+- target-player selection
+- target-slot selection
+- target-value selection
+- continue-decision fit
+
+也就是说，value 选择终于不再只是埋在 slot/value 混合评分里，
+而是有了独立评分位。
+
+2. 引入同 slot 失败后的数值推进逻辑
+本轮新增：
+- `TARGET_VALUE_PROGRESSIVE_STEP_BONUS`
+- `TARGET_VALUE_DIRECTIONAL_BONUS`
+- `TARGET_VALUE_STALLED_PENALTY`
+- `TARGET_VALUE_WRONG_DIRECTION_PENALTY`
+- `_prior_failed_numeric_guesses_on_slot(...)`
+
+当前逻辑会检查：
+- 同一个 guesser
+- 针对同一个 target player / slot
+- 之前失败过哪些数值猜测
+
+然后评估当前数值选择是否呈现出：
+- 沿正确方向一步步逼近
+- 至少朝正确方向移动
+- 原地踏步
+- 朝错误方向偏离
+
+这一步的意义是：
+- 系统终于开始理解“不是所有落在 interval 内的值都一样合理”
+- 同样在区间里，连续试探链中的数值推进方式本身也是动作证据
+
+3. 行为模型开始识别“progressive probing”
+本轮之后，
+对于同一个 slot 的连续失败试探，
+系统开始能区分：
+- 这是在沿着坍缩后的信息继续压
+- 还是只是随便跳一个数
+
+这让 value 选择第一次真正带上了：
+- 时序
+- 局部搜索路径
+- guesser 视角下的推进感
+
+而不再只是静态数值比较。
+
+4. 新行为信号纳入固定 regression case 集
+本轮不仅补了单元测试，
+还把新的 history-sensitive 行为信号纳入了固定 regression case 集。
+
+`backend/tests/test_regression_cases.py` 现在已经新增：
+- `BehaviorRegressionCase`
+- `BEHAVIOR_REGRESSION_CASES`
+
+并把以下 case 固化为命名回归项：
+- same_player_focus
+- same_slot_retry
+- progressive_value_step
+
+这意味着后续如果继续改动作似然模型，
+这些边界不再只靠零散测试守住，
+而是已经进入固定回归验证。
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. progressive value step 偏好
+新增测试验证：
+- 当同一 slot 先前已经失败试探过一个数值
+- 当前新值如果是沿正确方向推进的一步
+- 行为评分会高于“直接跳一个更远值”的做法
+
+2. behavior regression case 集
+本轮新增的行为回归集会统一验证：
+- same-player focus
+- same-slot retry
+- progressive value step
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 17 个测试全部通过
+
+四、本轮解决了什么问题
+1. value 选择终于不再只是静态 interval 判断
+这是本轮最关键的推进点。
+
+过去 value 选择更多还是：
+- 这个值在不在区间里
+- 这个值离 target 近不近
+
+本轮之后，系统开始显式识别：
+- 它是不是沿着同一条试探链自然逼近出来的值
+
+2. 动作似然第一次在 value 层真正带上时序
+player / slot 层上一轮已经开始吃动作顺序。
+
+本轮之后，
+value 层也开始吃动作顺序，
+并且能识别：
+- 连续试探中的正确推进
+- 原地踏步
+- 方向错误
+
+这让 `P(action | state)` 的近似结构更完整了。
+
+3. 行为层与回归验证的耦合更健康
+本轮不是只加了一条 heuristic，
+而是同时做了：
+- 新评分因子
+- 新单元测试
+- 新 regression case
+
+这样后续继续补动作似然模型时，
+验证成本会明显更低。
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 继续补 value 选择里的更强换位思考
+下一步可以继续尝试：
+- 结合 guesser 自身同色 anchor
+- 结合当前 slot 的局部边界
+- 进一步判断“这个值为什么会成为此时最像人会报出的值”
+
+2. 如果继续补行为层，优先让新信号都进入固定 regression case 集
+
+3. 等 value 选择的结构更稳后，再考虑把这些更强的行为似然更深地反馈给 decision 层
+
+六、一句话总结
+本轮推进的核心成果，是让 value 选择第一次开始显式识别“连续失败试探后的正确数值推进”，把动作似然从静态 interval 判断，进一步推进成带时序和 guesser 视角的 value-selection 近似。
