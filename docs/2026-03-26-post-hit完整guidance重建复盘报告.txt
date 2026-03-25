@@ -1,0 +1,182 @@
+2026-03-26 post-hit 完整 guidance 重建复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《post-hit 行为支撑直接反馈停手边界复盘报告》的下一步建议，这一轮继续沿第一条分支推进：
+
+- 把 post-hit guidance
+- 从“confirmed signal 增量重建”推进到“更完整的 posterior guidance 重建”
+
+上一轮已经做到：
+- post-hit rollout 会吸收最新 confirmed signal
+- 并把这条新增证据合并回 guidance
+
+但上一轮之后仍然有一个明显边界：
+- guidance 的重建仍然过于依赖“最后一条新 signal”
+- 还没有把 post-hit 整段行为历史重新纳入
+- 这会让已有历史画像在某些场景下被过度简化
+
+所以这一轮的目标是：
+- 不再只做单条 signal 增量更新
+- 而是用 post-hit 整段 signal 历史重建 guidance
+- 同时保留 base guidance，避免把原有有效画像直接冲掉
+
+二、本轮核心改动
+1. `_rebuild_post_hit_behavior_guidance_profile(...)` 改为 full-history rebuild
+位置：
+- `backend/app/core/engine.py`
+
+本轮之前：
+- 只取 post-hit 历史中的最后一条 acting-player signal
+- 基于 MAP hypothesis 做一次增量更新
+
+本轮之后：
+- 会先构造一份 guidance debug 专用概率矩阵
+- 再基于 post-hit 整段 `guess_signals_by_player`
+- 重建一版更完整的 behavior debug
+- 最后从整段行为历史里重新抽 guidance profile
+
+这意味着：
+- post-hit guidance 不再只是“最后一条动作的画像”
+- 而是开始重新看“命中后这整个行为历史在当前 posterior 下是什么画像”
+
+2. 新增 `_augment_behavior_debug_matrix(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 为 post-hit guidance 重建准备一份 debug 专用矩阵
+- 对 post-hit 历史中已在 `game_state` 里公开确认的 target slot
+- 直接补上确定性分布 `{card: 1.0}`
+
+这样做的意义是：
+- post-hit guidance rebuild 不会因为 success matrix 里移除了已命中 slot
+- 就失去对这些 confirmed signal 的 posterior 支撑
+
+也就是说：
+- 现在 guidance rebuild 已经能同时看见
+  - 仍然未决的 slot posterior
+  - 已经确认的行为目标位
+
+3. 新增 `_blend_behavior_guidance_profiles(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 把 base guidance 与 post-hit full-history rebuild 结果做按 `signal_count` 的加权融合
+
+当前融合内容包括：
+- `signal_count`
+- `average_posterior_support`
+- `average_weighted_strength`
+- `stable_signal_ratio`
+- `source_support_*`
+- `guidance_multiplier`
+
+这一步很关键，因为本轮一开始如果直接用 rebuilt profile 替换 base profile，
+会把已有 guidance 里仍然有效的结构直接抹掉。
+
+改成加权融合后，结构就变成：
+- base guidance 保留已有画像
+- post-hit rebuild 再把命中后的整段历史重新压进来
+
+这比上一轮的单条增量，也比“完全替换”都更稳。
+
+三、本轮收益
+这一轮最大的收益，是把 post-hit guidance 从“单条 confirmed signal 更新”，推进成了“整段 post-hit 行为历史重建 + base guidance 融合”。
+
+之前的结构更像：
+- 命中后只看最后一条新增信号
+
+这虽然比静态继承更好，
+但仍然不够表达：
+- post-hit 整段历史在当前 posterior 下到底呈现出怎样的稳定行为画像
+
+这轮之后变成：
+- post-hit 历史会重新做 guidance rebuild
+- 已有 guidance 也不会被粗暴丢掉
+
+换句话说：
+- 之前更像“局部增量修补”
+- 现在更像“局部重建后再和原画像融合”
+
+这让 post-hit continuation 的行为画像更接近真正的 posterior 历史聚合。
+
+四、测试补充
+1. 新增 full-history guidance rebuild 测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_post_hit_rollout_rebuilds_guidance_from_full_post_hit_signal_history`
+
+验证内容：
+- base guidance 完全中性
+- acting player 在 post-hit 历史里有两条 signal
+  - 一条旧失败动作
+  - 一条新命中动作
+- 进入 post-hit rollout 后
+  - `behavior_guidance_signal_count` 至少为 2
+  - `behavior_guidance_multiplier` 大于 1
+  - `behavior_guidance_support` 大于 0
+
+这条测试锁住的不是字段出现，
+而是：
+- post-hit guidance 不再只吃最新一条 signal
+- 而是真的开始基于整段 post-hit 历史重建
+
+2. 回归旧的 ranking-aware rollout 测试
+本轮在推进 full-history rebuild 时，曾把旧的：
+- `test_post_hit_rollout_uses_behavior_ranked_next_turn_edges_when_context_available`
+
+打成了平值。
+
+最终通过新增 profile 融合层，把这个旧边界重新拉回：
+- 既保住 base guidance 的有效画像
+- 又把 post-hit 历史重建接了进来
+
+这一步的价值在于：
+- 证明这轮不是只把 guidance 算法做复杂
+- 而是真正把“更完整 rebuild”与“已有稳定画像”兼容住了
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 42 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit guidance 的结构已经变成：
+
+1. 当前轮 base guidance
+2. post-hit 行为历史完整 rebuild
+3. rebuild 后与 base guidance 融合
+4. 再反馈给 next-turn ranking 与当前边界
+
+也就是说：
+- post-hit 行为画像已经不再只是静态继承
+- 也不再只是单条 signal 增量更新
+- 而是开始具备更完整的 posterior 历史重建形态
+
+但边界仍然清楚：
+- 这轮依然是“轻量 guidance rebuild”
+- 还没有把 post-hit 行为解释完整输出成一份独立 debug 结构
+- 也还没有继续把 post-hit 的正向支持和负向脆弱性拆成更细的边界项
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把当前边界里的 post-hit 行为支撑继续拆成“支撑增益”和“支撑脆弱性”两部分
+目标：
+- 不只是一个总 adjustment
+- 而是更清楚地区分正向支持来源与负向拖累来源
+
+2. 给 post-hit guidance rebuild 增加独立 debug 输出
+目标：
+- 不只是在 score 里生效
+- 也让外部可以直接看到 post-hit guidance 是如何被重建出来的
+
+八、一句话总结
+本轮推进的核心成果，是把 post-hit guidance 从“最后一条 confirmed signal 的增量更新”，推进成了“整段 post-hit 行为历史的 guidance 重建，并与 base guidance 做融合”，让 post-hit 续压行为画像第一次开始具备更完整的 posterior 重建形态。

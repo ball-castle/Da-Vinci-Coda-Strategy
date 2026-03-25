@@ -1353,6 +1353,80 @@ class StopThresholdTests(unittest.TestCase):
             rollout["top_k_expected_continue_margin"],
         )
 
+    def test_post_hit_rollout_rebuilds_guidance_from_full_post_hit_signal_history(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=6, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=False,
+                ),
+            ],
+        )
+        success_matrix = {
+            "opp": {
+                1: {("W", 8): 0.60, ("W", 9): 0.40},
+            },
+            "side": {
+                0: {("W", 5): 0.85, ("W", 7): 0.15},
+            },
+        }
+        neutral_guidance_profile = {
+            "signal_count": 0.0,
+            "average_posterior_support": 0.0,
+            "average_weighted_strength": 0.0,
+            "stable_signal_ratio": 0.0,
+            "guidance_multiplier": 1.0,
+            "source_support_progressive": 0.0,
+            "source_support_same_color_anchor": 0.0,
+            "source_support_local_boundary": 0.0,
+        }
+
+        rollout = engine._evaluate_post_hit_rollout(
+            success_matrix=success_matrix,
+            my_hidden_count=2,
+            behavior_model=model,
+            guess_signals_by_player=model.build_guess_signals(game_state),
+            acting_player_id="me",
+            behavior_guidance_profile=neutral_guidance_profile,
+            game_state=game_state,
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("W", 5),
+            rollout_depth=0,
+        )
+
+        self.assertGreaterEqual(rollout["behavior_guidance_signal_count"], 2.0)
+        self.assertGreater(rollout["behavior_guidance_multiplier"], 1.0)
+        self.assertGreater(rollout["behavior_guidance_support"], 0.0)
+
     def test_choose_best_move_uses_post_hit_behavior_support_adjustment_on_narrow_edge(self):
         engine = DaVinciDecisionEngine()
         strong_support_move = {

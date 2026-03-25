@@ -2235,6 +2235,7 @@ class DaVinciDecisionEngine:
             post_hit_behavior_guidance_profile = self._rebuild_post_hit_behavior_guidance_profile(
                 base_profile=behavior_guidance_profile,
                 behavior_model=behavior_model,
+                full_probability_matrix=success_matrix,
                 game_state=post_hit_game_state,
                 guess_signals_by_player=post_hit_guess_signals_by_player,
                 behavior_map_hypothesis=post_hit_behavior_map_hypothesis,
@@ -2391,12 +2392,13 @@ class DaVinciDecisionEngine:
         *,
         base_profile: Optional[Dict[str, float]],
         behavior_model: BehavioralLikelihoodModel,
+        full_probability_matrix: FullProbabilityMatrix,
         game_state: GameState,
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         behavior_map_hypothesis: Dict[str, Dict[int, Card]],
         acting_player_id: str,
     ) -> Dict[str, float]:
-        profile = {
+        fallback_profile = {
             "signal_count": float((base_profile or {}).get("signal_count", 0.0)),
             "average_posterior_support": float((base_profile or {}).get("average_posterior_support", 0.0)),
             "average_weighted_strength": float((base_profile or {}).get("average_weighted_strength", 0.0)),
@@ -2413,53 +2415,109 @@ class DaVinciDecisionEngine:
         }
         acting_signals = guess_signals_by_player.get(acting_player_id, ())
         if not acting_signals:
-            return profile
+            return fallback_profile
 
-        latest_signal = acting_signals[-1]
-        explanation = behavior_model.explain_signal(
-            behavior_map_hypothesis,
-            game_state,
-            latest_signal,
+        guidance_matrix = self._augment_behavior_debug_matrix(
+            full_probability_matrix=full_probability_matrix,
+            game_state=game_state,
+            guess_signals_by_player=guess_signals_by_player,
         )
-        dominant_signal = explanation["value_selection"].get("dominant_signal", {})
-        source = str(dominant_signal.get("source", "neutral"))
-        if source == "neutral":
-            return profile
-
-        source_key = {
-            "progressive": "source_support_progressive",
-            "same_color_anchor": "source_support_same_color_anchor",
-            "local_boundary": "source_support_local_boundary",
-        }.get(source)
-        if source_key is None:
-            return profile
-
-        base_count = max(0.0, profile["signal_count"])
-        new_count = base_count + 1.0
-        resolved_support = 1.0
-        weighted_strength = max(
-            0.0,
-            abs(float(dominant_signal.get("weight", 1.0)) - 1.0),
+        guidance_map_hypothesis = self._map_hypothesis_from_matrix(guidance_matrix)
+        guidance_controller = GameController(game_state)
+        behavior_debug = guidance_controller._build_behavior_debug(
+            full_probability_matrix=guidance_matrix,
+            guess_signals_by_player=guess_signals_by_player,
+            map_hypothesis=guidance_map_hypothesis or behavior_map_hypothesis,
         )
-        stable_count = (profile["stable_signal_ratio"] * base_count) + 1.0
-        profile["signal_count"] = new_count
-        profile["average_posterior_support"] = (
-            (profile["average_posterior_support"] * base_count) + resolved_support
-        ) / new_count
-        profile["average_weighted_strength"] = (
-            (profile["average_weighted_strength"] * base_count) + weighted_strength
-        ) / new_count
-        profile["stable_signal_ratio"] = stable_count / new_count
-        profile[source_key] = ((profile[source_key] * base_count) + resolved_support) / new_count
-        profile["guidance_multiplier"] = clamp(
+        rebuilt_profile = guidance_controller._build_behavior_guidance_profile(
+            behavior_debug_signals=behavior_debug["signals"],
+            acting_player_id=acting_player_id,
+        )
+        if float(rebuilt_profile.get("signal_count", 0.0)) <= 0.0:
+            return fallback_profile
+        return self._blend_behavior_guidance_profiles(
+            base_profile=fallback_profile,
+            updated_profile=rebuilt_profile,
+        )
+
+    def _augment_behavior_debug_matrix(
+        self,
+        *,
+        full_probability_matrix: FullProbabilityMatrix,
+        game_state: GameState,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+    ) -> FullProbabilityMatrix:
+        augmented_matrix: FullProbabilityMatrix = {
+            player_id: {
+                slot_index: dict(slot_distribution)
+                for slot_index, slot_distribution in probability_matrix.items()
+            }
+            for player_id, probability_matrix in full_probability_matrix.items()
+        }
+        for signals in guess_signals_by_player.values():
+            for signal in signals:
+                try:
+                    slot = game_state.get_slot(signal.target_player_id, signal.target_slot_index)
+                except ValueError:
+                    continue
+                known_card = slot.known_card()
+                if known_card is None:
+                    continue
+                augmented_matrix.setdefault(signal.target_player_id, {})[signal.target_slot_index] = {
+                    known_card: 1.0,
+                }
+        return augmented_matrix
+
+    def _blend_behavior_guidance_profiles(
+        self,
+        *,
+        base_profile: Dict[str, float],
+        updated_profile: Dict[str, float],
+    ) -> Dict[str, float]:
+        base_count = max(0.0, float(base_profile.get("signal_count", 0.0)))
+        updated_count = max(0.0, float(updated_profile.get("signal_count", 0.0)))
+        if base_count <= 0.0:
+            return dict(updated_profile)
+        if updated_count <= 0.0:
+            return dict(base_profile)
+
+        total_count = base_count + updated_count
+        blended_profile = {
+            "signal_count": total_count,
+            "average_posterior_support": (
+                (float(base_profile.get("average_posterior_support", 0.0)) * base_count)
+                + (float(updated_profile.get("average_posterior_support", 0.0)) * updated_count)
+            ) / total_count,
+            "average_weighted_strength": (
+                (float(base_profile.get("average_weighted_strength", 0.0)) * base_count)
+                + (float(updated_profile.get("average_weighted_strength", 0.0)) * updated_count)
+            ) / total_count,
+            "stable_signal_ratio": (
+                (float(base_profile.get("stable_signal_ratio", 0.0)) * base_count)
+                + (float(updated_profile.get("stable_signal_ratio", 0.0)) * updated_count)
+            ) / total_count,
+            "source_support_progressive": (
+                (float(base_profile.get("source_support_progressive", 0.0)) * base_count)
+                + (float(updated_profile.get("source_support_progressive", 0.0)) * updated_count)
+            ) / total_count,
+            "source_support_same_color_anchor": (
+                (float(base_profile.get("source_support_same_color_anchor", 0.0)) * base_count)
+                + (float(updated_profile.get("source_support_same_color_anchor", 0.0)) * updated_count)
+            ) / total_count,
+            "source_support_local_boundary": (
+                (float(base_profile.get("source_support_local_boundary", 0.0)) * base_count)
+                + (float(updated_profile.get("source_support_local_boundary", 0.0)) * updated_count)
+            ) / total_count,
+        }
+        blended_profile["guidance_multiplier"] = clamp(
             0.95
-            + (0.08 * profile["average_posterior_support"])
-            + (0.07 * profile["stable_signal_ratio"])
-            + (0.14 * profile["average_weighted_strength"]),
+            + (0.08 * blended_profile["average_posterior_support"])
+            + (0.07 * blended_profile["stable_signal_ratio"])
+            + (0.14 * blended_profile["average_weighted_strength"]),
             0.93,
             1.12,
         )
-        return profile
+        return blended_profile
 
     def _map_hypothesis_from_matrix(
         self,
