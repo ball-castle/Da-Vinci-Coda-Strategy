@@ -1681,6 +1681,8 @@ class DaVinciDecisionEngine:
     BEHAVIOR_MATCH_NET_STRUCTURE_SCALE = 0.10
     BEHAVIOR_MATCH_DECISION_WINDOW = 0.12
     BEHAVIOR_MATCH_DECISION_NET_STRUCTURE_SCALE = 0.50
+    POST_HIT_BEHAVIOR_SUPPORT_SCALE = 0.08
+    POST_HIT_BEHAVIOR_SUPPORT_REFERENCE = 0.20
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -1790,6 +1792,7 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_component_penalty": 0.0,
                 "best_behavior_match_context_focus": 0.0,
                 "best_behavior_rollout_pressure": 0.0,
+                "best_post_hit_behavior_support_adjustment": 0.0,
                 "best_post_hit_continue_score": 0.0,
                 "best_post_hit_stop_score": 0.0,
                 "best_post_hit_continue_margin": 0.0,
@@ -1815,6 +1818,7 @@ class DaVinciDecisionEngine:
                     "top_k_rollout_pressure": 0.0,
                     "attackability_pressure": 0.0,
                     "behavior_rollout_pressure": 0.0,
+                    "post_hit_behavior_support_adjustment": 0.0,
                     "behavior_match_decision_bonus": 0.0,
                     "behavior_match_decision_structure_adjustment": 0.0,
                     "behavior_match_net_structure": 0.0,
@@ -1879,6 +1883,7 @@ class DaVinciDecisionEngine:
             "best_behavior_match_component_penalty": decision_snapshot["behavior_match_component_penalty"],
             "best_behavior_match_context_focus": decision_snapshot["behavior_match_context_focus"],
             "best_behavior_rollout_pressure": decision_snapshot["decision_score_breakdown"]["behavior_rollout_pressure"],
+            "best_post_hit_behavior_support_adjustment": decision_snapshot["decision_score_breakdown"]["post_hit_behavior_support_adjustment"],
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
             "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
@@ -2862,6 +2867,10 @@ class DaVinciDecisionEngine:
             + behavior_rollout_pressure
         )
         continue_score = best_move["expected_value"] + behavior_match_decision_bonus
+        post_hit_behavior_support_adjustment = self._post_hit_behavior_support_adjustment(
+            best_move=best_move,
+        )
+        continue_score += post_hit_behavior_support_adjustment
         pre_structure_continue_margin = continue_score - stop_score
         behavior_match_decision_structure_adjustment = self._behavior_match_decision_structure_adjustment(
             decision_bonus=behavior_match_decision_bonus,
@@ -2914,6 +2923,7 @@ class DaVinciDecisionEngine:
                 "top_k_rollout_pressure": top_k_rollout_pressure,
                 "attackability_pressure": attackability_pressure,
                 "behavior_rollout_pressure": behavior_rollout_pressure,
+                "post_hit_behavior_support_adjustment": post_hit_behavior_support_adjustment,
                 "behavior_match_decision_bonus": behavior_match_decision_bonus,
                 "behavior_match_decision_structure_adjustment": behavior_match_decision_structure_adjustment,
                 "behavior_match_net_structure": behavior_match_net_structure,
@@ -3162,6 +3172,43 @@ class DaVinciDecisionEngine:
             * stable_ratio
             * clamp(candidate_confidence, 0.0, 1.0)
         )
+
+    def _post_hit_behavior_support_adjustment(
+        self,
+        *,
+        best_move: Dict[str, Any],
+    ) -> float:
+        if (
+            float(best_move.get("post_hit_stop_score", 0.0)) <= 0.0
+            or float(best_move.get("post_hit_continue_margin", 0.0)) <= 0.0
+            or float(best_move.get("continuation_value", 0.0)) <= 0.0
+        ):
+            return 0.0
+
+        ranking_edge = clamp(
+            (
+                float(best_move.get("post_hit_top_k_continue_margin", 0.0))
+                - float(best_move.get("post_hit_top_k_expected_continue_margin", 0.0))
+            ) / self.POST_HIT_BEHAVIOR_SUPPORT_REFERENCE,
+            -1.0,
+            1.0,
+        )
+        guidance_edge = clamp(
+            (
+                float(best_move.get("post_hit_guidance_multiplier", self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER))
+                - 1.0
+            ) / 0.12,
+            -1.0,
+            1.0,
+        )
+        support_strength = clamp(
+            (0.5 * float(best_move.get("post_hit_guidance_stable_ratio", 0.0)))
+            + (0.5 * float(best_move.get("post_hit_guidance_support", 0.0))),
+            0.0,
+            1.0,
+        )
+        support_signal = (0.70 * ranking_edge) + (0.30 * guidance_edge)
+        return self.POST_HIT_BEHAVIOR_SUPPORT_SCALE * support_signal * support_strength
 
     def _behavior_match_decision_structure_adjustment(
         self,

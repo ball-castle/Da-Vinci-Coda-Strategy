@@ -1353,6 +1353,79 @@ class StopThresholdTests(unittest.TestCase):
             rollout["top_k_expected_continue_margin"],
         )
 
+    def test_choose_best_move_uses_post_hit_behavior_support_adjustment_on_narrow_edge(self):
+        engine = DaVinciDecisionEngine()
+        strong_support_move = {
+            "expected_value": 0.676,
+            "win_probability": 0.56,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.60,
+            "attackability_after_hit": 0.74,
+            "post_hit_continue_score": 0.36,
+            "post_hit_stop_score": 0.24,
+            "post_hit_continue_margin": 0.10,
+            "post_hit_best_gap": 0.24,
+            "post_hit_guidance_multiplier": 1.08,
+            "post_hit_guidance_support": 0.82,
+            "post_hit_guidance_stable_ratio": 1.0,
+            "post_hit_guidance_signal_count": 2.0,
+            "post_hit_top_k_expected_continue_margin": 0.03,
+            "post_hit_top_k_continue_margin": 0.10,
+            "post_hit_top_k_expected_support_ratio": 0.33,
+            "post_hit_top_k_support_ratio": 1.0,
+        }
+        weak_support_move = {
+            "expected_value": 0.676,
+            "win_probability": 0.56,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.60,
+            "attackability_after_hit": 0.74,
+            "post_hit_continue_score": 0.36,
+            "post_hit_stop_score": 0.24,
+            "post_hit_continue_margin": 0.10,
+            "post_hit_best_gap": 0.24,
+            "post_hit_guidance_multiplier": 0.96,
+            "post_hit_guidance_support": 0.18,
+            "post_hit_guidance_stable_ratio": 0.0,
+            "post_hit_guidance_signal_count": 1.0,
+            "post_hit_top_k_expected_continue_margin": 0.06,
+            "post_hit_top_k_continue_margin": 0.02,
+            "post_hit_top_k_expected_support_ratio": 0.67,
+            "post_hit_top_k_support_ratio": 0.33,
+        }
+
+        strong_best_move, strong_summary = engine.choose_best_move(
+            [strong_support_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        weak_best_move, weak_summary = engine.choose_best_move(
+            [weak_support_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(strong_best_move)
+        self.assertFalse(strong_summary["recommend_stop"])
+        self.assertGreater(
+            strong_summary["decision_score_breakdown"]["post_hit_behavior_support_adjustment"],
+            0.0,
+        )
+        self.assertGreater(
+            strong_summary["continue_score"],
+            strong_summary["stop_score"],
+        )
+        self.assertIsNone(weak_best_move)
+        self.assertTrue(weak_summary["recommend_stop"])
+        self.assertLess(
+            weak_summary["decision_score_breakdown"]["post_hit_behavior_support_adjustment"],
+            0.0,
+        )
+        self.assertLess(
+            weak_summary["continue_score"],
+            weak_summary["stop_score"],
+        )
+
     def test_choose_best_move_continues_on_strong_continuation_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

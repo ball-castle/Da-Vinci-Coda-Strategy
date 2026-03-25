@@ -1,0 +1,182 @@
+2026-03-26 post-hit 行为支撑直接反馈停手边界复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《post-hit 行为 guidance 重建复盘报告》的下一步建议，这一轮继续沿第二条分支推进：
+
+- 把 post-hit 的 ranking-aware support 和新 guidance
+- 更直接反馈回当前 stop / continue 边界
+
+上一轮已经做到：
+- post-hit rollout 内部会重建一版增量 guidance
+- 命中后新确认的 signal 会更新下一手行为画像
+
+但上一轮之后仍然有一个缺口：
+- 当前 stop / continue 仍然主要只通过 `continuation_value`
+- 间接吃到 post-hit 的 ranking-aware support 与 guidance
+- 还没有一个显式边界项直接表达“这条续压支撑到底稳不稳”
+
+所以这一轮的目标是：
+- 不重写当前 decision 框架
+- 只新增一个低权重、可解释、可回归的 post-hit support adjustment
+- 让当前边界开始显式看见 post-hit 行为支撑质量
+
+二、本轮核心改动
+1. 新增 `POST_HIT_BEHAVIOR_SUPPORT_SCALE = 0.08`
+位置：
+- `backend/app/core/engine.py`
+
+同时新增：
+- `POST_HIT_BEHAVIOR_SUPPORT_REFERENCE = 0.20`
+
+作用：
+- 控制 post-hit 行为支撑直接反馈到当前边界时的影响幅度
+- 保持这一轮仍然是轻量调节，而不是重写主评分
+
+2. 新增 `_post_hit_behavior_support_adjustment(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 在当前动作已经依赖正的 post-hit 续压空间时
+- 综合下面几项信息
+  - `post_hit_top_k_continue_margin - post_hit_top_k_expected_continue_margin`
+  - `post_hit_guidance_multiplier`
+  - `post_hit_guidance_support`
+  - `post_hit_guidance_stable_ratio`
+- 形成一个可正可负的小幅 adjustment
+
+它的含义很直接：
+- 如果 post-hit 的 ranking-aware support 明显优于纯 EV 视角
+- 且新的 guidance 也显示这条续压链更稳
+- 那当前边界会拿到一个正向加成
+
+反过来：
+- 如果 post-hit 的 ranking-aware support 反而偏弱
+- 或新的 guidance 本身不稳
+- 当前边界就会拿到一个负向 adjustment
+
+3. `_evaluate_continue_decision(...)` 正式接入这部分 adjustment
+本轮之后，当前 continue score 结构变成：
+
+- `continue_score = expected_value`
+- `+ behavior_match_decision_bonus`
+- `+ post_hit_behavior_support_adjustment`
+- `+ behavior_match_decision_structure_adjustment`
+
+其中：
+- `post_hit_behavior_support_adjustment`
+  - 专门表达“post-hit 行为支撑质量对当前边界的直接反馈”
+
+这一步的意义是：
+- 现在不是只有 `continuation_value` 在间接传递 rollout 质量
+- 而是 current-turn 边界第一次开始显式吃到：
+  - post-hit ranking-aware support
+  - post-hit guidance 稳定性
+
+4. decision summary 与 breakdown 补齐解释字段
+新增输出：
+- `best_post_hit_behavior_support_adjustment`
+
+同时 `decision_score_breakdown` 里新增：
+- `post_hit_behavior_support_adjustment`
+
+这样后面回看一轮 decision 时，可以直接分清：
+- 是 continuation value 自己在撑
+- 还是 post-hit 行为支撑本身，又额外推了一手或压了一手
+
+三、本轮收益
+这一轮最大的收益，是让 post-hit 行为支撑第一次从“间接影响 continuation value”，推进成了也会直接进入当前 stop / continue 边界。
+
+之前的结构更像：
+- post-hit ranking / guidance 会先影响下一手候选排序
+- 再通过 continuation value 间接传回来
+
+这虽然已经有用，但仍然不够直接表达：
+- 当前这手到底是不是被一条稳定的续压链在支撑
+
+这轮之后变成：
+- continuation value 继续保留
+- post-hit 行为支撑还会额外给当前边界一个显式 adjustment
+
+换句话说：
+- 之前更像“通过未来价值间接反馈”
+- 现在更像“未来价值 + 行为支撑质量 双通道反馈”
+
+这会让当前 stop / continue 边界对稳健续压和脆弱续压的区分更清楚。
+
+四、测试补充
+1. 新增 post-hit 行为支撑窄边界测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_uses_post_hit_behavior_support_adjustment_on_narrow_edge`
+
+验证内容：
+- 两个动作的基础 EV 基本一致
+- 都依赖正的 post-hit continuation
+- 唯一关键差别是：
+  - ranking-aware support 是否优于纯 EV
+  - post-hit guidance 是否稳
+- 结果是：
+  - 强支撑动作拿到正的 `post_hit_behavior_support_adjustment`
+  - 并被推过 continue 边界
+  - 弱支撑动作拿到负的 adjustment
+  - 并被压回停手
+
+这条测试的价值在于，它直接锁住了：
+- post-hit 行为支撑
+- 是否真的开始显式改变当前边界
+
+2. controller 输出字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_post_hit_behavior_support_adjustment`
+- `decision_score_breakdown["post_hit_behavior_support_adjustment"]`
+
+避免 controller 输出层漏掉这次新增的边界解释字段。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 41 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit continuation 对当前边界的反馈链已经变成：
+
+1. continuation value 间接反馈
+2. ranking-aware next-turn support 反馈
+3. guidance 增量重建反馈
+4. 当前边界显式 `post_hit_behavior_support_adjustment`
+
+也就是说：
+- 当前动作是不是值得继续
+- 现在不只看“命中后大概还有没有价值”
+- 也开始显式看“命中后的行为支撑到底稳不稳”
+
+但边界仍然清楚：
+- 这轮还是轻量 adjustment
+- 不是把 post-hit 内部整套 decision 全部回卷到当前层
+- 也还没有把 post-hit guidance 推进成更完整的 posterior guidance 重建
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 post-hit guidance 从“confirmed signal 增量重建”推进到“更完整的 posterior guidance 重建”
+目标：
+- 不只吃最新 confirmed signal
+- 也让整段 post-hit 行为历史重新做更完整聚合
+
+2. 把当前边界里关于 post-hit 的解释继续细化成“支撑增益”和“支撑脆弱性”两部分
+目标：
+- 不只是一个总 adjustment
+- 而是更清楚地区分正向支持与负向拖累来源
+
+八、一句话总结
+本轮推进的核心成果，是把 post-hit 的 ranking-aware support 和新 guidance 从“只通过 continuation value 间接传回”，推进成了也会直接形成一个显式的 `post_hit_behavior_support_adjustment` 进入当前 stop / continue 边界，让系统第一次能直接回答：这条续压行为支撑本身，到底是在推你继续，还是在压你停手。
