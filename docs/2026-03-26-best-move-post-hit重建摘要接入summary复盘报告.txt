@@ -1,0 +1,134 @@
+2026-03-26 best move post-hit 重建摘要接入 summary 复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《post-hit guidance profile delta 输出复盘报告》的第一条下一步建议，这一轮不再继续扩展 move 级 debug，而是把 best move 的 post-hit rebuild 轻量摘要直接接入 `decision_summary`。
+
+上一轮之后，虽然 move 级已经可以看到：
+
+- `post_hit_guidance_debug`
+- `rebuilt_delta_from_base`
+- `blended_delta_from_base`
+
+但如果只看 `decision_summary`，
+仍然很难快速回答：
+
+- best move 的 post-hit rebuild 到底有没有发生
+- 用了多少条 signal
+- 增强了多少个 confirmed slot
+- 最终 guidance multiplier 相对 base 提升了多少
+
+所以这一轮的目标是：
+
+- 把 best move 的 rebuild 摘要直接放进 `decision_summary`
+- 让外部在不展开完整 debug 对象的情况下，也能先读到最关键的四个摘要量
+
+二、本轮核心改动
+1. `decision_summary` 新增 best move 的 post-hit rebuild 摘要字段
+位置：
+- `backend/app/core/engine.py`
+- `backend/tests/test1.py`
+
+本轮新增字段：
+
+- `best_post_hit_guidance_rebuild_applied`
+- `best_post_hit_guidance_rebuild_signal_count`
+- `best_post_hit_guidance_augmented_slot_count`
+- `best_post_hit_guidance_multiplier_delta`
+
+这些字段全部从 best move 的：
+
+- `post_hit_guidance_debug`
+
+中提取，不另起一套统计口径。
+
+2. 空候选路径也补齐默认值
+位置：
+- `backend/app/core/engine.py`
+
+这一轮同时把“没有可评估候选动作”的 summary 默认结构补齐，
+避免出现：
+
+- 正常局面有这些字段
+- 无候选局面没有这些字段
+
+这样可以保持：
+- `decision_summary` 结构稳定
+- 外部消费逻辑不需要分支判断
+
+三、本轮收益
+这一轮最大的收益，是把 post-hit rebuild 的核心信息从“需要展开 best move 的完整 debug 对象才能读到”，推进成了“看 `decision_summary` 就能先拿到一份轻量摘要”。
+
+现在只看 summary，就能先回答：
+
+1. best move 的 post-hit rebuild 是否发生
+2. 这次 rebuild 重建出了多少条 acting signal
+3. guidance debug matrix 里补回了多少个 confirmed slot
+4. blended guidance multiplier 相对 base 净增加了多少
+
+这让你在批量看实验结果、日志或回归输出时，
+可以先用 summary 快速筛，再决定是否需要展开完整 debug。
+
+四、测试补充
+1. controller summary 输出回归
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `decision_summary` 包含
+  - `best_post_hit_guidance_rebuild_applied`
+  - `best_post_hit_guidance_rebuild_signal_count`
+  - `best_post_hit_guidance_augmented_slot_count`
+  - `best_post_hit_guidance_multiplier_delta`
+
+2. 带 guess action 的 controller 输出回归
+文件：
+- `backend/tests/test1.py`
+
+继续回归：
+- `test_controller_returns_behavior_debug_for_guess_actions`
+
+价值在于：
+- 确认带历史信号的主链路下
+- 新增 summary 摘要字段不会破坏已有行为解释输出
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 42 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit rebuild 这条链路的解释已经分成两层：
+
+1. 轻量摘要层
+- `decision_summary`
+
+2. 完整 debug 层
+- `post_hit_guidance_debug`
+
+也就是说：
+- 现在可以先用 summary 快速看 best move 的 rebuild 状态
+- 需要深看时再展开 move 级 debug
+
+但边界仍然存在：
+
+- summary 里还没有 rebuild 的“主导变化方向”摘要
+- 目前虽然知道 multiplier 提升了多少，但还不知道主要是 progressive / anchor / boundary 哪一类在主导变化
+
+七、下一步建议
+下一轮可以优先沿两个方向继续推进：
+
+1. 给 summary / debug 增加 rebuild 主导变化方向摘要
+目标：
+- 直接输出本轮 rebuild 最主要强化的是哪类 source support
+
+2. 给 move 级 `post_hit_guidance_debug` 增加轻量 source-shift 标签
+目标：
+- 不只给原始 delta 数值
+- 还直接给出“progressive-driven / anchor-driven / boundary-driven”这类简述标签
+
+八、一句话总结
+本轮推进的核心成果，是把 best move 的 post-hit rebuild 状态压缩成了 `decision_summary` 可直接读取的轻量摘要，让这条链路第一次具备了“先看 summary，再决定是否展开完整 debug”的双层解释结构。

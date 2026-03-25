@@ -1803,6 +1803,10 @@ class DaVinciDecisionEngine:
                 "best_post_hit_guidance_support": 0.0,
                 "best_post_hit_guidance_stable_ratio": 0.0,
                 "best_post_hit_guidance_signal_count": 0.0,
+                "best_post_hit_guidance_rebuild_applied": False,
+                "best_post_hit_guidance_rebuild_signal_count": 0.0,
+                "best_post_hit_guidance_augmented_slot_count": 0.0,
+                "best_post_hit_guidance_multiplier_delta": 0.0,
                 "best_post_hit_top_k_expected_continue_margin": 0.0,
                 "best_post_hit_top_k_continue_margin": 0.0,
                 "best_post_hit_top_k_expected_support_ratio": 0.0,
@@ -1903,6 +1907,21 @@ class DaVinciDecisionEngine:
             "best_post_hit_guidance_support": best_move.get("post_hit_guidance_support", 0.0),
             "best_post_hit_guidance_stable_ratio": best_move.get("post_hit_guidance_stable_ratio", 0.0),
             "best_post_hit_guidance_signal_count": best_move.get("post_hit_guidance_signal_count", 0.0),
+            "best_post_hit_guidance_rebuild_applied": bool(
+                best_move.get("post_hit_guidance_debug", {}).get("rebuild_applied", False)
+            ),
+            "best_post_hit_guidance_rebuild_signal_count": best_move.get(
+                "post_hit_guidance_debug",
+                {},
+            ).get("rebuilt_signal_count", 0.0),
+            "best_post_hit_guidance_augmented_slot_count": best_move.get(
+                "post_hit_guidance_debug",
+                {},
+            ).get("augmented_known_slot_count", 0.0),
+            "best_post_hit_guidance_multiplier_delta": best_move.get(
+                "post_hit_guidance_debug",
+                {},
+            ).get("blended_delta_from_base", {}).get("guidance_multiplier", 0.0),
             "best_post_hit_top_k_expected_continue_margin": best_move.get("post_hit_top_k_expected_continue_margin", 0.0),
             "best_post_hit_top_k_continue_margin": best_move.get("post_hit_top_k_continue_margin", 0.0),
             "best_post_hit_top_k_expected_support_ratio": best_move.get("post_hit_top_k_expected_support_ratio", 0.0),
