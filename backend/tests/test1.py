@@ -277,6 +277,174 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(tight_slot_score, loose_slot_score)
 
+    def test_target_player_selection_rewards_same_player_focus(self):
+        model = BehavioralLikelihoodModel()
+
+        focused_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        )
+        switched_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=focused_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        )
+
+        hypothesis = {"opp": {1: ("W", 3)}, "side": {1: ("W", 10)}}
+        focused_signal = model.build_guess_signals(focused_world)["me"][-1]
+        switched_signal = model.build_guess_signals(switched_world)["me"][-1]
+
+        focused_weight = model._score_target_player_selection(
+            focused_world,
+            hypothesis,
+            focused_signal,
+        )
+        switched_weight = model._score_target_player_selection(
+            switched_world,
+            hypothesis,
+            switched_signal,
+        )
+
+        self.assertGreater(focused_weight, switched_weight)
+
+    def test_target_slot_selection_rewards_retry_after_failed_same_slot(self):
+        model = BehavioralLikelihoodModel()
+        retry_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        )
+        fresh_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=retry_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=2,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        )
+
+        hypothesis = {"opp": {1: ("W", 3), 2: ("W", 9)}}
+        retry_signal = model.build_guess_signals(retry_world)["me"][-1]
+        fresh_signal = model.build_guess_signals(fresh_world)["me"][-1]
+
+        retry_weight = model._score_target_slot_selection(
+            retry_world,
+            hypothesis,
+            retry_signal,
+        )
+        fresh_weight = model._score_target_slot_selection(
+            fresh_world,
+            hypothesis,
+            fresh_signal,
+        )
+
+        self.assertGreater(retry_weight, fresh_weight)
+
 
 class GameControllerOutputTests(unittest.TestCase):
     def test_controller_returns_decision_summary_and_reasoning(self):

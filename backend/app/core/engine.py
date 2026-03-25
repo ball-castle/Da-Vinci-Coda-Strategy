@@ -37,6 +37,7 @@ class HardConstraintSet:
 
 @dataclass(frozen=True)
 class GuessSignal:
+    action_index: int
     guesser_id: str
     target_player_id: str
     target_slot_index: int
@@ -171,10 +172,12 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_BEST_MATCH_BONUS = 1.07
     TARGET_PLAYER_CLOSE_MATCH_BONUS = 1.03
     TARGET_PLAYER_WEAK_CHOICE_PENALTY = 0.94
+    TARGET_PLAYER_REPEAT_FOCUS_BONUS = 1.04
 
     TARGET_SLOT_BEST_MATCH_BONUS = 1.08
     TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
     TARGET_SLOT_WEAK_CHOICE_PENALTY = 0.91
+    TARGET_SLOT_RETRY_AFTER_FAILURE_BONUS = 1.06
 
     TARGET_IN_INTERVAL_BONUS = 1.15
     TARGET_NARROW_INTERVAL_BONUS = 1.10
@@ -202,6 +205,7 @@ class BehavioralLikelihoodModel:
     ) -> Dict[str, List[GuessSignal]]:
         signals_by_player: Dict[str, List[GuessSignal]] = defaultdict(list)
 
+        guess_action_index = 0
         for action in getattr(game_state, "actions", ()):
             if getattr(action, "action_type", None) != "guess":
                 continue
@@ -220,6 +224,7 @@ class BehavioralLikelihoodModel:
 
             signals_by_player[guesser_id].append(
                 GuessSignal(
+                    action_index=guess_action_index,
                     guesser_id=guesser_id,
                     target_player_id=target_player_id,
                     target_slot_index=target_slot_index,
@@ -228,6 +233,7 @@ class BehavioralLikelihoodModel:
                     continued_turn=getattr(action, "continued_turn", None),
                 )
             )
+            guess_action_index += 1
 
         return signals_by_player
 
@@ -477,11 +483,18 @@ class BehavioralLikelihoodModel:
             return 1.0
 
         best_score = max(candidate_scores.values())
+        weight = 1.0
         if chosen_score >= best_score - self.EPSILON:
-            return self.TARGET_PLAYER_BEST_MATCH_BONUS
-        if chosen_score >= best_score * 0.85:
-            return self.TARGET_PLAYER_CLOSE_MATCH_BONUS
-        return self.TARGET_PLAYER_WEAK_CHOICE_PENALTY
+            weight *= self.TARGET_PLAYER_BEST_MATCH_BONUS
+        elif chosen_score >= best_score * 0.85:
+            weight *= self.TARGET_PLAYER_CLOSE_MATCH_BONUS
+        else:
+            weight *= self.TARGET_PLAYER_WEAK_CHOICE_PENALTY
+
+        previous_signal = self._previous_guess_signal(game_state, signal)
+        if previous_signal is not None and previous_signal.target_player_id == signal.target_player_id:
+            weight *= self.TARGET_PLAYER_REPEAT_FOCUS_BONUS
+        return weight
 
     def _score_target_slot_selection(
         self,
@@ -510,11 +523,17 @@ class BehavioralLikelihoodModel:
             return 1.0
 
         best_score = max(candidate_scores.values())
+        weight = 1.0
         if chosen_score >= best_score - self.EPSILON:
-            return self.TARGET_SLOT_BEST_MATCH_BONUS
-        if chosen_score >= best_score * 0.85:
-            return self.TARGET_SLOT_CLOSE_MATCH_BONUS
-        return self.TARGET_SLOT_WEAK_CHOICE_PENALTY
+            weight *= self.TARGET_SLOT_BEST_MATCH_BONUS
+        elif chosen_score >= best_score * 0.85:
+            weight *= self.TARGET_SLOT_CLOSE_MATCH_BONUS
+        else:
+            weight *= self.TARGET_SLOT_WEAK_CHOICE_PENALTY
+
+        if self._has_prior_failed_guess_on_slot(game_state, signal):
+            weight *= self.TARGET_SLOT_RETRY_AFTER_FAILURE_BONUS
+        return weight
 
     def _score_target_slot(
         self,
@@ -643,6 +662,67 @@ class BehavioralLikelihoodModel:
         if low is not None and high is not None and width <= 2:
             confidence *= 1.08
         return confidence
+
+    def _previous_guess_signal(
+        self,
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> Optional[GuessSignal]:
+        previous: Optional[GuessSignal] = None
+        guess_action_index = 0
+
+        for action in getattr(game_state, "actions", ()):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+            if guess_action_index >= signal.action_index:
+                break
+
+            guessed_card = action.guessed_card()
+            guesser_id = getattr(action, "guesser_id", None)
+            target_player_id = getattr(action, "target_player_id", None)
+            target_slot_index = getattr(action, "target_slot_index", None)
+            if (
+                guessed_card is not None
+                and guesser_id == signal.guesser_id
+                and target_player_id is not None
+                and target_slot_index is not None
+            ):
+                previous = GuessSignal(
+                    action_index=guess_action_index,
+                    guesser_id=guesser_id,
+                    target_player_id=target_player_id,
+                    target_slot_index=target_slot_index,
+                    guessed_card=guessed_card,
+                    result=bool(getattr(action, "result", False)),
+                    continued_turn=getattr(action, "continued_turn", None),
+                )
+
+            guess_action_index += 1
+
+        return previous
+
+    def _has_prior_failed_guess_on_slot(
+        self,
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> bool:
+        guess_action_index = 0
+        for action in getattr(game_state, "actions", ()):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+            if guess_action_index >= signal.action_index:
+                break
+
+            if (
+                getattr(action, "guesser_id", None) == signal.guesser_id
+                and getattr(action, "target_player_id", None) == signal.target_player_id
+                and getattr(action, "target_slot_index", None) == signal.target_slot_index
+                and not bool(getattr(action, "result", False))
+            ):
+                return True
+
+            guess_action_index += 1
+        return False
 
     def _slot_numeric_interval(
         self,

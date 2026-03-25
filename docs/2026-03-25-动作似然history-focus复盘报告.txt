@@ -1,0 +1,164 @@
+3/25-动作似然history-focus复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 21:09:41 +08:00
+
+一、本轮推进目标
+本轮继续沿着上一份最新复盘里的建议推进：
+
+继续把行为层从“结构化 heuristic”
+往更明确的动作似然近似推进。
+
+这一轮重点不是再去扩 value 选择，
+而是把 player / slot 选择继续细化成**带历史追击感**的行为信号。
+
+也就是说，当前不仅要问：
+- 为什么选这个 player
+- 为什么选这个 slot
+
+还要开始问：
+- 这个 player 是不是正在被持续追击
+- 这个 slot 是不是一个已经被缩窄过、值得继续追打的目标
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+
+具体推进如下：
+
+1. GuessSignal 新增 action_index
+本轮为 `GuessSignal` 新增了：
+- action_index
+
+这样行为模型在处理某一次猜测动作时，
+第一次能够知道：
+- 它在整个动作序列中的前后顺序
+
+这一步很关键，因为没有顺序，就无法可靠地利用：
+- 上一次在追谁
+- 某个 slot 之前是不是已经被试探过
+
+2. 新增 same-player focus 信号
+本轮在 target player 选择评分中新增：
+- `TARGET_PLAYER_REPEAT_FOCUS_BONUS`
+
+并补充：
+- `_previous_guess_signal(...)`
+
+当前逻辑会检查：
+- 同一个 guesser
+- 在当前动作之前
+- 最近一次猜测是不是也在打同一个 player
+
+如果是，且当前 player 本身仍然是合理攻击对象，
+则给予额外 bonus。
+
+这样做的意义是：
+- 行为模型开始识别“持续追击同一名玩家”的合理性
+- 而不只是把每次猜测都当成孤立动作
+
+3. 新增 same-slot retry 信号
+本轮在 target slot 选择评分中新增：
+- `TARGET_SLOT_RETRY_AFTER_FAILURE_BONUS`
+
+并补充：
+- `_has_prior_failed_guess_on_slot(...)`
+
+当前逻辑会检查：
+- 当前这个 slot
+- 是否曾被同一个 guesser 失败试探过
+
+如果是，
+那么说明这个 slot 已经吃过一次公共信息坍缩，
+继续回头打它往往更合理，
+因此给予额外 bonus。
+
+这一步非常重要，因为它让 slot 选择开始具备：
+- “不是第一次随手试”
+- 而是在追打一个已经被缩窄的目标
+的策略意味。
+
+4. 行为层从四段式继续推进到带时序感的分解
+本轮之后，行为层已经不只是：
+- player selection
+- slot selection
+- value selection
+- continuation
+
+而是开始在 player / slot 两层显式吸收：
+- 上一手追击对象
+- 同 slot 历史失败试探
+
+这意味着当前动作似然近似开始带有更明显的时序结构。
+
+三、本轮测试验证
+本轮新增测试点包括：
+
+1. same-player focus 奖励
+新增测试验证：
+- 当同一 guesser 连续追击同一个 player 时
+- player 选择评分会更高
+
+2. same-slot retry 奖励
+新增测试验证：
+- 当某个 slot 已被同一 guesser 失败试探过一次
+- 当前再次回头打这个 slot 时
+- slot 选择评分会更高
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 15 个测试全部通过
+
+四、本轮解决了什么问题
+1. 行为模型开始真正利用动作时序
+这是本轮最关键的推进点。
+
+过去行为层虽然已经拆出了：
+- player
+- slot
+- value
+- continue
+
+但这些评分仍然更像“静态截面判断”。
+
+本轮之后，player / slot 选择开始显式吸收：
+- 上一次在打谁
+- 某个 slot 之前是不是已经被试过
+
+这让行为模型第一次更像“有时间序列记忆的动作解释器”。
+
+2. slot 选择更接近真实人类推理流程
+真实玩家经常会在一次失败后，
+因为公共信息缩窄，
+回头继续猜同一个 slot。
+
+本轮之后，
+系统终于开始把这种行为看成合理信号，
+而不是仍然把每次猜测都看成彼此独立。
+
+3. 为下一步更强的 value 选择与换位思考打好了基础
+因为现在动作信号已经开始有顺序和追击链路，
+所以下一步继续推进 value 选择时，
+可以更自然地考虑：
+- 这是第一次试探
+- 还是在连续压缩后的定点追击
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 继续补 value 选择里的更强换位思考
+也就是从：
+- 这个值落在 interval 里
+
+继续推进到：
+- 站在 guesser 视角，这个值为什么会是此时最像人会报出的值
+
+2. 把新的 history-sensitive 行为信号继续纳入固定 regression case 集验证
+
+3. 如果继续增强 player / slot 层，也优先沿着“时序追击链”而不是继续堆零散 bonus
+
+六、一句话总结
+本轮推进的核心成果，是让行为层第一次开始显式利用动作时序，把“持续追击同一 player”和“回头重打一条已缩窄 slot”纳入动作似然近似，让 player / slot 选择不再只是静态截面评分。
