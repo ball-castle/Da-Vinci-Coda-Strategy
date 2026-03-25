@@ -930,8 +930,10 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_LOW_CONFIDENCE = 0.28
     STOP_MARGIN_WEAK_CONTINUATION = 0.16
     STOP_MARGIN_WEAK_EDGE = 0.22
+    STOP_MARGIN_WEAK_ROLLOUT = 0.24
     STOP_MARGIN_LOW_ATTACKABILITY = 0.18
     STOP_EDGE_REFERENCE = 0.18
+    ROLLOUT_MARGIN_REFERENCE = 0.40
     LOW_CONFIDENCE_GUARD_MARGIN = 0.22
     WEAK_EDGE_GUARD_MARGIN = 0.18
     ATTACKABILITY_REFERENCE = BehavioralLikelihoodModel.ATTACKABILITY_TIGHT_THRESHOLD
@@ -950,6 +952,7 @@ class DaVinciDecisionEngine:
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         acting_player_id: Optional[str],
         blocked_slots: Optional[Set[SlotKey]] = None,
+        rollout_depth: int = 1,
     ) -> Tuple[List[Dict[str, Any]], float]:
         risk_factor = self.calculate_risk_factor(my_hidden_count)
         blocked_slots = blocked_slots or set()
@@ -981,6 +984,7 @@ class DaVinciDecisionEngine:
                         behavior_model=behavior_model,
                         guess_signals_by_player=guess_signals_by_player,
                         acting_player_id=acting_player_id,
+                        rollout_depth=rollout_depth,
                     )
                     moves.append(move)
 
@@ -1025,6 +1029,7 @@ class DaVinciDecisionEngine:
                 "decision_score_breakdown": {
                     "base_stop_threshold": stop_threshold,
                     "edge_pressure": 0.0,
+                    "rollout_pressure": 0.0,
                     "attackability_pressure": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
@@ -1062,6 +1067,9 @@ class DaVinciDecisionEngine:
             "best_continuation_value": best_move.get("continuation_value", 0.0),
             "best_continuation_likelihood": best_move.get("continuation_likelihood", 0.0),
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
+            "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
+            "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
+            "best_post_hit_continue_margin": best_move.get("post_hit_continue_margin", 0.0),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -1088,6 +1096,7 @@ class DaVinciDecisionEngine:
         behavior_model: BehavioralLikelihoodModel,
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         acting_player_id: Optional[str],
+        rollout_depth: int,
     ) -> Dict[str, Any]:
         info_gain = self._expected_slot_entropy_reduction(slot_distribution, card)
         continuation_value = 0.0
@@ -1096,6 +1105,10 @@ class DaVinciDecisionEngine:
         history_continue_rate = behavior_model.CONTINUATION_PRIOR_BASE
         next_best_immediate_ev = 0.0
         post_hit_continuation_value = 0.0
+        post_hit_continue_score = 0.0
+        post_hit_stop_score = 0.0
+        post_hit_continue_margin = 0.0
+        post_hit_should_continue = False
 
         success_matrix = self._success_posterior(full_probability_matrix, player_id, slot_index, card)
         if success_matrix:
@@ -1112,15 +1125,25 @@ class DaVinciDecisionEngine:
             continuation_likelihood = continuation_assessment["continue_likelihood"]
             attackability_after_hit = continuation_assessment["attackability"]
             history_continue_rate = continuation_assessment["history_continue_rate"]
-            post_hit_continuation_value = (
-                self.CONTINUATION_DISCOUNT
-                * continuation_likelihood
-                * max(0.0, next_best_immediate_ev)
-            )
-            continuation_value = (
-                probability
-                * post_hit_continuation_value
-            )
+            if rollout_depth > 0:
+                post_hit_rollout = self._evaluate_post_hit_rollout(
+                    success_matrix=success_matrix,
+                    my_hidden_count=my_hidden_count,
+                    behavior_model=behavior_model,
+                    guess_signals_by_player=guess_signals_by_player,
+                    acting_player_id=acting_player_id,
+                    rollout_depth=rollout_depth - 1,
+                )
+                post_hit_continue_score = post_hit_rollout["continue_score"]
+                post_hit_stop_score = post_hit_rollout["stop_score"]
+                post_hit_continue_margin = post_hit_rollout["continue_margin"]
+                post_hit_should_continue = post_hit_rollout["should_continue"]
+                post_hit_continuation_value = (
+                    self.CONTINUATION_DISCOUNT
+                    * continuation_likelihood
+                    * max(0.0, post_hit_continue_margin)
+                )
+                continuation_value = probability * post_hit_continuation_value
 
         hit_reward = probability * self.HIT_REWARD
         miss_penalty = (1.0 - probability) * risk_factor
@@ -1142,6 +1165,10 @@ class DaVinciDecisionEngine:
             "next_best_immediate_value": next_best_immediate_ev,
             "continuation_likelihood": continuation_likelihood,
             "attackability_after_hit": attackability_after_hit,
+            "post_hit_continue_score": post_hit_continue_score,
+            "post_hit_stop_score": post_hit_stop_score,
+            "post_hit_continue_margin": post_hit_continue_margin,
+            "post_hit_should_continue": post_hit_should_continue,
             "history_continue_rate": history_continue_rate,
             "hit_reward": hit_reward,
             "miss_penalty": miss_penalty,
@@ -1155,6 +1182,9 @@ class DaVinciDecisionEngine:
                 "next_best_immediate_value": next_best_immediate_ev,
                 "continuation_likelihood": continuation_likelihood,
                 "attackability_after_hit": attackability_after_hit,
+                "post_hit_continue_score": post_hit_continue_score,
+                "post_hit_stop_score": post_hit_stop_score,
+                "post_hit_continue_margin": post_hit_continue_margin,
             },
             "recommendation_reason": self._build_reason(
                 probability,
@@ -1164,6 +1194,51 @@ class DaVinciDecisionEngine:
                 continuation_likelihood,
             ),
             "target_scope": "player_slots",
+        }
+
+    def _evaluate_post_hit_rollout(
+        self,
+        *,
+        success_matrix: FullProbabilityMatrix,
+        my_hidden_count: int,
+        behavior_model: BehavioralLikelihoodModel,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        acting_player_id: Optional[str],
+        rollout_depth: int,
+    ) -> Dict[str, Any]:
+        hidden_index_by_player = self._hidden_index_by_player_from_matrix(success_matrix)
+        next_moves, next_risk_factor = self.evaluate_all_moves(
+            full_probability_matrix=success_matrix,
+            my_hidden_count=my_hidden_count,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=behavior_model,
+            guess_signals_by_player=guess_signals_by_player,
+            acting_player_id=acting_player_id,
+            blocked_slots=set(),
+            rollout_depth=rollout_depth,
+        )
+        next_best_move, next_summary = self.choose_best_move(
+            next_moves,
+            risk_factor=next_risk_factor,
+            my_hidden_count=my_hidden_count,
+        )
+        return {
+            "should_continue": next_best_move is not None,
+            "continue_score": next_summary.get("continue_score", 0.0),
+            "stop_score": next_summary.get("stop_score", next_summary.get("stop_threshold", 0.0)),
+            "continue_margin": next_summary.get("continue_margin", 0.0),
+        }
+
+    def _hidden_index_by_player_from_matrix(
+        self,
+        full_probability_matrix: FullProbabilityMatrix,
+    ) -> Dict[str, Dict[int, int]]:
+        return {
+            player_id: {
+                slot_index: hidden_index
+                for hidden_index, slot_index in enumerate(sorted(probability_matrix))
+            }
+            for player_id, probability_matrix in full_probability_matrix.items()
         }
 
     def _evaluate_continue_decision(
@@ -1182,15 +1257,23 @@ class DaVinciDecisionEngine:
                 (self.STOP_EDGE_REFERENCE - max(0.0, best_gap)) / self.STOP_EDGE_REFERENCE
             )
 
+        post_hit_continue_margin = best_move.get("post_hit_continue_margin", 0.0)
+        rollout_pressure = 0.0
+        if best_move.get("post_hit_stop_score", 0.0) > 0.0 and post_hit_continue_margin < 0.0:
+            rollout_pressure = self.STOP_MARGIN_WEAK_ROLLOUT * min(
+                1.0,
+                (-post_hit_continue_margin) / self.ROLLOUT_MARGIN_REFERENCE,
+            )
+
         attackability_after_hit = best_move.get("attackability_after_hit", 0.0)
         attackability_pressure = 0.0
-        if attackability_after_hit < self.ATTACKABILITY_REFERENCE:
+        if best_move.get("post_hit_stop_score", 0.0) <= 0.0 and attackability_after_hit < self.ATTACKABILITY_REFERENCE:
             attackability_pressure = self.STOP_MARGIN_LOW_ATTACKABILITY * (
                 (self.ATTACKABILITY_REFERENCE - attackability_after_hit)
                 / max(self.ATTACKABILITY_REFERENCE, 1e-9)
             )
 
-        stop_score = stop_threshold + edge_pressure + attackability_pressure
+        stop_score = stop_threshold + edge_pressure + rollout_pressure + attackability_pressure
         continue_score = best_move["expected_value"]
         continue_margin = continue_score - stop_score
 
@@ -1222,6 +1305,7 @@ class DaVinciDecisionEngine:
             "decision_score_breakdown": {
                 "base_stop_threshold": stop_threshold,
                 "edge_pressure": edge_pressure,
+                "rollout_pressure": rollout_pressure,
                 "attackability_pressure": attackability_pressure,
             },
         }

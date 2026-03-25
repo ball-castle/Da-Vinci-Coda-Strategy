@@ -103,6 +103,9 @@ class StopThresholdTests(unittest.TestCase):
                 "continuation_value": 0.72,
                 "continuation_likelihood": 0.76,
                 "attackability_after_hit": 0.68,
+                "post_hit_continue_score": 0.92,
+                "post_hit_stop_score": 0.54,
+                "post_hit_continue_margin": 0.38,
             },
             {
                 "expected_value": 0.71,
@@ -110,6 +113,9 @@ class StopThresholdTests(unittest.TestCase):
                 "continuation_value": 0.22,
                 "continuation_likelihood": 0.55,
                 "attackability_after_hit": 0.42,
+                "post_hit_continue_score": 0.28,
+                "post_hit_stop_score": 0.24,
+                "post_hit_continue_margin": 0.04,
             },
         ]
 
@@ -124,6 +130,33 @@ class StopThresholdTests(unittest.TestCase):
         self.assertGreater(summary["best_continuation_likelihood"], 0.70)
         self.assertGreater(summary["continue_score"], summary["stop_score"])
         self.assertGreater(summary["continue_margin"], 0.0)
+
+    def test_choose_best_move_uses_negative_post_hit_margin_as_rollout_pressure(self):
+        engine = DaVinciDecisionEngine()
+        all_moves = [
+            {
+                "expected_value": 0.84,
+                "win_probability": 0.56,
+                "continuation_value": 0.19,
+                "continuation_likelihood": 0.63,
+                "attackability_after_hit": 0.72,
+                "post_hit_continue_score": 0.22,
+                "post_hit_stop_score": 0.58,
+                "post_hit_continue_margin": -0.36,
+            },
+        ]
+
+        best_move, summary = engine.choose_best_move(
+            all_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNone(best_move)
+        self.assertTrue(summary["recommend_stop"])
+        self.assertGreater(summary["decision_score_breakdown"]["rollout_pressure"], 0.0)
+        self.assertEqual(summary["decision_score_breakdown"]["attackability_pressure"], 0.0)
+        self.assertLess(summary["continue_margin"], 0.0)
 
     def test_choose_best_move_stops_when_attackability_cannot_support_pressing(self):
         engine = DaVinciDecisionEngine()

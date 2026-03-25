@@ -1,0 +1,153 @@
+3/25-post-hit浅层rollout复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 11:15:05 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的“下一步建议”推进：
+
+把 stop_score 里对 attackability 的静态判断，继续推进成更浅层但更明确的 post-hit rollout。
+
+也就是说，这轮不再只问：
+- 如果这手命中，场上还有没有可攻击目标？
+
+而是进一步问：
+- 如果这手命中，下一手最好的动作到底值不值得继续？
+- 这个 post-hit 的继续 / 停手边际，能不能反过来影响当前这一手的 stop_score？
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+- backend/tests/test2.py
+
+具体推进如下：
+
+1. 引入 post-hit 浅层 rollout
+本轮在 `DaVinciDecisionEngine` 中新增了：
+- `_evaluate_post_hit_rollout(...)`
+- `_hidden_index_by_player_from_matrix(...)`
+
+做法是：
+- 当前候选动作一旦假设命中
+- 先构造 success posterior
+- 再在 success posterior 上重新评估下一手候选动作
+- 然后直接调用 `choose_best_move(...)`
+  拿到下一手的：
+  - continue_score
+  - stop_score
+  - continue_margin
+
+这样，当前动作不再只知道“命中后 attackability 大概多少”，
+还开始知道“命中后下一手到底有没有正的继续边际”。
+
+2. continuation value 从“下一手 EV”推进成“下一手继续边际”
+此前 continuation value 更接近：
+- p_hit × discount × continuation_likelihood × next_best_immediate_ev
+
+本轮升级为更接近：
+- p_hit × discount × continuation_likelihood × max(0, post_hit_continue_margin)
+
+这意味着：
+- 命中后即便存在一手看起来还行的候选动作
+- 只要那一手相对于停手并没有真实净优势
+
+那么它就不会再被当成“可靠的续压收益”反向抬高当前动作价值。
+
+3. stop_score 新增 rollout_pressure
+本轮在 `decision_score_breakdown` 里新增：
+- rollout_pressure
+
+其含义是：
+- 如果当前动作命中后，下一手的 continue_margin 为负
+- 那么这说明当前这一手虽然表面上可能还有 continuation_value
+- 但续压链路其实是虚的
+
+这种情况下，系统会显式抬高当前 stop_score。
+
+同时，原先的 attackability_pressure 仍然保留，但主要退居为：
+- 没有 rollout 结果时的兜底信号
+
+4. 候选动作解释字段继续扩展
+本轮为单个 move 新增：
+- post_hit_continue_score
+- post_hit_stop_score
+- post_hit_continue_margin
+- post_hit_should_continue
+
+这样后续做 case review 时，可以直接看：
+- 命中后下一手推荐是什么类型的局面
+- 下一手是应该继续还是停手
+- 当前动作的 continuation value 到底是建立在什么基础上
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. controller 输出继续包含扩展后的 post-hit 字段
+验证 top_move 中已经可以看到：
+- post_hit_continue_score
+- post_hit_stop_score
+- post_hit_continue_margin
+
+2. 强 continuation edge 场景仍然继续
+验证高 continuation likelihood 且 post-hit margin 为正时，系统仍然会给出继续建议。
+
+3. 负的 post-hit margin 会显式抬高 rollout_pressure
+新增测试覆盖：
+- 当前动作表面 expected_value 仍为正
+- 但命中后下一手的 continue_margin 为负
+
+此时系统会通过 rollout_pressure 抬高当前 stop_score，并最终建议停手。
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 8 个测试全部通过
+
+四、本轮解决了什么问题
+1. attackability 不再是唯一的续压代理量
+这是本轮最大的推进。
+
+之前 stop_score 对 continuation 的判断主要还是：
+- 命中后场面 tight 不 tight
+- attackability 高不高
+
+现在开始更进一步：
+- 命中后下一手如果连 stop_score 都打不过
+- 那当前这一手的 continuation 就不能算真正稳固
+
+2. continuation value 的含义更接近“整回合净收益”
+过去 continuation value 里混入了一部分“看起来还能再猜”的乐观成分。
+
+本轮之后，它更接近：
+- hit 后
+- 下一手相对停手的真实正边际
+
+这比单纯看下一手 EV 更保守，但也更贴近 should_stop 的真实问题。
+
+3. should_stop 与浅层 rollout 第一次真正接起来了
+这轮之后，当前 stop_score 已经能受到：
+- 当前动作质量
+- 下一手继续边际
+- 风险敞口
+三者共同影响。
+
+这比上一轮只靠 attackability pressure 更接近复盘里提出的方向。
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 继续把 rollout 从“下一手 continue_margin”推进到“下一手 top-2 候选质量差”
+也就是让 system 不只知道下一手能不能继续，
+还知道下一手是不是只有一个脆弱答案。
+
+2. 建立固定 case 集，专门回归：
+- 当前手可打但 post-hit 不可续压
+- 当前手一般但 post-hit 非常强
+- 高风险残局的停手边界
+
+3. 继续把行为层从 heuristic 近似推进成更完整的动作似然模型
+
+六、一句话总结
+本轮推进的核心成果，是把 continuation 从“命中后场面大概还能打”继续推进成“命中后下一手相对停手到底有没有净优势”，让 should_stop 开始真正利用浅层 rollout，而不是只靠静态 attackability。
