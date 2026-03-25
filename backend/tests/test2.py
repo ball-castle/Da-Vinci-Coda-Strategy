@@ -1486,6 +1486,14 @@ class StopThresholdTests(unittest.TestCase):
             0.0,
         )
         self.assertGreater(
+            strong_summary["decision_score_breakdown"]["post_hit_behavior_support_gain"],
+            0.0,
+        )
+        self.assertLess(
+            strong_summary["decision_score_breakdown"]["post_hit_behavior_fragility_drag"],
+            strong_summary["decision_score_breakdown"]["post_hit_behavior_support_gain"],
+        )
+        self.assertGreater(
             strong_summary["continue_score"],
             strong_summary["stop_score"],
         )
@@ -1494,6 +1502,14 @@ class StopThresholdTests(unittest.TestCase):
         self.assertLess(
             weak_summary["decision_score_breakdown"]["post_hit_behavior_support_adjustment"],
             0.0,
+        )
+        self.assertGreater(
+            weak_summary["decision_score_breakdown"]["post_hit_behavior_fragility_drag"],
+            0.0,
+        )
+        self.assertLess(
+            weak_summary["decision_score_breakdown"]["post_hit_behavior_support_gain"],
+            weak_summary["decision_score_breakdown"]["post_hit_behavior_fragility_drag"],
         )
         self.assertLess(
             weak_summary["continue_score"],

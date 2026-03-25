@@ -1793,6 +1793,8 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_context_focus": 0.0,
                 "best_behavior_rollout_pressure": 0.0,
                 "best_post_hit_behavior_support_adjustment": 0.0,
+                "best_post_hit_behavior_support_gain": 0.0,
+                "best_post_hit_behavior_fragility_drag": 0.0,
                 "best_post_hit_continue_score": 0.0,
                 "best_post_hit_stop_score": 0.0,
                 "best_post_hit_continue_margin": 0.0,
@@ -1819,6 +1821,12 @@ class DaVinciDecisionEngine:
                     "attackability_pressure": 0.0,
                     "behavior_rollout_pressure": 0.0,
                     "post_hit_behavior_support_adjustment": 0.0,
+                    "post_hit_behavior_support_gain": 0.0,
+                    "post_hit_behavior_fragility_drag": 0.0,
+                    "post_hit_behavior_support_signal": 0.0,
+                    "post_hit_behavior_fragility_signal": 0.0,
+                    "post_hit_behavior_support_strength": 0.0,
+                    "post_hit_behavior_fragility_strength": 0.0,
                     "behavior_match_decision_bonus": 0.0,
                     "behavior_match_decision_structure_adjustment": 0.0,
                     "behavior_match_net_structure": 0.0,
@@ -1884,6 +1892,8 @@ class DaVinciDecisionEngine:
             "best_behavior_match_context_focus": decision_snapshot["behavior_match_context_focus"],
             "best_behavior_rollout_pressure": decision_snapshot["decision_score_breakdown"]["behavior_rollout_pressure"],
             "best_post_hit_behavior_support_adjustment": decision_snapshot["decision_score_breakdown"]["post_hit_behavior_support_adjustment"],
+            "best_post_hit_behavior_support_gain": decision_snapshot["decision_score_breakdown"]["post_hit_behavior_support_gain"],
+            "best_post_hit_behavior_fragility_drag": decision_snapshot["decision_score_breakdown"]["post_hit_behavior_fragility_drag"],
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
             "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
@@ -2925,9 +2935,10 @@ class DaVinciDecisionEngine:
             + behavior_rollout_pressure
         )
         continue_score = best_move["expected_value"] + behavior_match_decision_bonus
-        post_hit_behavior_support_adjustment = self._post_hit_behavior_support_adjustment(
+        post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
             best_move=best_move,
         )
+        post_hit_behavior_support_adjustment = post_hit_behavior_support_breakdown["adjustment"]
         continue_score += post_hit_behavior_support_adjustment
         pre_structure_continue_margin = continue_score - stop_score
         behavior_match_decision_structure_adjustment = self._behavior_match_decision_structure_adjustment(
@@ -2982,6 +2993,12 @@ class DaVinciDecisionEngine:
                 "attackability_pressure": attackability_pressure,
                 "behavior_rollout_pressure": behavior_rollout_pressure,
                 "post_hit_behavior_support_adjustment": post_hit_behavior_support_adjustment,
+                "post_hit_behavior_support_gain": post_hit_behavior_support_breakdown["support_gain"],
+                "post_hit_behavior_fragility_drag": post_hit_behavior_support_breakdown["fragility_drag"],
+                "post_hit_behavior_support_signal": post_hit_behavior_support_breakdown["support_signal"],
+                "post_hit_behavior_fragility_signal": post_hit_behavior_support_breakdown["fragility_signal"],
+                "post_hit_behavior_support_strength": post_hit_behavior_support_breakdown["support_strength"],
+                "post_hit_behavior_fragility_strength": post_hit_behavior_support_breakdown["fragility_strength"],
                 "behavior_match_decision_bonus": behavior_match_decision_bonus,
                 "behavior_match_decision_structure_adjustment": behavior_match_decision_structure_adjustment,
                 "behavior_match_net_structure": behavior_match_net_structure,
@@ -3231,17 +3248,25 @@ class DaVinciDecisionEngine:
             * clamp(candidate_confidence, 0.0, 1.0)
         )
 
-    def _post_hit_behavior_support_adjustment(
+    def _post_hit_behavior_support_breakdown(
         self,
         *,
         best_move: Dict[str, Any],
-    ) -> float:
+    ) -> Dict[str, float]:
         if (
             float(best_move.get("post_hit_stop_score", 0.0)) <= 0.0
             or float(best_move.get("post_hit_continue_margin", 0.0)) <= 0.0
             or float(best_move.get("continuation_value", 0.0)) <= 0.0
         ):
-            return 0.0
+            return {
+                "adjustment": 0.0,
+                "support_gain": 0.0,
+                "fragility_drag": 0.0,
+                "support_signal": 0.0,
+                "fragility_signal": 0.0,
+                "support_strength": 0.0,
+                "fragility_strength": 0.0,
+            }
 
         ranking_edge = clamp(
             (
@@ -3259,14 +3284,49 @@ class DaVinciDecisionEngine:
             -1.0,
             1.0,
         )
+        support_ratio_edge = clamp(
+            float(best_move.get("post_hit_top_k_support_ratio", 0.0))
+            - float(best_move.get("post_hit_top_k_expected_support_ratio", 0.0)),
+            -1.0,
+            1.0,
+        )
         support_strength = clamp(
             (0.5 * float(best_move.get("post_hit_guidance_stable_ratio", 0.0)))
             + (0.5 * float(best_move.get("post_hit_guidance_support", 0.0))),
             0.0,
             1.0,
         )
-        support_signal = (0.70 * ranking_edge) + (0.30 * guidance_edge)
-        return self.POST_HIT_BEHAVIOR_SUPPORT_SCALE * support_signal * support_strength
+        fragility_strength = clamp(
+            (0.60 * (1.0 - float(best_move.get("post_hit_guidance_stable_ratio", 0.0))))
+            + (0.40 * (1.0 - float(best_move.get("post_hit_guidance_support", 0.0)))),
+            0.0,
+            1.0,
+        )
+        support_signal = clamp(
+            (0.55 * max(0.0, ranking_edge))
+            + (0.25 * max(0.0, guidance_edge))
+            + (0.20 * max(0.0, support_ratio_edge)),
+            0.0,
+            1.0,
+        )
+        fragility_signal = clamp(
+            (0.50 * max(0.0, -ranking_edge))
+            + (0.20 * max(0.0, -guidance_edge))
+            + (0.30 * max(0.0, -support_ratio_edge)),
+            0.0,
+            1.0,
+        )
+        support_gain = self.POST_HIT_BEHAVIOR_SUPPORT_SCALE * support_signal * support_strength
+        fragility_drag = self.POST_HIT_BEHAVIOR_SUPPORT_SCALE * fragility_signal * fragility_strength
+        return {
+            "adjustment": support_gain - fragility_drag,
+            "support_gain": support_gain,
+            "fragility_drag": fragility_drag,
+            "support_signal": support_signal,
+            "fragility_signal": fragility_signal,
+            "support_strength": support_strength,
+            "fragility_strength": fragility_strength,
+        }
 
     def _behavior_match_decision_structure_adjustment(
         self,

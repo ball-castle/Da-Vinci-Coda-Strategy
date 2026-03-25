@@ -894,12 +894,22 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("best_behavior_match_context_focus", result["decision_summary"])
         self.assertIn("best_behavior_rollout_pressure", result["decision_summary"])
         self.assertIn("best_post_hit_behavior_support_adjustment", result["decision_summary"])
+        self.assertIn("best_post_hit_behavior_support_gain", result["decision_summary"])
+        self.assertIn("best_post_hit_behavior_fragility_drag", result["decision_summary"])
         self.assertIn(
             "behavior_match_decision_structure_adjustment",
             result["decision_summary"]["decision_score_breakdown"],
         )
         self.assertIn(
             "post_hit_behavior_support_adjustment",
+            result["decision_summary"]["decision_score_breakdown"],
+        )
+        self.assertIn(
+            "post_hit_behavior_support_gain",
+            result["decision_summary"]["decision_score_breakdown"],
+        )
+        self.assertIn(
+            "post_hit_behavior_fragility_drag",
             result["decision_summary"]["decision_score_breakdown"],
         )
 

@@ -1,0 +1,200 @@
+2026-03-26 post-hit 支撑增益与脆弱性拆分复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《post-hit 完整 guidance 重建复盘报告》的第一条下一步建议，这一轮继续收紧当前 stop / continue 边界里的 post-hit 行为项：
+
+- 把原来的单一 `post_hit_behavior_support_adjustment`
+- 拆成更清楚的正向支撑增益和负向脆弱性拖累
+
+上一轮虽然已经把 post-hit guidance rebuild 接回到了当前边界，
+但当前决策层里仍然只有一个总 adjustment。
+
+这会带来两个问题：
+
+- 外部只能看到“总共加了多少 / 减了多少”
+- 看不清楚到底是正向支撑不够，还是负向脆弱性太强
+
+所以这一轮的目标是：
+
+- 不再只保留一个总 adjustment
+- 而是把它拆成 support gain 和 fragility drag
+- 并显式输出到 decision summary 与 score breakdown
+
+二、本轮核心改动
+1. 把 `_post_hit_behavior_support_adjustment(...)` 升级为 breakdown 结构
+位置：
+- `backend/app/core/engine.py`
+
+本轮之前：
+- 只有一个线性 adjustment
+- 由 ranking edge、guidance edge 和 support strength 直接相乘得到
+
+本轮之后：
+- 改成 `_post_hit_behavior_support_breakdown(...)`
+- 返回以下结构：
+  - `adjustment`
+  - `support_gain`
+  - `fragility_drag`
+  - `support_signal`
+  - `fragility_signal`
+  - `support_strength`
+  - `fragility_strength`
+
+这样当前边界在计算 continue score 时，
+虽然仍然只吃最终的 `adjustment`，
+但内部已经不再是黑盒。
+
+2. 正向支撑与负向脆弱性改成分开建模
+位置：
+- `backend/app/core/engine.py`
+
+这一轮把原本混在一起的信号拆成了两条支路：
+
+- `support_gain`
+  - 来自正向的 ranking edge
+  - 正向的 guidance edge
+  - 以及 `top_k_support_ratio` 相对 expected 的正偏移
+
+- `fragility_drag`
+  - 来自负向的 ranking edge
+  - 负向的 guidance edge
+  - 以及 `top_k_support_ratio` 相对 expected 的负偏移
+
+同时又把强度拆成：
+
+- `support_strength`
+  - 由 post-hit guidance 的 stable ratio 和 support 聚合
+
+- `fragility_strength`
+  - 由稳定性不足和 posterior support 不足聚合
+
+于是现在的结构变成：
+
+- 正向信号决定能加多少
+- 负向信号决定要扣多少
+- 两边各自再乘自己的强度
+
+这比上一轮的单一 adjustment 更接近“有支撑”和“有脆弱性”并存的真实边界。
+
+3. decision summary / breakdown 新增可解释字段
+位置：
+- `backend/app/core/engine.py`
+- `backend/tests/test1.py`
+
+本轮新增输出：
+
+- `best_post_hit_behavior_support_gain`
+- `best_post_hit_behavior_fragility_drag`
+
+并且在 `decision_score_breakdown` 里新增：
+
+- `post_hit_behavior_support_gain`
+- `post_hit_behavior_fragility_drag`
+- `post_hit_behavior_support_signal`
+- `post_hit_behavior_fragility_signal`
+- `post_hit_behavior_support_strength`
+- `post_hit_behavior_fragility_strength`
+
+这一步的意义是：
+
+- 外部现在不只能看到“post-hit 行为项最后推了多少”
+- 还能看到“推上去的部分”和“拖下来的部分”分别是什么
+
+三、本轮收益
+这一轮最大的收益，不是单纯把公式写复杂，
+而是把 post-hit 当前边界第一次拆成了两股方向明确的力量：
+
+1. support gain
+2. fragility drag
+
+之前如果一个候选动作最后没能越过 stop 线，
+我们只能看到：
+
+- adjustment 很小
+或者
+- adjustment 为负
+
+但现在可以进一步区分：
+
+- 是没有足够的正向支撑把它推过去
+- 还是其实有一定支撑，但被 fragility drag 拉回来了
+
+这让后续调参和复盘都更明确。
+
+四、测试补充
+1. 回归 narrow-edge post-hit decision case
+文件：
+- `backend/tests/test2.py`
+
+增强测试：
+- `test_choose_best_move_uses_post_hit_behavior_support_adjustment_on_narrow_edge`
+
+新增验证：
+- strong support case 下
+  - `post_hit_behavior_support_gain > 0`
+  - `post_hit_behavior_fragility_drag < post_hit_behavior_support_gain`
+
+- weak support case 下
+  - `post_hit_behavior_fragility_drag > 0`
+  - `post_hit_behavior_support_gain < post_hit_behavior_fragility_drag`
+
+这条测试锁住的是：
+- 当前边界不只是总 adjustment 正负不同
+- 而是真正把“推高 continue”与“拖低 continue”的来源拆开了
+
+2. controller 输出字段回归
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_post_hit_behavior_support_gain`
+- `best_post_hit_behavior_fragility_drag`
+- `decision_score_breakdown` 内对应字段存在
+
+这保证了这轮不是只在内部算完，
+而是确实把解释字段抛给了外部。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 42 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit 当前边界已经从：
+
+- 单一总 adjustment
+
+推进成了：
+
+1. 正向 support gain
+2. 负向 fragility drag
+3. 两者净值反馈回 continue score
+
+这意味着：
+- 当前 stop / continue 边界第一次开始能直接表达“post-hit 支撑”和“post-hit 脆弱性”这两种不同来源
+
+但边界也仍然存在：
+
+- 这些字段现在主要还在 decision summary / breakdown 里
+- 还没有形成一份独立的 post-hit guidance rebuild debug 结构
+- 也还没有把 rebuild 前后差异直接做成对照输出
+
+七、下一步建议
+下一轮可以优先沿两个方向继续推进：
+
+1. 给 post-hit guidance rebuild 增加独立 debug 输出
+目标：
+- 不只输出 guidance 的最终 multiplier / support
+- 还要能看到 rebuild 用了哪些 signal、矩阵如何增强、profile 如何融合
+
+2. 把 post-hit support gain / fragility drag 下沉到候选动作级输出
+目标：
+- 不只在最终 best move decision summary 里可见
+- 也让 top moves 之间可以直接对比这两个量
+
+八、一句话总结
+本轮推进的核心成果，是把当前 stop / continue 边界中的 `post_hit_behavior_support_adjustment` 从单一总项，拆成了“正向 support gain”和“负向 fragility drag”两部分，让 post-hit 行为项第一次具备了真正可解释的双向边界结构。
