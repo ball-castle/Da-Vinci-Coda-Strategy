@@ -307,6 +307,118 @@ class StopThresholdTests(unittest.TestCase):
         )
         self.assertGreater(target_move["behavior_match_bonus"], 0.0)
 
+    def test_evaluate_all_moves_scales_ranking_bonus_by_candidate_confidence(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="stable_anchor_target",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=6, is_revealed=True),
+                    ],
+                ),
+                "stable_anchor_target": PlayerState(
+                    player_id="stable_anchor_target",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+                "diffuse_anchor_target": PlayerState(
+                    player_id="diffuse_anchor_target",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+        full_probability_matrix = {
+            "stable_anchor_target": {
+                1: {("W", 5): 0.650, ("W", 7): 0.350},
+            },
+            "diffuse_anchor_target": {
+                0: {("B", 1): 0.34, ("B", 2): 0.33, ("B", 3): 0.33},
+                1: {("W", 5): 0.650, ("W", 7): 0.350},
+                2: {("B", 9): 0.34, ("B", 8): 0.33, ("B", 7): 0.33},
+            },
+        }
+        hidden_index_by_player = {
+            "stable_anchor_target": {1: 0},
+            "diffuse_anchor_target": {0: 0, 1: 1, 2: 2},
+        }
+        behavior_map_hypothesis = {
+            "stable_anchor_target": {1: ("W", 5)},
+            "diffuse_anchor_target": {
+                0: ("B", 1),
+                1: ("W", 5),
+                2: ("B", 9),
+            },
+        }
+
+        ranked_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=10,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            behavior_guidance_profile={
+                "signal_count": 1.0,
+                "average_posterior_support": 0.90,
+                "average_weighted_strength": 0.18,
+                "stable_signal_ratio": 1.0,
+                "guidance_multiplier": 1.0,
+                "source_support_progressive": 0.0,
+                "source_support_same_color_anchor": 1.0,
+                "source_support_local_boundary": 0.0,
+            },
+            game_state=game_state,
+            behavior_map_hypothesis=behavior_map_hypothesis,
+            blocked_slots={("diffuse_anchor_target", 0), ("diffuse_anchor_target", 2)},
+            rollout_depth=0,
+        )
+
+        stable_move = next(
+            move
+            for move in ranked_moves
+            if move["target_player_id"] == "stable_anchor_target"
+            and move["guess_card"] == ["W", 5]
+        )
+        diffuse_move = next(
+            move
+            for move in ranked_moves
+            if move["target_player_id"] == "diffuse_anchor_target"
+            and move["guess_card"] == ["W", 5]
+        )
+
+        self.assertAlmostEqual(
+            stable_move["behavior_match_bonus"],
+            diffuse_move["behavior_match_bonus"],
+            places=6,
+        )
+        self.assertGreater(
+            stable_move["behavior_match_candidate_confidence"],
+            diffuse_move["behavior_match_candidate_confidence"],
+        )
+        self.assertGreater(
+            stable_move["behavior_match_ranking_bonus"],
+            diffuse_move["behavior_match_ranking_bonus"],
+        )
+        self.assertAlmostEqual(
+            stable_move["ranking_score"],
+            stable_move["expected_value"] + stable_move["behavior_match_ranking_bonus"],
+            places=6,
+        )
+        self.assertEqual(ranked_moves[0]["target_player_id"], "stable_anchor_target")
+
     def test_choose_best_move_stops_on_weak_endgame_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

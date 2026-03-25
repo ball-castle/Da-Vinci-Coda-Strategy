@@ -1,0 +1,176 @@
+2026-03-25 refined confidence 接入当前排序复盘报告
+
+记录时间：2026-03-25 23:45:50 +08:00
+
+一、本轮推进目标
+按照上一轮《component strength 负向 weight 建模复盘报告》的下一步建议，这一轮不继续往更深的 next-turn ranking 扩，而是先完成一个更小、更稳的闭环：
+
+- 把 refined `candidate_confidence`
+- 轻量接回当前 move ranking
+
+到上一轮为止，系统已经能比较细地刻画：
+- 当前动作 posterior 是否稳定
+- component support 是否完整
+- component 正向 strength 是否足够
+- component 负向 penalty 是否明显
+
+但这些 refined 信息，主要还只作用在：
+- `behavior_match_decision_bonus`
+- `behavior_rollout_pressure`
+- stop / continue 边界
+
+这意味着仍然存在一个结构断层：
+- 当前动作排序时
+- 还是主要看 raw 的 `behavior_match_bonus`
+- refined confidence 还没真正反哺“当前候选动作本身谁排前面”
+
+所以这一轮的目标是：
+- 不改 deeper rollout
+- 不重写排序结构
+- 只给当前 move ranking 增一个 confidence-aware 的 ranking bonus
+
+二、本轮核心改动
+1. 新增 `behavior_match_ranking_bonus`
+位置：
+- `backend/app/core/engine.py`
+
+之前：
+- `ranking_score = expected_value + behavior_match_bonus`
+
+现在：
+- 先保留 raw 的 `behavior_match_bonus`
+- 再计算：
+  - `behavior_match_ranking_bonus = behavior_match_bonus * candidate_confidence`
+- 最后：
+  - `ranking_score = expected_value + behavior_match_ranking_bonus`
+
+这意味着：
+- raw behavior match 仍然存在
+- 但如果当前动作自己的 refined confidence 偏低
+- 那它给排序带来的加分会被主动压缩
+
+2. 当前 move 输出正式补齐 ranking 相关解释字段
+新增输出：
+- `behavior_match_ranking_bonus`
+
+同时 score breakdown 里也补了：
+- `behavior_match_ranking_bonus`
+
+这样后面看候选动作排序时，可以直接分清：
+- raw behavior match bonus 是多少
+- 真正进入排序的是多少
+
+3. decision summary 同步补齐 ranking 视角字段
+新增输出：
+- `best_behavior_match_ranking_bonus`
+
+这样 controller 输出层现在已经可以同时看到：
+- `best_behavior_match_bonus`
+- `best_behavior_match_ranking_bonus`
+- `best_behavior_match_candidate_confidence`
+
+也就是说，后面回看一轮决策时，可以直接知道：
+- 这个动作原始行为匹配加分有多大
+- 经过 refined confidence 缩放后，实际在排序里生效了多少
+
+4. `_behavior_match_candidate_confidence_breakdown(...)` 支持直接复用 move 上已算好的字段
+这轮还顺手把内部复用补齐了：
+- 如果 move 上已经带着
+  - `behavior_match_candidate_confidence`
+  - `behavior_match_component_support`
+  - `behavior_match_component_strength`
+  - `behavior_match_component_penalty`
+  - `behavior_match_context_focus`
+- 那么 helper 会直接复用
+
+这让当前排序阶段和后续 decision 阶段：
+- 使用的是同一份 refined confidence 结果
+- 不会出现“排序算一套、decision 又重新拼一套”的漂移
+
+三、本轮收益
+这一轮最大的收益，是把行为层 refined stability 从“只影响决策边界”，推进成了也开始影响“当前候选动作谁排前面”。
+
+之前的结构更像：
+- 当前 move ranking：先按 raw behavior match 排
+- stop / continue：再用 refined confidence 做二次过滤
+
+这会带来一个问题：
+- 有些动作虽然 raw bonus 不低
+- 但它自己的 posterior / component / context 结构其实很脆
+- 它仍然可能在当前排序阶段被推得过高
+
+这轮之后变成：
+- 当前排序阶段就先把脆弱支撑压一轮
+- 再到 decision 阶段继续做 refined 边界判断
+
+换句话说：
+- 之前更像“先按行为匹配推上来，再在停手阶段纠偏”
+- 现在更像“排序阶段先做一次轻量纠偏，决策阶段再做更严的纠偏”
+
+这让 ranking 和 decision 两层开始共享同一套 refined confidence 约束。
+
+四、测试补充
+1. 新增 ranking 边界测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_evaluate_all_moves_scales_ranking_bonus_by_candidate_confidence`
+
+这条测试验证：
+- 两个动作的 raw `behavior_match_bonus` 基本一致
+- 一个动作是 `map_context_fallback`，candidate confidence 接近 1
+- 另一个动作来自更脆的 `neighbor_top_k_posterior`
+- 结果是：
+  - 高 confidence 的动作拿到更高的 `behavior_match_ranking_bonus`
+  - 并最终排在前面
+
+这条测试的价值在于，它不是只测字段出现，而是直接验证：
+- refined confidence
+- 是否真的开始改变当前 move ranking
+
+2. controller summary 字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_match_ranking_bonus`
+
+避免 controller 输出层漏掉这次 ranking 侧新增的解释字段。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 34 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，behavior-guided refined confidence 已经同时进入了：
+
+1. 当前 move ranking
+2. 当前回合 decision bonus
+3. 依赖 post-hit continuation 的 rollout pressure
+
+也就是说，当前动作是不是“看起来像一个好动作”，以及它是不是“值得继续”，现在都已经开始共享同一套 refined confidence 约束。
+
+但边界仍然清楚：
+- 这轮只影响了当前回合候选动作排序
+- 还没有继续送进命中后下一手候选动作排序
+- 也还没有把 refined confidence 直接变成更强的排序主项
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 refined confidence 继续送进命中后下一手候选动作排序
+目标：
+- 不只是当前回合 ranking
+- 而是让 next-turn candidate ranking 也开始共享这套约束
+
+2. 让 current move ranking 不只缩放 behavior bonus，也开始轻量吸收 refined confidence 的净结构强度
+目标：
+- 不只是“把 raw bonus 打折”
+- 还开始显式区分“结构很好”和“只是没那么差”
+
+八、一句话总结
+本轮推进的核心成果，是把 refined `candidate_confidence` 从只作用于 decision / rollout，推进成了也会缩放当前 move ranking 里的 behavior bonus，让排序和停手判断第一次开始共享同一套 refined stability 约束。

@@ -1774,6 +1774,7 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_bonus": 0.0,
                 "best_behavior_match_support": 0.0,
                 "best_behavior_match_decision_bonus": 0.0,
+                "best_behavior_match_ranking_bonus": 0.0,
                 "best_behavior_match_candidate_confidence": 0.0,
                 "best_behavior_match_component_support": 0.0,
                 "best_behavior_match_component_strength": 0.0,
@@ -1794,6 +1795,7 @@ class DaVinciDecisionEngine:
                     "attackability_pressure": 0.0,
                     "behavior_rollout_pressure": 0.0,
                     "behavior_match_decision_bonus": 0.0,
+                    "behavior_match_ranking_bonus": 0.0,
                     "behavior_match_candidate_confidence": 0.0,
                     "behavior_match_component_support": 0.0,
                     "behavior_match_component_strength": 0.0,
@@ -1843,6 +1845,7 @@ class DaVinciDecisionEngine:
             "best_behavior_match_bonus": best_move.get("behavior_match_bonus", 0.0),
             "best_behavior_match_support": best_move.get("behavior_match_support", 0.0),
             "best_behavior_match_decision_bonus": decision_snapshot["behavior_match_decision_bonus"],
+            "best_behavior_match_ranking_bonus": best_move.get("behavior_match_ranking_bonus", 0.0),
             "best_behavior_match_candidate_confidence": decision_snapshot["behavior_match_candidate_confidence"],
             "best_behavior_match_component_support": decision_snapshot["behavior_match_component_support"],
             "best_behavior_match_component_strength": decision_snapshot["behavior_match_component_strength"],
@@ -1909,7 +1912,15 @@ class DaVinciDecisionEngine:
         behavior_guidance_signal_count = 0.0
         behavior_match_multiplier = self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER
         behavior_match_bonus = 0.0
+        behavior_match_ranking_bonus = 0.0
         behavior_match_support = 0.0
+        behavior_match_confidence_breakdown = {
+            "candidate_confidence": 1.0,
+            "component_support": 1.0,
+            "component_strength": 1.0,
+            "component_penalty": 0.0,
+            "context_focus": 1.0,
+        }
         behavior_candidate_signal = {
             "signal_tags": [],
             "dominant_signal": {
@@ -2012,7 +2023,16 @@ class DaVinciDecisionEngine:
                 stable_signal_ratio=float(behavior_guidance_profile.get("stable_signal_ratio", 0.0)),
             )
             behavior_match_bonus = max(0.0, immediate_expected_value) * (behavior_match_multiplier - 1.0)
-        ranking_score = expected_value + behavior_match_bonus
+            behavior_match_confidence_breakdown = self._behavior_match_candidate_confidence_breakdown(
+                best_move={
+                    "behavior_candidate_signal": behavior_candidate_signal,
+                }
+            )
+        behavior_match_ranking_bonus = (
+            behavior_match_bonus
+            * behavior_match_confidence_breakdown["candidate_confidence"]
+        )
+        ranking_score = expected_value + behavior_match_ranking_bonus
 
         return {
             "target_player_id": player_id,
@@ -2033,7 +2053,13 @@ class DaVinciDecisionEngine:
             "behavior_guidance_signal_count": behavior_guidance_signal_count,
             "behavior_match_multiplier": behavior_match_multiplier,
             "behavior_match_bonus": behavior_match_bonus,
+            "behavior_match_ranking_bonus": behavior_match_ranking_bonus,
             "behavior_match_support": behavior_match_support,
+            "behavior_match_candidate_confidence": behavior_match_confidence_breakdown["candidate_confidence"],
+            "behavior_match_component_support": behavior_match_confidence_breakdown["component_support"],
+            "behavior_match_component_strength": behavior_match_confidence_breakdown["component_strength"],
+            "behavior_match_component_penalty": behavior_match_confidence_breakdown["component_penalty"],
+            "behavior_match_context_focus": behavior_match_confidence_breakdown["context_focus"],
             "behavior_candidate_signal": behavior_candidate_signal,
             "ranking_score": ranking_score,
             "attackability_after_hit": attackability_after_hit,
@@ -2064,7 +2090,13 @@ class DaVinciDecisionEngine:
                 "behavior_guidance_signal_count": behavior_guidance_signal_count,
                 "behavior_match_multiplier": behavior_match_multiplier,
                 "behavior_match_bonus": behavior_match_bonus,
+                "behavior_match_ranking_bonus": behavior_match_ranking_bonus,
                 "behavior_match_support": behavior_match_support,
+                "behavior_match_candidate_confidence": behavior_match_confidence_breakdown["candidate_confidence"],
+                "behavior_match_component_support": behavior_match_confidence_breakdown["component_support"],
+                "behavior_match_component_strength": behavior_match_confidence_breakdown["component_strength"],
+                "behavior_match_component_penalty": behavior_match_confidence_breakdown["component_penalty"],
+                "behavior_match_context_focus": behavior_match_confidence_breakdown["context_focus"],
                 "ranking_score": ranking_score,
                 "attackability_after_hit": attackability_after_hit,
                 "post_hit_continue_score": post_hit_continue_score,
@@ -2581,6 +2613,22 @@ class DaVinciDecisionEngine:
         *,
         best_move: Dict[str, Any],
     ) -> Dict[str, float]:
+        precomputed_keys = (
+            "behavior_match_candidate_confidence",
+            "behavior_match_component_support",
+            "behavior_match_component_strength",
+            "behavior_match_component_penalty",
+            "behavior_match_context_focus",
+        )
+        if all(key in best_move for key in precomputed_keys):
+            return {
+                "candidate_confidence": float(best_move["behavior_match_candidate_confidence"]),
+                "component_support": float(best_move["behavior_match_component_support"]),
+                "component_strength": float(best_move["behavior_match_component_strength"]),
+                "component_penalty": float(best_move["behavior_match_component_penalty"]),
+                "context_focus": float(best_move["behavior_match_context_focus"]),
+            }
+
         candidate_signal = best_move.get("behavior_candidate_signal")
         if not isinstance(candidate_signal, dict):
             return {
