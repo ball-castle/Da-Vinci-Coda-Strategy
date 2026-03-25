@@ -394,6 +394,81 @@ class StopThresholdTests(unittest.TestCase):
             weak_summary["stop_score"],
         )
 
+    def test_choose_best_move_scales_behavior_match_decision_bonus_by_candidate_confidence(self):
+        engine = DaVinciDecisionEngine()
+        strong_candidate_move = {
+            "expected_value": 0.66,
+            "win_probability": 0.55,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.58,
+            "attackability_after_hit": 0.72,
+            "behavior_match_bonus": 0.10,
+            "behavior_match_support": 0.18,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_candidate_signal": {
+                "mode": "neighbor_top_k_posterior",
+                "context_covered_probability": 0.92,
+                "dominant_signal": {
+                    "source": "local_boundary",
+                    "reason": "narrow_boundary_probe",
+                    "weight": 1.15,
+                    "posterior_support": 0.88,
+                },
+            },
+        }
+        weak_candidate_move = {
+            "expected_value": 0.66,
+            "win_probability": 0.55,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.58,
+            "attackability_after_hit": 0.72,
+            "behavior_match_bonus": 0.10,
+            "behavior_match_support": 0.18,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_candidate_signal": {
+                "mode": "neighbor_top_k_posterior",
+                "context_covered_probability": 0.18,
+                "dominant_signal": {
+                    "source": "local_boundary",
+                    "reason": "narrow_boundary_probe",
+                    "weight": 1.15,
+                    "posterior_support": 0.12,
+                },
+            },
+        }
+
+        strong_best_move, strong_summary = engine.choose_best_move(
+            [strong_candidate_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        weak_best_move, weak_summary = engine.choose_best_move(
+            [weak_candidate_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(strong_best_move)
+        self.assertFalse(strong_summary["recommend_stop"])
+        self.assertGreater(
+            strong_summary["best_behavior_match_candidate_confidence"],
+            weak_summary["best_behavior_match_candidate_confidence"],
+        )
+        self.assertGreater(
+            strong_summary["decision_score_breakdown"]["behavior_match_decision_bonus"],
+            weak_summary["decision_score_breakdown"]["behavior_match_decision_bonus"],
+        )
+        self.assertGreater(
+            strong_summary["continue_score"],
+            strong_summary["stop_score"],
+        )
+        self.assertIsNone(weak_best_move)
+        self.assertTrue(weak_summary["recommend_stop"])
+        self.assertLess(
+            weak_summary["continue_score"],
+            weak_summary["stop_score"],
+        )
+
     def test_choose_best_move_continues_on_strong_continuation_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

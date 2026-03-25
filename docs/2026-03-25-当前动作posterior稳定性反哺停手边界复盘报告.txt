@@ -1,0 +1,176 @@
+2026-03-25 当前动作 posterior 稳定性反哺停手边界复盘报告
+
+记录时间：2026-03-25 22:55:15 +08:00
+
+一、本轮推进目标
+按照上一轮《行为匹配反哺停手边界复盘报告》的下一步建议，这一轮继续沿着第二条分支推进：
+
+- 不只看历史行为稳定性
+- 也开始看当前动作自己的 posterior 解释稳定性
+
+上一轮已经做到：
+- `behavior_match_bonus` 开始轻量进入 `continue_score`
+- 但 decision bonus 只取决于：
+  - `behavior_match_bonus`
+  - `behavior_match_support`
+  - `behavior_guidance_stable_ratio`
+
+这里仍然有一个缺口：
+- 历史行为解释可能很稳定
+- 但当前最佳动作本身的 posterior 解释可能并不稳定
+- 比如 `neighbor_top_k_posterior` 下：
+  - `context_covered_probability` 很低
+  - `dominant_signal.posterior_support` 也偏弱
+
+这说明：
+- 历史行为虽然支持某类 signal
+- 但当前动作是不是“真的匹配这类 signal”，仍然缺少足够稳的 posterior 支撑
+
+所以这一轮的目标是：
+- 不改 stop / continue 总体结构
+- 只给 `behavior_match_decision_bonus` 增一个“当前动作 posterior 稳定性”门控
+- 让 behavior bonus 不会在候选动作解释本身很脆弱时，被高估
+
+二、本轮核心改动
+1. 新增 `_behavior_match_candidate_confidence(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 从 `best_move["behavior_candidate_signal"]` 里提取当前动作的 posterior 稳定性
+
+当前逻辑是：
+- 如果没有 `behavior_candidate_signal`，回退为 `1.0`
+- 如果是 `map_context_fallback`，也视为 `1.0`
+- 如果是 `neighbor_top_k_posterior`，就读取：
+  - `context_covered_probability`
+  - `dominant_signal.posterior_support`
+- 最后取两者平均，形成当前动作的 `candidate_confidence`
+
+这个设计的含义是：
+- 当前动作的行为解释只有在“上下文覆盖率”和“dominant signal 支撑度”都还可以时
+- 才会被认为足够稳定，值得把 behavior bonus 更完整地接进 decision
+
+2. `behavior_match_decision_bonus` 现在受当前动作 posterior 稳定性约束
+之前：
+- decision bonus 只看历史端稳定性
+
+现在：
+- decision bonus = 原有 behavior match decision bonus
+  再乘上 `candidate_confidence`
+
+这意味着：
+- 历史行为再稳定
+- 如果当前动作自己的 posterior 匹配解释很脆弱
+- 那么它拿到的最终 decision bonus 也会明显缩小
+
+3. decision summary 补齐解释字段
+新增输出：
+- `best_behavior_match_candidate_confidence`
+- `decision_score_breakdown["behavior_match_candidate_confidence"]`
+
+这一步很重要，因为后面看边界 case 时，可以直接区分：
+- 是历史行为稳定性不够，导致 bonus 小
+- 还是当前动作 posterior 支撑不够，导致 bonus 被压缩
+
+三、本轮收益
+这一轮的最大收益，是把“行为层反哺 decision”的链路再收紧了一步。
+
+上一轮之后的链路是：
+- 历史行为稳定
+- 当前动作匹配到某类 signal
+- 就能拿到 behavior decision bonus
+
+这轮之后变成：
+- 历史行为稳定
+- 当前动作匹配到某类 signal
+- 并且当前动作的 posterior 解释本身也足够稳定
+- 才能拿到更完整的 behavior decision bonus
+
+换句话说：
+- 之前更偏“历史端可信，就帮当前动作加分”
+- 现在变成“历史端可信，而且当前动作自己也解释得住，才给更多分”
+
+这让 decision bonus 更克制，也更不容易被局部脆弱 hypothesis 误导。
+
+四、测试补充
+1. 新增决策单测
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_scales_behavior_match_decision_bonus_by_candidate_confidence`
+
+这条测试验证：
+- 两个动作的
+  - `behavior_match_bonus`
+  - `behavior_match_support`
+  - `behavior_guidance_stable_ratio`
+  都相同
+- 唯一差别是当前动作的 posterior 稳定性不同
+- 结果是：
+  - posterior 稳定的动作能被推过 continue 边界
+  - posterior 脆弱的动作推不过去
+
+这条测试的价值在于，它把“历史稳定性”和“当前动作 posterior 稳定性”两个因素真正拆开测了。
+
+2. 固化进 decision 回归 case
+文件：
+- `backend/tests/test_regression_cases.py`
+
+新增回归 case：
+- `fragile_candidate_confidence_stop`
+
+这个 case 的作用是锁住一类边界：
+- 历史行为支撑已经不弱
+- 但当前动作自己的 posterior 匹配稳定性不足
+- 最终仍然应该停手
+
+3. controller summary 字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_match_candidate_confidence`
+
+避免后面继续改 controller 输出时，把这次新增的 decision 解释字段漏掉。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 28 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，behavior match 反哺 decision 的结构已经变成：
+
+1. 历史行为稳定性
+2. 当前动作 signal 匹配强度
+3. 当前动作 posterior 解释稳定性
+
+也就是说，当前 bonus 已经不再只是“历史端”单边发力，而是开始具备：
+- 历史端约束
+- 当前动作端约束
+
+但边界仍然比较克制：
+- 这部分 bonus 仍然只轻量影响 `continue_score`
+- 还没有直接改 `stop_score`
+- 也还没有继续进入 `post-hit rollout` 的深层继续判断
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把当前已经做好的 `candidate_confidence` 继续接进 `post-hit` 的 continue 决策
+目标：
+- 当前回合继续判断和命中后下一手继续判断
+- 开始共享同一套行为稳定性约束
+
+2. 继续丰富 `candidate_confidence` 的来源
+目标：
+- 不只看 `context_covered_probability`
+- 和 `dominant_signal.posterior_support`
+- 也可以逐步吸收 `context_candidate_count`、component 级别 support 等信息
+
+八、一句话总结
+本轮推进的核心成果，是让 `behavior_match_decision_bonus` 不再只看历史行为稳定性，而是也开始看当前动作自己的 posterior 解释稳定性，从而让行为层反哺停手边界的过程更克制、更稳。

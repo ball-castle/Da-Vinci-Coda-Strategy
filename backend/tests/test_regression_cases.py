@@ -2,7 +2,7 @@ import sys
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -15,7 +15,7 @@ from app.core.state import CardSlot, GameState, GuessAction, PlayerState
 class DecisionRegressionCase:
     name: str
     my_hidden_count: int
-    moves: List[Dict[str, float]]
+    moves: List[Dict[str, Any]]
     expect_continue: bool
     stop_reason_contains: Optional[str] = None
     positive_breakdown_key: Optional[str] = None
@@ -32,8 +32,8 @@ class BehaviorRegressionCase:
     alternative_hypothesis: Dict[str, Dict[int, tuple]]
 
 
-def build_move(**overrides: float) -> Dict[str, float]:
-    move: Dict[str, float] = {
+def build_move(**overrides: Any) -> Dict[str, Any]:
+    move: Dict[str, Any] = {
         "expected_value": 0.0,
         "win_probability": 0.0,
         "continuation_value": 0.0,
@@ -42,6 +42,7 @@ def build_move(**overrides: float) -> Dict[str, float]:
         "behavior_match_bonus": 0.0,
         "behavior_match_support": 0.0,
         "behavior_guidance_stable_ratio": 0.0,
+        "behavior_candidate_signal": None,
         "post_hit_continue_score": 0.0,
         "post_hit_stop_score": 0.0,
         "post_hit_continue_margin": 0.0,
@@ -129,6 +130,35 @@ DECISION_REGRESSION_CASES = [
         expect_continue=True,
         positive_breakdown_key="behavior_match_decision_bonus",
         min_continue_margin=0.0,
+    ),
+    DecisionRegressionCase(
+        name="fragile_candidate_confidence_stop",
+        my_hidden_count=2,
+        moves=[
+            build_move(
+                expected_value=0.66,
+                win_probability=0.55,
+                continuation_value=0.18,
+                continuation_likelihood=0.58,
+                attackability_after_hit=0.72,
+                behavior_match_bonus=0.10,
+                behavior_match_support=0.18,
+                behavior_guidance_stable_ratio=1.0,
+                behavior_candidate_signal={
+                    "mode": "neighbor_top_k_posterior",
+                    "context_covered_probability": 0.18,
+                    "dominant_signal": {
+                        "source": "local_boundary",
+                        "reason": "narrow_boundary_probe",
+                        "weight": 1.15,
+                        "posterior_support": 0.12,
+                    },
+                },
+            ),
+        ],
+        expect_continue=False,
+        positive_breakdown_key="behavior_match_candidate_confidence",
+        max_continue_margin=0.0,
     ),
     DecisionRegressionCase(
         name="negative_post_hit_margin_stop",

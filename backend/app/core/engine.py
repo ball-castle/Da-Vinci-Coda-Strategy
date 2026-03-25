@@ -1770,6 +1770,7 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_bonus": 0.0,
                 "best_behavior_match_support": 0.0,
                 "best_behavior_match_decision_bonus": 0.0,
+                "best_behavior_match_candidate_confidence": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -1783,6 +1784,7 @@ class DaVinciDecisionEngine:
                     "top_k_rollout_pressure": 0.0,
                     "attackability_pressure": 0.0,
                     "behavior_match_decision_bonus": 0.0,
+                    "behavior_match_candidate_confidence": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -1827,6 +1829,7 @@ class DaVinciDecisionEngine:
             "best_behavior_match_bonus": best_move.get("behavior_match_bonus", 0.0),
             "best_behavior_match_support": best_move.get("behavior_match_support", 0.0),
             "best_behavior_match_decision_bonus": decision_snapshot["behavior_match_decision_bonus"],
+            "best_behavior_match_candidate_confidence": decision_snapshot["behavior_match_candidate_confidence"],
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
             "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
@@ -2423,7 +2426,11 @@ class DaVinciDecisionEngine:
         my_hidden_count: int,
     ) -> Dict[str, Any]:
         best_gap = best_move["expected_value"] - (second_move["expected_value"] if second_move else 0.0)
-        behavior_match_decision_bonus = self._behavior_match_decision_bonus(best_move=best_move)
+        behavior_match_candidate_confidence = self._behavior_match_candidate_confidence(best_move=best_move)
+        behavior_match_decision_bonus = self._behavior_match_decision_bonus(
+            best_move=best_move,
+            candidate_confidence=behavior_match_candidate_confidence,
+        )
 
         edge_pressure = 0.0
         if second_move is not None and best_gap < self.STOP_EDGE_REFERENCE:
@@ -2508,6 +2515,7 @@ class DaVinciDecisionEngine:
             "continue_margin": continue_margin,
             "best_gap": best_gap,
             "behavior_match_decision_bonus": behavior_match_decision_bonus,
+            "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
             "low_confidence_guard": low_confidence_guard,
             "weak_edge_guard": weak_edge_guard,
             "decision_score_breakdown": {
@@ -2518,13 +2526,47 @@ class DaVinciDecisionEngine:
                 "top_k_rollout_pressure": top_k_rollout_pressure,
                 "attackability_pressure": attackability_pressure,
                 "behavior_match_decision_bonus": behavior_match_decision_bonus,
+                "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
             },
         }
+
+    def _behavior_match_candidate_confidence(
+        self,
+        *,
+        best_move: Dict[str, Any],
+    ) -> float:
+        candidate_signal = best_move.get("behavior_candidate_signal")
+        if not isinstance(candidate_signal, dict):
+            return 1.0
+
+        mode = str(candidate_signal.get("mode", ""))
+        if mode == "map_context_fallback":
+            return 1.0
+
+        dominant_signal = candidate_signal.get("dominant_signal", {})
+        posterior_support = clamp(
+            float(dominant_signal.get("posterior_support", 0.0)),
+            0.0,
+            1.0,
+        )
+        context_covered_probability = clamp(
+            float(candidate_signal.get("context_covered_probability", 0.0)),
+            0.0,
+            1.0,
+        )
+        if (
+            mode != "neighbor_top_k_posterior"
+            and posterior_support <= 0.0
+            and context_covered_probability <= 0.0
+        ):
+            return 1.0
+        return 0.5 * (posterior_support + context_covered_probability)
 
     def _behavior_match_decision_bonus(
         self,
         *,
         best_move: Dict[str, Any],
+        candidate_confidence: float,
     ) -> float:
         raw_bonus = max(0.0, best_move.get("behavior_match_bonus", 0.0))
         if raw_bonus <= 0.0:
@@ -2540,7 +2582,13 @@ class DaVinciDecisionEngine:
             0.0,
             1.0,
         )
-        return raw_bonus * self.BEHAVIOR_MATCH_DECISION_SCALE * support_scale * stable_ratio
+        return (
+            raw_bonus
+            * self.BEHAVIOR_MATCH_DECISION_SCALE
+            * support_scale
+            * stable_ratio
+            * clamp(candidate_confidence, 0.0, 1.0)
+        )
 
     def _stop_threshold(
         self,
