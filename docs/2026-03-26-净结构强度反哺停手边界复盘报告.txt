@@ -1,0 +1,178 @@
+2026-03-26 净结构强度反哺停手边界复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《净结构强度接入当前排序复盘报告》的下一步建议，这一轮继续沿第二条分支推进：
+
+- 不只让 net structure 影响 current move ranking
+- 也让它在 stop / continue 极近边界时，开始轻量影响 decision
+
+到上一轮为止，系统已经做到：
+- `behavior_match_ranking_bonus` 会显式吸收 `net_structure`
+- current move ranking 不再只是 `raw bonus * confidence`
+
+但 decision 这边仍然有一个缺口：
+- `behavior_match_decision_bonus` 已经会吃 refined confidence
+- 可是在 continue / stop 极近边界时
+- `net_structure` 还没有直接表达“结构明显更正”或“结构已经偏负”的最后一推一压
+
+所以这一轮的目标是：
+- 不重写整个 decision 框架
+- 只在极近边界里加一个保守的 net-structure adjustment
+- 让局部结构净效果开始轻量进入停手判断
+
+二、本轮核心改动
+1. 新增极近边界调节常量
+位置：
+- `backend/app/core/engine.py`
+
+新增：
+- `BEHAVIOR_MATCH_DECISION_WINDOW = 0.12`
+- `BEHAVIOR_MATCH_DECISION_NET_STRUCTURE_SCALE = 0.50`
+
+作用：
+- 只在 continue / stop 预判分差足够接近时启用结构调节
+- 避免把 `net_structure` 直接放大成常驻 decision 主项
+
+2. 新增 `_behavior_match_decision_structure_adjustment(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 统一计算 decision 侧的结构调节量
+
+当前逻辑是：
+- 先拿已有的 `behavior_match_decision_bonus`
+- 再结合：
+  - `net_structure`
+  - `component_support`
+  - `context_focus`
+  - `pre_structure_continue_margin`
+- 最终只在极近边界里输出一个轻量 adjustment
+
+这一步的意义是：
+- 正净结构不会在所有场景里都额外放大
+- 只有结构本身有净优势，且 component / context 也不差时
+- 才会在窄边界里多推一手
+
+3. `_evaluate_continue_decision(...)` 正式接入 net structure 边界调节
+本轮之后 decision 的 continue score 结构变成：
+
+- `continue_score = expected_value + behavior_match_decision_bonus + behavior_match_decision_structure_adjustment`
+
+其中：
+- `behavior_match_net_structure = component_strength - component_penalty`
+- `behavior_match_decision_structure_adjustment`
+  - 正值：在极近边界里轻量奖励正净结构
+  - 负值：在极近边界里进一步压低负净结构
+
+并且当前实现还保留了保守门控：
+- 分差不在 `BEHAVIOR_MATCH_DECISION_WINDOW` 内，不调节
+- `component_support` 稀薄时，不轻易放大
+- `context_focus` 发散时，不轻易放大
+
+这样可以避免把前面已经固化的 sparse / diffuse stop case 重新推歪。
+
+4. decision summary 与 breakdown 补齐解释字段
+新增输出：
+- `best_behavior_match_decision_structure_adjustment`
+
+同时 `decision_score_breakdown` 里也新增：
+- `behavior_match_decision_structure_adjustment`
+
+这意味着现在回看一轮停手判断时，可以直接分清：
+- 原始 `behavior_match_decision_bonus` 推了多少
+- `net_structure` 在极近边界又额外推了多少，或者压了多少
+
+三、本轮收益
+这一轮最大的收益，是把 refined behavior signal 的“净结构方向性”正式接进了 decision 的最后窄边界。
+
+之前的结构更像：
+- `candidate_confidence` 负责控制能不能把 behavior bonus 接进 decision
+- 但在最后极近边界上
+- 结构明显更正和结构已经偏负，还没有被显式分开
+
+这轮之后变成：
+- confidence 继续负责“稳不稳”
+- net structure 开始轻量负责“净方向到底更偏正还是更偏负”
+
+换句话说：
+- 之前更偏“只看这份行为支撑能不能进 decision”
+- 现在更偏“进了 decision 之后，极近边界还会继续看结构净效果”
+
+四、测试补充
+1. 新增正向净结构窄边界测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_rewards_positive_net_structure_on_narrow_decision_edge`
+
+验证内容：
+- 在 `candidate_confidence` 等 refined 字段一致时
+- 正向 `net_structure` 会带来正的 `behavior_match_decision_structure_adjustment`
+- 并把原本极近的 stop / continue 边界推到继续
+
+2. 新增负向净结构窄边界测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_penalizes_negative_net_structure_on_narrow_decision_edge`
+
+验证内容：
+- 在其它 refined 条件一致时
+- 负向 `net_structure` 会带来负的 `behavior_match_decision_structure_adjustment`
+- 并把原本极近的 continue 边界压回停手
+
+3. controller 输出字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_match_decision_structure_adjustment`
+- `decision_score_breakdown["behavior_match_decision_structure_adjustment"]`
+
+避免 controller 输出层漏掉这次新增的 decision 解释字段。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 38 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，refined behavior signal 对 decision 的接入层次已经变成：
+
+1. `candidate_confidence` 约束 `behavior_match_decision_bonus`
+2. `candidate_confidence` 约束 `behavior_rollout_pressure`
+3. `net_structure` 在极近 continue / stop 边界里提供额外方向性调节
+
+也就是说，当前 decision 已经不只是看：
+- 这份行为支撑稳不稳
+
+而是开始看：
+- 这份支撑的净结构到底更偏正还是更偏负
+
+但边界仍然清楚：
+- 这轮只作用于极近的 current-turn decision 边界
+- 还没有继续送进 post-hit 的 next-turn candidate ranking
+- 也没有把 net structure 扩成 rollout 内部的常驻主项
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 net structure 继续送进命中后下一手候选动作排序
+目标：
+- 不只是当前回合 decision
+- 也让 next-turn candidate ranking 开始共享这套净结构约束
+
+2. 让 post-hit rollout 内部也开始区分正净结构与负净结构
+目标：
+- 不只是当前这一手的 stop / continue
+- 而是让续压链条内部也能显式吃到 refined net structure
+
+八、一句话总结
+本轮推进的核心成果，是把 refined behavior signal 里的 `net_structure` 从“只影响当前排序”，推进成了也会在 stop / continue 极近边界里提供一个保守、可解释、可回归的 decision 调节，让停手判断开始显式区分结构净效果的正负方向。

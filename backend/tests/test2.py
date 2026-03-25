@@ -487,6 +487,136 @@ class StopThresholdTests(unittest.TestCase):
         )
         self.assertGreaterEqual(negative_breakdown["ranking_bonus"], 0.0)
 
+    def test_choose_best_move_rewards_positive_net_structure_on_narrow_decision_edge(self):
+        engine = DaVinciDecisionEngine()
+        positive_move = {
+            "expected_value": 0.625,
+            "win_probability": 0.55,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.58,
+            "attackability_after_hit": 0.72,
+            "behavior_match_bonus": 0.16,
+            "behavior_match_support": 0.16,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_match_candidate_confidence": 0.76,
+            "behavior_match_component_support": 0.74,
+            "behavior_match_component_strength": 0.70,
+            "behavior_match_component_penalty": 0.10,
+            "behavior_match_context_focus": 0.90,
+        }
+        neutral_move = {
+            "expected_value": 0.625,
+            "win_probability": 0.55,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.58,
+            "attackability_after_hit": 0.72,
+            "behavior_match_bonus": 0.16,
+            "behavior_match_support": 0.16,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_match_candidate_confidence": 0.76,
+            "behavior_match_component_support": 0.74,
+            "behavior_match_component_strength": 0.40,
+            "behavior_match_component_penalty": 0.40,
+            "behavior_match_context_focus": 0.90,
+        }
+
+        positive_best_move, positive_summary = engine.choose_best_move(
+            [positive_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        neutral_best_move, neutral_summary = engine.choose_best_move(
+            [neutral_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(positive_best_move)
+        self.assertFalse(positive_summary["recommend_stop"])
+        self.assertGreater(
+            positive_summary["best_behavior_match_decision_structure_adjustment"],
+            0.0,
+        )
+        self.assertEqual(
+            neutral_summary["best_behavior_match_decision_structure_adjustment"],
+            0.0,
+        )
+        self.assertGreater(
+            positive_summary["continue_score"],
+            positive_summary["stop_score"],
+        )
+        self.assertIsNone(neutral_best_move)
+        self.assertTrue(neutral_summary["recommend_stop"])
+        self.assertLess(
+            neutral_summary["continue_score"],
+            neutral_summary["stop_score"],
+        )
+
+    def test_choose_best_move_penalizes_negative_net_structure_on_narrow_decision_edge(self):
+        engine = DaVinciDecisionEngine()
+        neutral_move = {
+            "expected_value": 0.635,
+            "win_probability": 0.55,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.58,
+            "attackability_after_hit": 0.72,
+            "behavior_match_bonus": 0.16,
+            "behavior_match_support": 0.16,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_match_candidate_confidence": 0.76,
+            "behavior_match_component_support": 0.74,
+            "behavior_match_component_strength": 0.40,
+            "behavior_match_component_penalty": 0.40,
+            "behavior_match_context_focus": 0.90,
+        }
+        negative_move = {
+            "expected_value": 0.635,
+            "win_probability": 0.55,
+            "continuation_value": 0.18,
+            "continuation_likelihood": 0.58,
+            "attackability_after_hit": 0.72,
+            "behavior_match_bonus": 0.16,
+            "behavior_match_support": 0.16,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_match_candidate_confidence": 0.76,
+            "behavior_match_component_support": 0.74,
+            "behavior_match_component_strength": 0.10,
+            "behavior_match_component_penalty": 0.70,
+            "behavior_match_context_focus": 0.90,
+        }
+
+        neutral_best_move, neutral_summary = engine.choose_best_move(
+            [neutral_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        negative_best_move, negative_summary = engine.choose_best_move(
+            [negative_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(neutral_best_move)
+        self.assertFalse(neutral_summary["recommend_stop"])
+        self.assertEqual(
+            neutral_summary["best_behavior_match_decision_structure_adjustment"],
+            0.0,
+        )
+        self.assertGreater(
+            neutral_summary["continue_score"],
+            neutral_summary["stop_score"],
+        )
+        self.assertIsNone(negative_best_move)
+        self.assertTrue(negative_summary["recommend_stop"])
+        self.assertLess(
+            negative_summary["best_behavior_match_decision_structure_adjustment"],
+            0.0,
+        )
+        self.assertLess(
+            negative_summary["continue_score"],
+            negative_summary["stop_score"],
+        )
+
     def test_choose_best_move_stops_on_weak_endgame_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

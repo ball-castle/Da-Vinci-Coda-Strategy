@@ -1676,6 +1676,8 @@ class DaVinciDecisionEngine:
     BEHAVIOR_MATCH_COMPONENT_WEIGHT_REFERENCE = 0.15
     BEHAVIOR_MATCH_COMPONENT_PENALTY_WEIGHT = 0.40
     BEHAVIOR_MATCH_NET_STRUCTURE_SCALE = 0.10
+    BEHAVIOR_MATCH_DECISION_WINDOW = 0.12
+    BEHAVIOR_MATCH_DECISION_NET_STRUCTURE_SCALE = 0.50
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -1775,6 +1777,7 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_bonus": 0.0,
                 "best_behavior_match_support": 0.0,
                 "best_behavior_match_decision_bonus": 0.0,
+                "best_behavior_match_decision_structure_adjustment": 0.0,
                 "best_behavior_match_ranking_bonus": 0.0,
                 "best_behavior_match_net_structure": 0.0,
                 "best_behavior_match_structure_adjustment": 0.0,
@@ -1798,8 +1801,9 @@ class DaVinciDecisionEngine:
                     "attackability_pressure": 0.0,
                     "behavior_rollout_pressure": 0.0,
                     "behavior_match_decision_bonus": 0.0,
-                    "behavior_match_ranking_bonus": 0.0,
+                    "behavior_match_decision_structure_adjustment": 0.0,
                     "behavior_match_net_structure": 0.0,
+                    "behavior_match_ranking_bonus": 0.0,
                     "behavior_match_structure_adjustment": 0.0,
                     "behavior_match_candidate_confidence": 0.0,
                     "behavior_match_component_support": 0.0,
@@ -1850,8 +1854,9 @@ class DaVinciDecisionEngine:
             "best_behavior_match_bonus": best_move.get("behavior_match_bonus", 0.0),
             "best_behavior_match_support": best_move.get("behavior_match_support", 0.0),
             "best_behavior_match_decision_bonus": decision_snapshot["behavior_match_decision_bonus"],
+            "best_behavior_match_decision_structure_adjustment": decision_snapshot["behavior_match_decision_structure_adjustment"],
             "best_behavior_match_ranking_bonus": best_move.get("behavior_match_ranking_bonus", 0.0),
-            "best_behavior_match_net_structure": best_move.get("behavior_match_net_structure", 0.0),
+            "best_behavior_match_net_structure": decision_snapshot["behavior_match_net_structure"],
             "best_behavior_match_structure_adjustment": best_move.get("behavior_match_structure_adjustment", 0.0),
             "best_behavior_match_candidate_confidence": decision_snapshot["behavior_match_candidate_confidence"],
             "best_behavior_match_component_support": decision_snapshot["behavior_match_component_support"],
@@ -2507,6 +2512,11 @@ class DaVinciDecisionEngine:
         behavior_match_component_strength = behavior_match_confidence_breakdown["component_strength"]
         behavior_match_component_penalty = behavior_match_confidence_breakdown["component_penalty"]
         behavior_match_context_focus = behavior_match_confidence_breakdown["context_focus"]
+        behavior_match_net_structure = clamp(
+            behavior_match_component_strength - behavior_match_component_penalty,
+            -1.0,
+            1.0,
+        )
         behavior_match_decision_bonus = self._behavior_match_decision_bonus(
             best_move=best_move,
             candidate_confidence=behavior_match_candidate_confidence,
@@ -2580,6 +2590,15 @@ class DaVinciDecisionEngine:
             + behavior_rollout_pressure
         )
         continue_score = best_move["expected_value"] + behavior_match_decision_bonus
+        pre_structure_continue_margin = continue_score - stop_score
+        behavior_match_decision_structure_adjustment = self._behavior_match_decision_structure_adjustment(
+            decision_bonus=behavior_match_decision_bonus,
+            net_structure=behavior_match_net_structure,
+            component_support=behavior_match_component_support,
+            context_focus=behavior_match_context_focus,
+            pre_structure_continue_margin=pre_structure_continue_margin,
+        )
+        continue_score += behavior_match_decision_structure_adjustment
         continue_margin = continue_score - stop_score
 
         low_confidence_guard = (
@@ -2606,6 +2625,8 @@ class DaVinciDecisionEngine:
             "continue_margin": continue_margin,
             "best_gap": best_gap,
             "behavior_match_decision_bonus": behavior_match_decision_bonus,
+            "behavior_match_decision_structure_adjustment": behavior_match_decision_structure_adjustment,
+            "behavior_match_net_structure": behavior_match_net_structure,
             "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
             "behavior_match_component_support": behavior_match_component_support,
             "behavior_match_component_strength": behavior_match_component_strength,
@@ -2622,6 +2643,8 @@ class DaVinciDecisionEngine:
                 "attackability_pressure": attackability_pressure,
                 "behavior_rollout_pressure": behavior_rollout_pressure,
                 "behavior_match_decision_bonus": behavior_match_decision_bonus,
+                "behavior_match_decision_structure_adjustment": behavior_match_decision_structure_adjustment,
+                "behavior_match_net_structure": behavior_match_net_structure,
                 "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
                 "behavior_match_component_support": behavior_match_component_support,
                 "behavior_match_component_strength": behavior_match_component_strength,
@@ -2866,6 +2889,36 @@ class DaVinciDecisionEngine:
             * support_scale
             * stable_ratio
             * clamp(candidate_confidence, 0.0, 1.0)
+        )
+
+    def _behavior_match_decision_structure_adjustment(
+        self,
+        *,
+        decision_bonus: float,
+        net_structure: float,
+        component_support: float,
+        context_focus: float,
+        pre_structure_continue_margin: float,
+    ) -> float:
+        decision_bonus = max(0.0, float(decision_bonus))
+        if decision_bonus <= 0.0:
+            return 0.0
+
+        margin = abs(float(pre_structure_continue_margin))
+        if margin >= self.BEHAVIOR_MATCH_DECISION_WINDOW:
+            return 0.0
+
+        support_gate = (
+            clamp(component_support, 0.0, 1.0)
+            * clamp(context_focus, 0.0, 1.0)
+        )
+        edge_scale = 1.0 - (margin / self.BEHAVIOR_MATCH_DECISION_WINDOW)
+        return (
+            decision_bonus
+            * self.BEHAVIOR_MATCH_DECISION_NET_STRUCTURE_SCALE
+            * clamp(net_structure, -1.0, 1.0)
+            * support_gate
+            * edge_scale
         )
 
     def _stop_threshold(
