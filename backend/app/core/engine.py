@@ -1658,6 +1658,7 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_FRAGILE_POST_HIT = 0.18
     STOP_MARGIN_TOP_K_SUPPORT = 0.18
     STOP_MARGIN_LOW_ATTACKABILITY = 0.18
+    STOP_MARGIN_BEHAVIOR_ROLLOUT = 0.16
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     POST_HIT_GAP_REFERENCE = 0.22
@@ -1771,6 +1772,7 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_support": 0.0,
                 "best_behavior_match_decision_bonus": 0.0,
                 "best_behavior_match_candidate_confidence": 0.0,
+                "best_behavior_rollout_pressure": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -1783,6 +1785,7 @@ class DaVinciDecisionEngine:
                     "fragile_rollout_pressure": 0.0,
                     "top_k_rollout_pressure": 0.0,
                     "attackability_pressure": 0.0,
+                    "behavior_rollout_pressure": 0.0,
                     "behavior_match_decision_bonus": 0.0,
                     "behavior_match_candidate_confidence": 0.0,
                 },
@@ -1830,6 +1833,7 @@ class DaVinciDecisionEngine:
             "best_behavior_match_support": best_move.get("behavior_match_support", 0.0),
             "best_behavior_match_decision_bonus": decision_snapshot["behavior_match_decision_bonus"],
             "best_behavior_match_candidate_confidence": decision_snapshot["behavior_match_candidate_confidence"],
+            "best_behavior_rollout_pressure": decision_snapshot["decision_score_breakdown"]["behavior_rollout_pressure"],
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
             "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
@@ -2480,6 +2484,16 @@ class DaVinciDecisionEngine:
                 / max(self.ATTACKABILITY_REFERENCE, 1e-9)
             )
 
+        behavior_rollout_pressure = 0.0
+        if (
+            best_move.get("post_hit_stop_score", 0.0) > 0.0
+            and post_hit_continue_margin > 0.0
+            and best_move.get("continuation_value", 0.0) > 0.0
+        ):
+            behavior_rollout_pressure = self.STOP_MARGIN_BEHAVIOR_ROLLOUT * (
+                1.0 - behavior_match_candidate_confidence
+            )
+
         stop_score = (
             stop_threshold
             + edge_pressure
@@ -2487,6 +2501,7 @@ class DaVinciDecisionEngine:
             + fragile_rollout_pressure
             + top_k_rollout_pressure
             + attackability_pressure
+            + behavior_rollout_pressure
         )
         continue_score = best_move["expected_value"] + behavior_match_decision_bonus
         continue_margin = continue_score - stop_score
@@ -2525,6 +2540,7 @@ class DaVinciDecisionEngine:
                 "fragile_rollout_pressure": fragile_rollout_pressure,
                 "top_k_rollout_pressure": top_k_rollout_pressure,
                 "attackability_pressure": attackability_pressure,
+                "behavior_rollout_pressure": behavior_rollout_pressure,
                 "behavior_match_decision_bonus": behavior_match_decision_bonus,
                 "behavior_match_candidate_confidence": behavior_match_candidate_confidence,
             },

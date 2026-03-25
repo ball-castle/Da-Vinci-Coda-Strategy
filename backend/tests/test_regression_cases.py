@@ -161,6 +161,41 @@ DECISION_REGRESSION_CASES = [
         max_continue_margin=0.0,
     ),
     DecisionRegressionCase(
+        name="fragile_candidate_rollout_stop",
+        my_hidden_count=2,
+        moves=[
+            build_move(
+                expected_value=0.74,
+                win_probability=0.57,
+                continuation_value=0.23,
+                continuation_likelihood=0.63,
+                attackability_after_hit=0.76,
+                behavior_match_bonus=0.06,
+                behavior_match_support=0.18,
+                behavior_guidance_stable_ratio=1.0,
+                behavior_candidate_signal={
+                    "mode": "neighbor_top_k_posterior",
+                    "context_covered_probability": 0.18,
+                    "dominant_signal": {
+                        "source": "local_boundary",
+                        "reason": "narrow_boundary_probe",
+                        "weight": 1.15,
+                        "posterior_support": 0.12,
+                    },
+                },
+                post_hit_continue_score=0.38,
+                post_hit_stop_score=0.24,
+                post_hit_continue_margin=0.14,
+                post_hit_best_gap=0.28,
+                post_hit_top_k_continue_margin=0.14,
+                post_hit_top_k_support_ratio=1.0,
+            ),
+        ],
+        expect_continue=False,
+        positive_breakdown_key="behavior_rollout_pressure",
+        max_continue_margin=0.0,
+    ),
+    DecisionRegressionCase(
         name="negative_post_hit_margin_stop",
         my_hidden_count=2,
         moves=[

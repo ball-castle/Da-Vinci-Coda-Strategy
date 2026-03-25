@@ -1,0 +1,183 @@
+2026-03-25 candidate confidence 接入 post-hit 续压复盘报告
+
+记录时间：2026-03-25 23:12:38 +08:00
+
+一、本轮推进目标
+按照上一轮《当前动作 posterior 稳定性反哺停手边界复盘报告》的下一步建议，这一轮继续沿第一条分支推进：
+
+- 把当前已经算出来的 `candidate_confidence`
+- 继续接进 `post-hit` 的 continue 决策
+
+上一轮已经做到：
+- 当前回合的 `behavior_match_decision_bonus` 会受 `candidate_confidence` 约束
+- 也就是说，当前动作 posterior 解释不稳时，它更难被推过 continue 边界
+
+但上一轮之后仍然有一个缺口：
+- 当前回合的 `continue_score` 已经受 `candidate_confidence` 约束
+- 但只要 `post_hit_continue_margin` 还是正的
+- 系统仍然会默认把这条 rollout 链路当成相对可信的续压支撑
+
+这会出现一种偏差：
+- 当前动作自己其实 posterior 很脆
+- 但因为命中后浅层 rollout 还给出正 margin
+- 当前回合仍可能被后续续压价值“托起来”
+
+所以这一轮的目标是：
+- 不去重写 rollout 主体
+- 只把 `candidate_confidence` 接进依赖 `post-hit` 的继续判断
+- 让“当前动作自己解释不稳”的情况，也会削弱它对后续续压的支撑力度
+
+二、本轮核心改动
+1. 新增 `STOP_MARGIN_BEHAVIOR_ROLLOUT = 0.16`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 作为新的 `behavior_rollout_pressure` 上限
+- 专门惩罚“当前动作 posterior 很脆，但还想靠 post-hit 续压链路支撑继续”的局面
+
+2. 在 `_evaluate_continue_decision(...)` 中新增 `behavior_rollout_pressure`
+触发条件：
+- `post_hit_stop_score > 0`
+- `post_hit_continue_margin > 0`
+- `continuation_value > 0`
+
+也就是说：
+- 当前动作确实在依赖“命中后还能继续压”的这条链路
+- 这时如果当前动作自身的 `candidate_confidence` 较低
+- 就会额外抬高 `stop_score`
+
+当前公式是：
+- `behavior_rollout_pressure = STOP_MARGIN_BEHAVIOR_ROLLOUT * (1 - candidate_confidence)`
+
+它的含义很直接：
+- `candidate_confidence` 越高，说明当前动作自身 posterior 解释越稳，额外压力越小
+- `candidate_confidence` 越低，说明这条当前动作本身就站不稳，post-hit rollout 给出的正续压空间也更该被打折
+
+3. `stop_score` 正式接入这部分压力
+这轮不是只把字段算出来，而是正式把它接入：
+- `stop_score`
+
+于是现在 stop / continue 边界里，除了已有的：
+- `rollout_pressure`
+- `fragile_rollout_pressure`
+- `top_k_rollout_pressure`
+- `attackability_pressure`
+
+又多了一层新的约束：
+- `behavior_rollout_pressure`
+
+这层约束和前几轮 pressure 的区别是：
+- 前面几类主要在看“命中后局面本身还支不支得住继续”
+- 这次新增的是“当前这一步动作自己，能不能可信地把你带到那条续压链上”
+
+4. decision summary 补齐解释字段
+新增输出：
+- `best_behavior_rollout_pressure`
+- `decision_score_breakdown["behavior_rollout_pressure"]`
+
+这样后面看边界 case 时，可以直接分清：
+- 是 rollout 本身弱
+- 还是 rollout 自身不弱，但当前动作 posterior 太脆，导致它不该被这么信任
+
+三、本轮收益
+这一轮最大的收益，是把“当前动作端的行为稳定性约束”真正延伸到了 `post-hit` 续压判断。
+
+上一轮之后的结构是：
+- 当前动作自己的 continue bonus 受 `candidate_confidence` 约束
+- 但 post-hit rollout 还是比较独立地支撑 continuation
+
+这轮之后变成：
+- 当前动作自己 posterior 稳定性不够
+- 不只会削弱当前回合的 decision bonus
+- 也会削弱它依赖 post-hit 续压链路时的整体可信度
+
+换句话说：
+- 之前更像“当前动作自己站不稳，但命中后也许还能续，所以先算你继续”
+- 现在变成“如果你自己都站不稳，那你对后续续压的支撑也该被打折”
+
+这让 current turn 和 post-hit continuation 开始共享同一套行为稳定性约束。
+
+四、测试补充
+1. 新增决策单测
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_choose_best_move_penalizes_fragile_candidate_confidence_in_post_hit_rollout`
+
+这条测试验证：
+- 两个动作都依赖正的 `post-hit` 续压空间
+- rollout 指标本身几乎相同
+- 唯一关键差别是当前动作的 `candidate_confidence`
+- 结果是：
+  - posterior 稳定的动作还能继续
+  - posterior 脆弱的动作会被新的 `behavior_rollout_pressure` 压回停手
+
+这条测试的价值在于，它测的是：
+- 当前动作 posterior 稳定性
+- 是否真的开始影响“依赖续压链路的继续判断”
+
+2. 固化进 decision 回归 case
+文件：
+- `backend/tests/test_regression_cases.py`
+
+新增回归 case：
+- `fragile_candidate_rollout_stop`
+
+它锁住的边界是：
+- `post_hit_continue_margin` 为正
+- rollout 表面上还能继续
+- 但当前动作自己的 posterior 稳定性不足
+- 最终仍应停手
+
+3. controller summary 字段检查同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_rollout_pressure`
+
+避免 controller 输出层把这次新增的 rollout 解释字段漏掉。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 29 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，behavior 稳定性对 decision 的接入层次已经变成：
+
+1. 当前回合的 `behavior_match_decision_bonus`
+2. 当前动作 posterior 稳定性门控
+3. 依赖 post-hit continuation 时的 `behavior_rollout_pressure`
+
+也就是说：
+- 当前动作是不是能继续
+- 以及它对“命中后还能继续压”这条链路的支撑是否可信
+
+现在都已经开始受行为稳定性约束。
+
+但边界仍然很清楚：
+- 这部分约束仍然只通过 pressure 和 bonus 轻量进入 stop / continue
+- 还没有真正把 behavior 信息深入到下一手 rollout 候选排序内部
+- 也还没有把 component 级别 support 更细地接进 `candidate_confidence`
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 让 `candidate_confidence` 的来源更细
+目标：
+- 不只看 `context_covered_probability`
+- 和 `dominant_signal.posterior_support`
+- 逐步吸收 `context_candidate_count`、component posterior support 等更细粒度信息
+
+2. 开始把 behavior 稳定性往更深一层 rollout 里送
+目标：
+- 不只是当前回合 stop / continue 边界
+- 而是让命中后下一手候选动作本身，也逐步共享 behavior-guided 稳定性约束
+
+八、一句话总结
+本轮推进的核心成果，是把 `candidate_confidence` 从“只约束当前回合的 behavior decision bonus”，推进成了也会约束依赖 `post-hit` 续压的继续判断，让当前动作 posterior 稳定性真正开始影响 rollout 级别的 stop / continue 边界。

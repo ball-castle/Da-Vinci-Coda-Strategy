@@ -469,6 +469,93 @@ class StopThresholdTests(unittest.TestCase):
             weak_summary["stop_score"],
         )
 
+    def test_choose_best_move_penalizes_fragile_candidate_confidence_in_post_hit_rollout(self):
+        engine = DaVinciDecisionEngine()
+        stable_rollout_move = {
+            "expected_value": 0.74,
+            "win_probability": 0.57,
+            "continuation_value": 0.23,
+            "continuation_likelihood": 0.63,
+            "attackability_after_hit": 0.76,
+            "behavior_match_bonus": 0.06,
+            "behavior_match_support": 0.18,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_candidate_signal": {
+                "mode": "neighbor_top_k_posterior",
+                "context_covered_probability": 0.92,
+                "dominant_signal": {
+                    "source": "local_boundary",
+                    "reason": "narrow_boundary_probe",
+                    "weight": 1.15,
+                    "posterior_support": 0.88,
+                },
+            },
+            "post_hit_continue_score": 0.38,
+            "post_hit_stop_score": 0.24,
+            "post_hit_continue_margin": 0.14,
+            "post_hit_best_gap": 0.28,
+            "post_hit_top_k_continue_margin": 0.14,
+            "post_hit_top_k_support_ratio": 1.0,
+        }
+        fragile_rollout_move = {
+            "expected_value": 0.74,
+            "win_probability": 0.57,
+            "continuation_value": 0.23,
+            "continuation_likelihood": 0.63,
+            "attackability_after_hit": 0.76,
+            "behavior_match_bonus": 0.06,
+            "behavior_match_support": 0.18,
+            "behavior_guidance_stable_ratio": 1.0,
+            "behavior_candidate_signal": {
+                "mode": "neighbor_top_k_posterior",
+                "context_covered_probability": 0.18,
+                "dominant_signal": {
+                    "source": "local_boundary",
+                    "reason": "narrow_boundary_probe",
+                    "weight": 1.15,
+                    "posterior_support": 0.12,
+                },
+            },
+            "post_hit_continue_score": 0.38,
+            "post_hit_stop_score": 0.24,
+            "post_hit_continue_margin": 0.14,
+            "post_hit_best_gap": 0.28,
+            "post_hit_top_k_continue_margin": 0.14,
+            "post_hit_top_k_support_ratio": 1.0,
+        }
+
+        stable_best_move, stable_summary = engine.choose_best_move(
+            [stable_rollout_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        fragile_best_move, fragile_summary = engine.choose_best_move(
+            [fragile_rollout_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(stable_best_move)
+        self.assertFalse(stable_summary["recommend_stop"])
+        self.assertGreater(
+            fragile_summary["decision_score_breakdown"]["behavior_rollout_pressure"],
+            stable_summary["decision_score_breakdown"]["behavior_rollout_pressure"],
+        )
+        self.assertGreater(
+            stable_summary["continue_score"],
+            stable_summary["stop_score"],
+        )
+        self.assertIsNone(fragile_best_move)
+        self.assertTrue(fragile_summary["recommend_stop"])
+        self.assertGreater(
+            fragile_summary["decision_score_breakdown"]["behavior_rollout_pressure"],
+            0.0,
+        )
+        self.assertLess(
+            fragile_summary["continue_score"],
+            fragile_summary["stop_score"],
+        )
+
     def test_choose_best_move_continues_on_strong_continuation_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

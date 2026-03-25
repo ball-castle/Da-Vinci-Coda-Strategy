@@ -872,6 +872,7 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("best_behavior_match_support", result["decision_summary"])
         self.assertIn("best_behavior_match_decision_bonus", result["decision_summary"])
         self.assertIn("best_behavior_match_candidate_confidence", result["decision_summary"])
+        self.assertIn("best_behavior_rollout_pressure", result["decision_summary"])
 
     def test_controller_aggregates_behavior_debug_across_top_k_posterior_candidates(self):
         game_state = GameState(
