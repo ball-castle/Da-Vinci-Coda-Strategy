@@ -1206,6 +1206,89 @@ class StopThresholdTests(unittest.TestCase):
             fragile_summary["stop_score"],
         )
 
+    def test_post_hit_rollout_uses_behavior_ranked_next_turn_edges_when_context_available(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=6, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+        success_matrix = {
+            "side": {
+                0: {("W", 5): 0.85, ("W", 7): 0.15},
+            },
+        }
+        behavior_guidance_profile = {
+            "signal_count": 1.0,
+            "average_posterior_support": 0.90,
+            "average_weighted_strength": 0.20,
+            "stable_signal_ratio": 1.0,
+            "guidance_multiplier": 1.0,
+            "source_support_progressive": 0.0,
+            "source_support_same_color_anchor": 1.0,
+            "source_support_local_boundary": 0.0,
+        }
+        guess_signals_by_player = model.build_guess_signals(game_state)
+
+        fallback_rollout = engine._evaluate_post_hit_rollout(
+            success_matrix=success_matrix,
+            my_hidden_count=2,
+            behavior_model=model,
+            guess_signals_by_player=guess_signals_by_player,
+            acting_player_id="me",
+            behavior_guidance_profile=behavior_guidance_profile,
+            game_state=None,
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("B", 2),
+            rollout_depth=0,
+        )
+        contextual_rollout = engine._evaluate_post_hit_rollout(
+            success_matrix=success_matrix,
+            my_hidden_count=2,
+            behavior_model=model,
+            guess_signals_by_player=guess_signals_by_player,
+            acting_player_id="me",
+            behavior_guidance_profile=behavior_guidance_profile,
+            game_state=game_state,
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("B", 2),
+            rollout_depth=0,
+        )
+
+        self.assertAlmostEqual(
+            fallback_rollout["top_k_continue_margin"],
+            fallback_rollout["top_k_expected_continue_margin"],
+            places=6,
+        )
+        self.assertGreater(
+            contextual_rollout["top_k_continue_margin"],
+            contextual_rollout["top_k_expected_continue_margin"],
+        )
+        self.assertGreater(
+            contextual_rollout["top_k_continue_margin"],
+            fallback_rollout["top_k_continue_margin"],
+        )
+
     def test_choose_best_move_continues_on_strong_continuation_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

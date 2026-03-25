@@ -10,7 +10,10 @@ from app.core.state import (
     JOKER,
     MAX_CARD_VALUE,
     Card,
+    CardSlot,
     GameState,
+    GuessAction,
+    PlayerState,
 )
 
 ProbabilityMatrix = Dict[int, Dict[Card, float]]
@@ -1787,6 +1790,14 @@ class DaVinciDecisionEngine:
                 "best_behavior_match_component_penalty": 0.0,
                 "best_behavior_match_context_focus": 0.0,
                 "best_behavior_rollout_pressure": 0.0,
+                "best_post_hit_continue_score": 0.0,
+                "best_post_hit_stop_score": 0.0,
+                "best_post_hit_continue_margin": 0.0,
+                "best_post_hit_best_gap": 0.0,
+                "best_post_hit_top_k_expected_continue_margin": 0.0,
+                "best_post_hit_top_k_continue_margin": 0.0,
+                "best_post_hit_top_k_expected_support_ratio": 0.0,
+                "best_post_hit_top_k_support_ratio": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -1869,7 +1880,9 @@ class DaVinciDecisionEngine:
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
             "best_post_hit_continue_margin": best_move.get("post_hit_continue_margin", 0.0),
             "best_post_hit_best_gap": best_move.get("post_hit_best_gap", 0.0),
+            "best_post_hit_top_k_expected_continue_margin": best_move.get("post_hit_top_k_expected_continue_margin", 0.0),
             "best_post_hit_top_k_continue_margin": best_move.get("post_hit_top_k_continue_margin", 0.0),
+            "best_post_hit_top_k_expected_support_ratio": best_move.get("post_hit_top_k_expected_support_ratio", 0.0),
             "best_post_hit_top_k_support_ratio": best_move.get("post_hit_top_k_support_ratio", 0.0),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
@@ -1915,7 +1928,9 @@ class DaVinciDecisionEngine:
         post_hit_should_continue = False
         post_hit_best_gap = 0.0
         post_hit_gap_adjustment = 1.0
+        post_hit_top_k_expected_continue_margin = 0.0
         post_hit_top_k_continue_margin = 0.0
+        post_hit_top_k_expected_support_ratio = 0.0
         post_hit_top_k_support_ratio = 0.0
         post_hit_top_k_positive_count = 0.0
         behavior_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
@@ -1980,6 +1995,10 @@ class DaVinciDecisionEngine:
                     guess_signals_by_player=guess_signals_by_player,
                     acting_player_id=acting_player_id,
                     behavior_guidance_profile=behavior_guidance_profile,
+                    game_state=game_state,
+                    target_player_id=player_id,
+                    target_slot_index=slot_index,
+                    guessed_card=card,
                     rollout_depth=rollout_depth - 1,
                 )
                 post_hit_continue_score = post_hit_rollout["continue_score"]
@@ -1987,7 +2006,9 @@ class DaVinciDecisionEngine:
                 post_hit_continue_margin = post_hit_rollout["continue_margin"]
                 post_hit_should_continue = post_hit_rollout["should_continue"]
                 post_hit_best_gap = post_hit_rollout["best_gap"]
+                post_hit_top_k_expected_continue_margin = post_hit_rollout["top_k_expected_continue_margin"]
                 post_hit_top_k_continue_margin = post_hit_rollout["top_k_continue_margin"]
+                post_hit_top_k_expected_support_ratio = post_hit_rollout["top_k_expected_support_ratio"]
                 post_hit_top_k_support_ratio = post_hit_rollout["top_k_support_ratio"]
                 post_hit_top_k_positive_count = post_hit_rollout["top_k_positive_count"]
                 if post_hit_continue_margin > 0.0 and post_hit_best_gap < self.POST_HIT_GAP_REFERENCE:
@@ -2094,7 +2115,9 @@ class DaVinciDecisionEngine:
             "post_hit_should_continue": post_hit_should_continue,
             "post_hit_best_gap": post_hit_best_gap,
             "post_hit_gap_adjustment": post_hit_gap_adjustment,
+            "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
             "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
+            "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
             "post_hit_top_k_support_ratio": post_hit_top_k_support_ratio,
             "post_hit_top_k_positive_count": post_hit_top_k_positive_count,
             "history_continue_rate": history_continue_rate,
@@ -2131,7 +2154,9 @@ class DaVinciDecisionEngine:
                 "post_hit_continue_margin": post_hit_continue_margin,
                 "post_hit_best_gap": post_hit_best_gap,
                 "post_hit_gap_adjustment": post_hit_gap_adjustment,
+                "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
                 "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
+                "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
                 "post_hit_top_k_support_ratio": post_hit_top_k_support_ratio,
                 "post_hit_top_k_positive_count": post_hit_top_k_positive_count,
             },
@@ -2154,19 +2179,39 @@ class DaVinciDecisionEngine:
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         acting_player_id: Optional[str],
         behavior_guidance_profile: Optional[Dict[str, float]],
+        game_state: Optional[GameState],
+        target_player_id: str,
+        target_slot_index: int,
+        guessed_card: Card,
         rollout_depth: int,
     ) -> Dict[str, Any]:
         hidden_index_by_player = self._hidden_index_by_player_from_matrix(success_matrix)
+        post_hit_game_state = None
+        post_hit_guess_signals_by_player = guess_signals_by_player
+        post_hit_behavior_map_hypothesis = None
+        if game_state is not None and acting_player_id is not None:
+            post_hit_context = self._build_post_hit_behavior_context(
+                game_state=game_state,
+                success_matrix=success_matrix,
+                behavior_model=behavior_model,
+                acting_player_id=acting_player_id,
+                target_player_id=target_player_id,
+                target_slot_index=target_slot_index,
+                guessed_card=guessed_card,
+            )
+            post_hit_game_state = post_hit_context["game_state"]
+            post_hit_guess_signals_by_player = post_hit_context["guess_signals_by_player"]
+            post_hit_behavior_map_hypothesis = post_hit_context["behavior_map_hypothesis"]
         next_moves, next_risk_factor = self.evaluate_all_moves(
             full_probability_matrix=success_matrix,
             my_hidden_count=my_hidden_count,
             hidden_index_by_player=hidden_index_by_player,
             behavior_model=behavior_model,
-            guess_signals_by_player=guess_signals_by_player,
+            guess_signals_by_player=post_hit_guess_signals_by_player,
             acting_player_id=acting_player_id,
             behavior_guidance_profile=behavior_guidance_profile,
-            game_state=None,
-            behavior_map_hypothesis=None,
+            game_state=post_hit_game_state,
+            behavior_map_hypothesis=post_hit_behavior_map_hypothesis,
             blocked_slots=set(),
             rollout_depth=rollout_depth,
         )
@@ -2177,16 +2222,33 @@ class DaVinciDecisionEngine:
         )
         top_k_moves = next_moves[: self.POST_HIT_TOP_K_COUNT]
         stop_score = next_summary.get("stop_score", next_summary.get("stop_threshold", 0.0))
-        top_k_continue_edges = [
+        top_k_expected_continue_edges = [
             max(0.0, move["expected_value"] - stop_score)
             for move in top_k_moves
         ]
+        top_k_continue_edges = [
+            max(0.0, move.get("ranking_score", move["expected_value"]) - stop_score)
+            for move in top_k_moves
+        ]
+        top_k_expected_continue_margin = (
+            sum(top_k_expected_continue_edges) / len(top_k_expected_continue_edges)
+            if top_k_expected_continue_edges
+            else 0.0
+        )
         top_k_continue_margin = (
             sum(top_k_continue_edges) / len(top_k_continue_edges)
             if top_k_continue_edges
             else 0.0
         )
+        top_k_expected_positive_count = float(
+            sum(1 for edge in top_k_expected_continue_edges if edge > 0.0)
+        )
         top_k_positive_count = float(sum(1 for edge in top_k_continue_edges if edge > 0.0))
+        top_k_expected_support_ratio = (
+            top_k_expected_positive_count / len(top_k_expected_continue_edges)
+            if top_k_expected_continue_edges
+            else 0.0
+        )
         top_k_support_ratio = (
             top_k_positive_count / len(top_k_continue_edges)
             if top_k_continue_edges
@@ -2198,10 +2260,88 @@ class DaVinciDecisionEngine:
             "stop_score": stop_score,
             "continue_margin": next_summary.get("continue_margin", 0.0),
             "best_gap": next_summary.get("best_gap", 0.0),
+            "top_k_expected_continue_margin": top_k_expected_continue_margin,
             "top_k_continue_margin": top_k_continue_margin,
+            "top_k_expected_support_ratio": top_k_expected_support_ratio,
             "top_k_support_ratio": top_k_support_ratio,
             "top_k_positive_count": top_k_positive_count,
         }
+
+    def _build_post_hit_behavior_context(
+        self,
+        *,
+        game_state: GameState,
+        success_matrix: FullProbabilityMatrix,
+        behavior_model: BehavioralLikelihoodModel,
+        acting_player_id: str,
+        target_player_id: str,
+        target_slot_index: int,
+        guessed_card: Card,
+    ) -> Dict[str, Any]:
+        players: Dict[str, PlayerState] = {}
+        for player_id in game_state.players:
+            slots: List[CardSlot] = []
+            for slot in game_state.resolved_ordered_slots(player_id):
+                slot_card = slot.known_card()
+                if player_id == target_player_id and slot.slot_index == target_slot_index:
+                    slot_card = guessed_card
+                slots.append(
+                    CardSlot(
+                        slot_index=slot.slot_index,
+                        color=slot_card[0] if slot_card is not None else slot.color,
+                        value=slot_card[1] if slot_card is not None else slot.value,
+                        is_revealed=(slot_card is not None) or slot.is_revealed,
+                        is_newly_drawn=slot.is_newly_drawn,
+                    )
+                )
+            players[player_id] = PlayerState(player_id=player_id, slots=slots)
+
+        post_hit_actions = list(game_state.actions)
+        post_hit_actions.append(
+            GuessAction(
+                guesser_id=acting_player_id,
+                target_player_id=target_player_id,
+                target_slot_index=target_slot_index,
+                guessed_color=guessed_card[0],
+                guessed_value=guessed_card[1],
+                result=True,
+                continued_turn=True,
+                revealed_player_id=target_player_id,
+                revealed_slot_index=target_slot_index,
+                revealed_color=guessed_card[0],
+                revealed_value=guessed_card[1],
+            )
+        )
+        post_hit_game_state = GameState(
+            self_player_id=game_state.self_player_id,
+            target_player_id=game_state.target_player_id,
+            players=players,
+            actions=post_hit_actions,
+        )
+        return {
+            "game_state": post_hit_game_state,
+            "guess_signals_by_player": behavior_model.build_guess_signals(post_hit_game_state),
+            "behavior_map_hypothesis": self._map_hypothesis_from_matrix(success_matrix),
+        }
+
+    def _map_hypothesis_from_matrix(
+        self,
+        full_probability_matrix: FullProbabilityMatrix,
+    ) -> Dict[str, Dict[int, Card]]:
+        hypothesis_by_player: Dict[str, Dict[int, Card]] = {}
+        for player_id, probability_matrix in full_probability_matrix.items():
+            player_hypothesis: Dict[int, Card] = {}
+            for slot_index, slot_distribution in probability_matrix.items():
+                if not slot_distribution:
+                    continue
+                best_card = max(
+                    slot_distribution.items(),
+                    key=lambda item: (item[1], -card_sort_key(item[0])[0], -card_sort_key(item[0])[1]),
+                )[0]
+                player_hypothesis[slot_index] = best_card
+            if player_hypothesis:
+                hypothesis_by_player[player_id] = player_hypothesis
+        return hypothesis_by_player
 
     def _behavior_match_support(
         self,

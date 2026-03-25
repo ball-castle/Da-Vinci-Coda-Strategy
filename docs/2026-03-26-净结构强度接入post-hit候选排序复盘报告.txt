@@ -1,0 +1,213 @@
+2026-03-26 净结构强度接入 post-hit 候选排序复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《净结构强度反哺停手边界复盘报告》的下一步建议，这一轮继续沿第一条分支推进：
+
+- 把 `net_structure`
+- 继续送进命中后下一手候选动作排序
+
+到上一轮为止，系统已经做到：
+- 当前回合 ranking 会显式吸收 `behavior_match_ranking_bonus`
+- `net_structure` 会在 stop / continue 极近边界里做保守调节
+
+但 `post-hit rollout` 里仍然有一个明显断层：
+- 命中后下一手候选动作虽然会重新枚举
+- 但 `top_k_continue_margin` 仍然主要按 `expected_value - stop_score` 聚合
+- 也就是说，next-turn 候选排序里的 refined ranking breakdown 还没有真正反馈到当前这手的续压价值
+
+所以这一轮的目标是：
+- 不重写整个 rollout 框架
+- 只把命中后的近似 state / hypothesis 补起来
+- 让下一手候选动作开始真正共享 behavior ranking 与 `net_structure` 约束
+
+二、本轮核心改动
+1. `_evaluate_post_hit_rollout(...)` 现在开始构造 post-hit 行为上下文
+位置：
+- `backend/app/core/engine.py`
+
+本轮为 rollout 新增入参：
+- `game_state`
+- `target_player_id`
+- `target_slot_index`
+- `guessed_card`
+
+作用是：
+- 当前一手命中后
+- 不再只拿一个纯 `success_matrix` 去做无上下文的 next-turn 枚举
+- 而是开始补一份近似的 post-hit 行为上下文
+
+2. 新增 `_build_post_hit_behavior_context(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 基于当前 `game_state`
+- 把这次命中的 slot 视为已公开
+- 追加一条成功且 `continued_turn=True` 的 guess action
+- 然后构造：
+  - `post_hit_game_state`
+  - `post_hit_guess_signals_by_player`
+  - `post_hit_behavior_map_hypothesis`
+
+这一步的意义是：
+- 命中后的下一手候选动作
+- 不再只能按纯 posterior / EV 排
+- 而是终于能重新进入：
+  - `behavior_candidate_signal`
+  - `behavior_match_bonus`
+  - `behavior_match_ranking_bonus`
+  - `net_structure`
+
+这整条 refined ranking 链
+
+3. decision engine 内新增 `_map_hypothesis_from_matrix(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 让 post-hit rollout 不必依赖 controller
+- 也能自己从 `success_matrix` 构造 MAP hypothesis
+
+这样 post-hit rollout 内部第一次具备了：
+- 近似 state
+- 近似 hypothesis
+- 近似 guess signals
+
+三者一起支撑下一手候选动作的 behavior ranking。
+
+4. `top_k_continue_margin` 从纯 EV 聚合推进成 ranking-aware 聚合
+本轮之后，`_evaluate_post_hit_rollout(...)` 会同时计算：
+
+- `top_k_expected_continue_margin`
+- `top_k_continue_margin`
+
+其中：
+- `top_k_expected_continue_margin`
+  - 仍然保留旧的纯 EV 视角
+  - 基于 `expected_value - stop_score`
+- `top_k_continue_margin`
+  - 现在改为 ranking-aware 视角
+  - 基于 `ranking_score - stop_score`
+
+也就是说：
+- 如果命中后的下一手候选动作
+- 在 behavior ranking / net structure 下明显更合理
+- 那么这份差异现在终于会被继续值真正看见
+
+同时本轮还补了：
+- `top_k_expected_support_ratio`
+- `top_k_support_ratio`
+
+用于区分：
+- 纯 EV 视角下有多少 top-k 候选真正在支持继续
+- ranking-aware 视角下又有多少
+
+5. 当前 move 与 decision summary 补齐新的 post-hit ranking 字段
+新增输出：
+- `post_hit_top_k_expected_continue_margin`
+- `post_hit_top_k_expected_support_ratio`
+
+`decision_summary` 同步新增：
+- `best_post_hit_top_k_expected_continue_margin`
+- `best_post_hit_top_k_expected_support_ratio`
+
+这样后面回看一轮续压判断时，可以直接分清：
+- 纯 EV 视角下，next-turn top-k 看起来有多能继续
+- 吃完 behavior ranking / net structure 后，这条续压链路又被推高了多少
+
+三、本轮收益
+这一轮最大的收益，是把 refined ranking breakdown 第一次真正送进了 `post-hit` 的下一手候选动作排序。
+
+之前的结构更像：
+- 当前回合 ranking 会吃 behavior ranking / `net_structure`
+- 但一旦进入命中后的浅层 rollout
+- next-turn support 又退回成更偏 EV 的聚合
+
+这会带来一个问题：
+- 当前这一手明明是在依赖“命中后下一手还很像人会继续压”的结构
+- 但 rollout 内部却没有把那份行为排序差异算进去
+
+这轮之后变成：
+- 当前回合 ranking 继续吃 refined ranking breakdown
+- 命中后的下一手候选排序也开始共享这套约束
+
+换句话说：
+- 之前更像“当前手看结构，下一手看 EV”
+- 现在更像“当前手和下一手都开始看结构化 ranking”
+
+这让 `post_hit_continuation_value` 更接近真正的“可续压质量”，而不只是下一手裸 EV。
+
+四、测试补充
+1. 新增 post-hit ranking 直测
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_post_hit_rollout_uses_behavior_ranked_next_turn_edges_when_context_available`
+
+验证内容：
+- 没有 post-hit 行为上下文时
+  - `top_k_continue_margin` 与 `top_k_expected_continue_margin` 基本重合
+- 有 post-hit 近似 state / hypothesis 时
+  - 下一手候选动作会重新吃到 behavior ranking
+  - 并使 `top_k_continue_margin` 显著高于 `top_k_expected_continue_margin`
+
+这条测试的价值在于，它测的不是字段出现，而是：
+- post-hit next-turn ranking
+- 是否真的开始吃到 refined ranking breakdown
+
+2. controller 输出字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_post_hit_top_k_expected_continue_margin`
+- `best_post_hit_top_k_expected_support_ratio`
+- `post_hit_top_k_expected_continue_margin`
+- `post_hit_top_k_expected_support_ratio`
+
+避免 controller 输出层把这次新增的 post-hit ranking 解释字段漏掉。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 39 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，refined behavior ranking 对 continuation 的接入层次已经变成：
+
+1. 当前回合 ranking
+2. 当前回合 stop / continue 极近边界
+3. 命中后下一手 top-k 候选动作排序
+
+也就是说：
+- 当前动作是否看起来更合理
+- 当前动作是否值得继续
+- 命中后下一手候选是否真有结构化续压空间
+
+现在都已经开始共享 behavior ranking / `net_structure` 约束。
+
+但边界仍然清楚：
+- 这轮使用的是“post-hit 近似 state + MAP hypothesis”
+- 还不是完整的重新推理一轮 behavior debug
+- 也还没有把 post-hit 内部的 guidance profile 完整重建
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 让 post-hit rollout 内部也开始重建更完整的 behavior guidance profile
+目标：
+- 不只是复用当前轮 guidance
+- 而是让命中后新的行为历史上下文也开始影响下一手排序
+
+2. 把 post-hit 的 ranking-aware support 更明确地反馈回当前 stop / continue pressure
+目标：
+- 不只是间接通过 `post_hit_continuation_value`
+- 也让脆弱或稳健的 next-turn ranking support 更直接影响边界
+
+八、一句话总结
+本轮推进的核心成果，是把 refined behavior ranking / `net_structure` 从“只影响当前回合”，推进成了也会进入命中后下一手候选动作排序，让 `post-hit` 续压价值第一次开始真正共享结构化 ranking 约束。
