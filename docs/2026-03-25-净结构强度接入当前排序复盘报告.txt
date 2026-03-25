@@ -1,0 +1,191 @@
+2026-03-25 净结构强度接入当前排序复盘报告
+
+记录时间：2026-03-25 23:54:22 +08:00
+
+一、本轮推进目标
+按照上一轮《refined confidence 接入当前排序复盘报告》的下一步建议，这一轮继续沿第二条分支推进：
+
+- current move ranking 不只缩放 raw behavior bonus
+- 也开始显式吸收 refined confidence 里的净结构强度
+
+上一轮已经做到：
+- `behavior_match_bonus` 会先乘上 `candidate_confidence`
+- 再进入当前 move 的 `ranking_score`
+
+这解决了“脆弱支撑不该拿满 bonus”的问题，但还留着一个缺口：
+- 两个动作的 `candidate_confidence` 可能相近
+- 但一个动作的结构是明显正净效应
+- 另一个动作只是“没那么差”，甚至已经带轻微负效应
+
+如果排序阶段只做 `bonus * confidence`，那它仍然缺少：
+- 对“净结构更好”的显式奖励
+- 以及对“净结构更差”的显式压缩
+
+所以这一轮的目标是：
+- 不重写排序主框架
+- 只新增一个轻量的 net-structure ranking 调节项
+- 让 refined confidence 不只是“打折器”，也开始成为更显式的排序信号
+
+二、本轮核心改动
+1. 新增 `BEHAVIOR_MATCH_NET_STRUCTURE_SCALE = 0.10`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 作为 net structure 对 ranking bonus 的轻量缩放系数
+
+当前设计是故意保守的：
+- 它不会取代 `candidate_confidence`
+- 只是在 confidence 缩放后的基础上，再做一层小幅净结构调整
+
+2. 新增 `_behavior_match_ranking_breakdown(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 统一计算 ranking 侧的三项量：
+  - `ranking_bonus`
+  - `net_structure`
+  - `structure_adjustment`
+
+其中：
+- `net_structure = component_strength - component_penalty`
+- `structure_adjustment = raw_behavior_match_bonus * scale * net_structure`
+- `ranking_bonus = max(0, raw_bonus * candidate_confidence + structure_adjustment)`
+
+这一步的意义是：
+- 现在排序阶段不只是“把 raw bonus 打折”
+- 而是开始明确区分：
+  - 结构很好的动作
+  - 结构中性的动作
+  - 结构带负效应的动作
+
+3. 当前 move 输出补齐 ranking 结构解释字段
+新增输出：
+- `behavior_match_net_structure`
+- `behavior_match_structure_adjustment`
+
+同时 score breakdown 里也补了这两项。
+
+这样后面看候选动作排序时，可以直接分清：
+- raw bonus 是多少
+- confidence 缩放后还剩多少
+- net structure 额外又推了多少，或压了多少
+
+4. decision summary 同步补齐 ranking 结构字段
+新增输出：
+- `best_behavior_match_net_structure`
+- `best_behavior_match_structure_adjustment`
+
+这意味着现在 controller 输出层已经能同时看到：
+- `best_behavior_match_bonus`
+- `best_behavior_match_ranking_bonus`
+- `best_behavior_match_net_structure`
+- `best_behavior_match_structure_adjustment`
+
+也就是说，后面回看一轮排序时，已经能分出：
+- 是 candidate confidence 在主导
+- 还是净结构强度在做最后一轮拉开
+
+三、本轮收益
+这一轮最大的收益，是把 refined confidence 从“隐式缩放项”推进成了“显式净结构排序项”。
+
+之前的逻辑更像：
+- raw behavior bonus 先出来
+- refined confidence 负责把它打折
+
+这已经能处理“脆弱支撑不该拿满分”的问题，但还不够表达：
+- 为什么两个都不算脆的动作里，一个应该更靠前
+
+这轮之后变成：
+- confidence 继续负责压缩脆弱支撑
+- net structure 再负责区分“结构真好”与“只是没那么差”
+
+换句话说：
+- 之前更偏“先扣掉不可信的部分”
+- 现在更偏“扣掉不可信的部分之后，再轻量奖励更好的净结构”
+
+这会让当前 move ranking 更像一个带方向性的 refined behavior signal，而不只是纯折扣。
+
+四、测试补充
+1. 新增 ranking breakdown 正向净结构测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_behavior_match_ranking_breakdown_rewards_positive_net_structure`
+
+验证内容：
+- 在 raw bonus 和 candidate confidence 相同的前提下
+- 正向 net structure 会带来更高的 `structure_adjustment`
+- 并最终带来更高的 `ranking_bonus`
+
+2. 新增 ranking breakdown 负向净结构测试
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_behavior_match_ranking_breakdown_penalizes_negative_net_structure`
+
+验证内容：
+- 在 raw bonus 和 candidate confidence 相同的前提下
+- 负向 net structure 会压低 `structure_adjustment`
+- 并进一步压低 `ranking_bonus`
+- 同时 `ranking_bonus` 仍被限制在不小于 0
+
+这两条测试的价值在于，它们把这一轮新增的 ranking 侧结构调节直接隔离出来锁住了。
+
+3. controller summary 字段断言同步补齐
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- `best_behavior_match_net_structure`
+- `best_behavior_match_structure_adjustment`
+
+避免 controller 输出层漏掉这次 ranking 侧新增的解释字段。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 36 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，current move ranking 已经不再只是：
+- `expected_value + confidence-scaled raw bonus`
+
+而是变成：
+- `expected_value`
+- `+ confidence-scaled bonus`
+- `+ net-structure adjustment`
+
+也就是说，当前排序阶段现在已经能同时表达：
+
+1. 行为匹配有没有帮助
+2. 这份帮助稳不稳
+3. 这份帮助的净结构质量到底更偏正还是更偏负
+
+这让 ranking 比前几轮更接近“净结构排序”，而不是单纯“行为匹配打折”。
+
+但边界仍然清楚：
+- 这轮仍然只作用于当前回合 ranking
+- 还没有继续送进命中后下一手候选动作排序
+- 也还没有把 next-turn rollout 内部完全共享这套 ranking breakdown
+
+七、下一步建议
+下一轮可以优先考虑两个方向：
+
+1. 把 refined ranking breakdown 继续送进命中后下一手候选动作排序
+目标：
+- 不只是当前回合 ranking
+- 也让 next-turn candidate ranking 开始共享 net structure 约束
+
+2. 让 decision 阶段在极近边界时，也开始显式使用 net structure
+目标：
+- 不只是 current ranking 使用它
+- stop / continue 极窄边界下，也开始轻量吸收这类净结构信息
+
+八、一句话总结
+本轮推进的核心成果，是把 refined confidence 在当前排序阶段从“只是缩放 raw behavior bonus”，推进成了还会显式吸收 `net_structure` 的 ranking 调节，让 current move ranking 更接近局部结构的净效果排序。

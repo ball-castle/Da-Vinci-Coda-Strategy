@@ -872,6 +872,8 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("best_behavior_match_support", result["decision_summary"])
         self.assertIn("best_behavior_match_decision_bonus", result["decision_summary"])
         self.assertIn("best_behavior_match_ranking_bonus", result["decision_summary"])
+        self.assertIn("best_behavior_match_net_structure", result["decision_summary"])
+        self.assertIn("best_behavior_match_structure_adjustment", result["decision_summary"])
         self.assertIn("best_behavior_match_candidate_confidence", result["decision_summary"])
         self.assertIn("best_behavior_match_component_support", result["decision_summary"])
         self.assertIn("best_behavior_match_component_strength", result["decision_summary"])

@@ -419,6 +419,74 @@ class StopThresholdTests(unittest.TestCase):
         )
         self.assertEqual(ranked_moves[0]["target_player_id"], "stable_anchor_target")
 
+    def test_behavior_match_ranking_breakdown_rewards_positive_net_structure(self):
+        engine = DaVinciDecisionEngine()
+        positive_breakdown = engine._behavior_match_ranking_breakdown(
+            best_move={
+                "behavior_match_bonus": 0.10,
+                "behavior_match_candidate_confidence": 0.72,
+                "behavior_match_component_support": 0.74,
+                "behavior_match_component_strength": 0.62,
+                "behavior_match_component_penalty": 0.08,
+                "behavior_match_context_focus": 0.90,
+            },
+        )
+        neutral_breakdown = engine._behavior_match_ranking_breakdown(
+            best_move={
+                "behavior_match_bonus": 0.10,
+                "behavior_match_candidate_confidence": 0.72,
+                "behavior_match_component_support": 0.74,
+                "behavior_match_component_strength": 0.18,
+                "behavior_match_component_penalty": 0.18,
+                "behavior_match_context_focus": 0.90,
+            },
+        )
+
+        self.assertGreater(positive_breakdown["net_structure"], 0.0)
+        self.assertEqual(neutral_breakdown["net_structure"], 0.0)
+        self.assertGreater(
+            positive_breakdown["structure_adjustment"],
+            neutral_breakdown["structure_adjustment"],
+        )
+        self.assertGreater(
+            positive_breakdown["ranking_bonus"],
+            neutral_breakdown["ranking_bonus"],
+        )
+
+    def test_behavior_match_ranking_breakdown_penalizes_negative_net_structure(self):
+        engine = DaVinciDecisionEngine()
+        negative_breakdown = engine._behavior_match_ranking_breakdown(
+            best_move={
+                "behavior_match_bonus": 0.10,
+                "behavior_match_candidate_confidence": 0.12,
+                "behavior_match_component_support": 0.42,
+                "behavior_match_component_strength": 0.05,
+                "behavior_match_component_penalty": 0.70,
+                "behavior_match_context_focus": 0.80,
+            },
+        )
+        neutral_breakdown = engine._behavior_match_ranking_breakdown(
+            best_move={
+                "behavior_match_bonus": 0.10,
+                "behavior_match_candidate_confidence": 0.12,
+                "behavior_match_component_support": 0.42,
+                "behavior_match_component_strength": 0.20,
+                "behavior_match_component_penalty": 0.20,
+                "behavior_match_context_focus": 0.80,
+            },
+        )
+
+        self.assertLess(negative_breakdown["net_structure"], 0.0)
+        self.assertLess(
+            negative_breakdown["structure_adjustment"],
+            neutral_breakdown["structure_adjustment"],
+        )
+        self.assertLess(
+            negative_breakdown["ranking_bonus"],
+            neutral_breakdown["ranking_bonus"],
+        )
+        self.assertGreaterEqual(negative_breakdown["ranking_bonus"], 0.0)
+
     def test_choose_best_move_stops_on_weak_endgame_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [
