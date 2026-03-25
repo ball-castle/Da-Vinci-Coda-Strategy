@@ -932,10 +932,13 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_WEAK_EDGE = 0.22
     STOP_MARGIN_WEAK_ROLLOUT = 0.24
     STOP_MARGIN_FRAGILE_POST_HIT = 0.18
+    STOP_MARGIN_TOP_K_SUPPORT = 0.18
     STOP_MARGIN_LOW_ATTACKABILITY = 0.18
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     POST_HIT_GAP_REFERENCE = 0.22
+    POST_HIT_TOP_K_COUNT = 3
+    CONTINUATION_TOP_K_BLEND = 0.38
     LOW_CONFIDENCE_GUARD_MARGIN = 0.22
     WEAK_EDGE_GUARD_MARGIN = 0.18
     ATTACKABILITY_REFERENCE = BehavioralLikelihoodModel.ATTACKABILITY_TIGHT_THRESHOLD
@@ -1033,6 +1036,7 @@ class DaVinciDecisionEngine:
                     "edge_pressure": 0.0,
                     "rollout_pressure": 0.0,
                     "fragile_rollout_pressure": 0.0,
+                    "top_k_rollout_pressure": 0.0,
                     "attackability_pressure": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
@@ -1074,6 +1078,8 @@ class DaVinciDecisionEngine:
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
             "best_post_hit_continue_margin": best_move.get("post_hit_continue_margin", 0.0),
             "best_post_hit_best_gap": best_move.get("post_hit_best_gap", 0.0),
+            "best_post_hit_top_k_continue_margin": best_move.get("post_hit_top_k_continue_margin", 0.0),
+            "best_post_hit_top_k_support_ratio": best_move.get("post_hit_top_k_support_ratio", 0.0),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -1115,6 +1121,9 @@ class DaVinciDecisionEngine:
         post_hit_should_continue = False
         post_hit_best_gap = 0.0
         post_hit_gap_adjustment = 1.0
+        post_hit_top_k_continue_margin = 0.0
+        post_hit_top_k_support_ratio = 0.0
+        post_hit_top_k_positive_count = 0.0
 
         success_matrix = self._success_posterior(full_probability_matrix, player_id, slot_index, card)
         if success_matrix:
@@ -1145,15 +1154,22 @@ class DaVinciDecisionEngine:
                 post_hit_continue_margin = post_hit_rollout["continue_margin"]
                 post_hit_should_continue = post_hit_rollout["should_continue"]
                 post_hit_best_gap = post_hit_rollout["best_gap"]
+                post_hit_top_k_continue_margin = post_hit_rollout["top_k_continue_margin"]
+                post_hit_top_k_support_ratio = post_hit_rollout["top_k_support_ratio"]
+                post_hit_top_k_positive_count = post_hit_rollout["top_k_positive_count"]
                 if post_hit_continue_margin > 0.0 and post_hit_best_gap < self.POST_HIT_GAP_REFERENCE:
                     post_hit_gap_adjustment = max(
                         0.35,
                         post_hit_best_gap / self.POST_HIT_GAP_REFERENCE,
                     )
+                rollout_margin_basis = (
+                    ((1.0 - self.CONTINUATION_TOP_K_BLEND) * max(0.0, post_hit_continue_margin))
+                    + (self.CONTINUATION_TOP_K_BLEND * post_hit_top_k_continue_margin)
+                )
                 post_hit_continuation_value = (
                     self.CONTINUATION_DISCOUNT
                     * continuation_likelihood
-                    * max(0.0, post_hit_continue_margin)
+                    * max(0.0, rollout_margin_basis)
                     * post_hit_gap_adjustment
                 )
                 continuation_value = probability * post_hit_continuation_value
@@ -1184,6 +1200,9 @@ class DaVinciDecisionEngine:
             "post_hit_should_continue": post_hit_should_continue,
             "post_hit_best_gap": post_hit_best_gap,
             "post_hit_gap_adjustment": post_hit_gap_adjustment,
+            "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
+            "post_hit_top_k_support_ratio": post_hit_top_k_support_ratio,
+            "post_hit_top_k_positive_count": post_hit_top_k_positive_count,
             "history_continue_rate": history_continue_rate,
             "hit_reward": hit_reward,
             "miss_penalty": miss_penalty,
@@ -1202,6 +1221,9 @@ class DaVinciDecisionEngine:
                 "post_hit_continue_margin": post_hit_continue_margin,
                 "post_hit_best_gap": post_hit_best_gap,
                 "post_hit_gap_adjustment": post_hit_gap_adjustment,
+                "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
+                "post_hit_top_k_support_ratio": post_hit_top_k_support_ratio,
+                "post_hit_top_k_positive_count": post_hit_top_k_positive_count,
             },
             "recommendation_reason": self._build_reason(
                 probability,
@@ -1239,12 +1261,32 @@ class DaVinciDecisionEngine:
             risk_factor=next_risk_factor,
             my_hidden_count=my_hidden_count,
         )
+        top_k_moves = next_moves[: self.POST_HIT_TOP_K_COUNT]
+        stop_score = next_summary.get("stop_score", next_summary.get("stop_threshold", 0.0))
+        top_k_continue_edges = [
+            max(0.0, move["expected_value"] - stop_score)
+            for move in top_k_moves
+        ]
+        top_k_continue_margin = (
+            sum(top_k_continue_edges) / len(top_k_continue_edges)
+            if top_k_continue_edges
+            else 0.0
+        )
+        top_k_positive_count = float(sum(1 for edge in top_k_continue_edges if edge > 0.0))
+        top_k_support_ratio = (
+            top_k_positive_count / len(top_k_continue_edges)
+            if top_k_continue_edges
+            else 0.0
+        )
         return {
             "should_continue": next_best_move is not None,
             "continue_score": next_summary.get("continue_score", 0.0),
-            "stop_score": next_summary.get("stop_score", next_summary.get("stop_threshold", 0.0)),
+            "stop_score": stop_score,
             "continue_margin": next_summary.get("continue_margin", 0.0),
             "best_gap": next_summary.get("best_gap", 0.0),
+            "top_k_continue_margin": top_k_continue_margin,
+            "top_k_support_ratio": top_k_support_ratio,
+            "top_k_positive_count": top_k_positive_count,
         }
 
     def _hidden_index_by_player_from_matrix(
@@ -1294,6 +1336,21 @@ class DaVinciDecisionEngine:
                 (self.POST_HIT_GAP_REFERENCE - max(0.0, post_hit_best_gap)) / self.POST_HIT_GAP_REFERENCE
             )
 
+        post_hit_top_k_continue_margin = best_move.get("post_hit_top_k_continue_margin", 0.0)
+        top_k_rollout_pressure = 0.0
+        if (
+            best_move.get("post_hit_stop_score", 0.0) > 0.0
+            and post_hit_continue_margin > 0.0
+            and post_hit_top_k_continue_margin < post_hit_continue_margin
+        ):
+            top_k_rollout_pressure = self.STOP_MARGIN_TOP_K_SUPPORT * min(
+                1.0,
+                1.0 - (
+                    post_hit_top_k_continue_margin
+                    / max(1e-9, post_hit_continue_margin)
+                ),
+            )
+
         attackability_after_hit = best_move.get("attackability_after_hit", 0.0)
         attackability_pressure = 0.0
         if best_move.get("post_hit_stop_score", 0.0) <= 0.0 and attackability_after_hit < self.ATTACKABILITY_REFERENCE:
@@ -1302,7 +1359,14 @@ class DaVinciDecisionEngine:
                 / max(self.ATTACKABILITY_REFERENCE, 1e-9)
             )
 
-        stop_score = stop_threshold + edge_pressure + rollout_pressure + fragile_rollout_pressure + attackability_pressure
+        stop_score = (
+            stop_threshold
+            + edge_pressure
+            + rollout_pressure
+            + fragile_rollout_pressure
+            + top_k_rollout_pressure
+            + attackability_pressure
+        )
         continue_score = best_move["expected_value"]
         continue_margin = continue_score - stop_score
 
@@ -1336,6 +1400,7 @@ class DaVinciDecisionEngine:
                 "edge_pressure": edge_pressure,
                 "rollout_pressure": rollout_pressure,
                 "fragile_rollout_pressure": fragile_rollout_pressure,
+                "top_k_rollout_pressure": top_k_rollout_pressure,
                 "attackability_pressure": attackability_pressure,
             },
         }

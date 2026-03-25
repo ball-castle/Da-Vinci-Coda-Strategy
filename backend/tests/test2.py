@@ -107,6 +107,8 @@ class StopThresholdTests(unittest.TestCase):
                 "post_hit_stop_score": 0.54,
                 "post_hit_continue_margin": 0.38,
                 "post_hit_best_gap": 0.31,
+                "post_hit_top_k_continue_margin": 0.29,
+                "post_hit_top_k_support_ratio": 1.0,
             },
             {
                 "expected_value": 0.71,
@@ -118,6 +120,8 @@ class StopThresholdTests(unittest.TestCase):
                 "post_hit_stop_score": 0.24,
                 "post_hit_continue_margin": 0.04,
                 "post_hit_best_gap": 0.09,
+                "post_hit_top_k_continue_margin": 0.02,
+                "post_hit_top_k_support_ratio": 0.67,
             },
         ]
 
@@ -146,6 +150,8 @@ class StopThresholdTests(unittest.TestCase):
                 "post_hit_stop_score": 0.58,
                 "post_hit_continue_margin": -0.36,
                 "post_hit_best_gap": 0.02,
+                "post_hit_top_k_continue_margin": 0.0,
+                "post_hit_top_k_support_ratio": 0.0,
             },
         ]
 
@@ -174,6 +180,8 @@ class StopThresholdTests(unittest.TestCase):
                 "post_hit_stop_score": 0.24,
                 "post_hit_continue_margin": 0.11,
                 "post_hit_best_gap": 0.02,
+                "post_hit_top_k_continue_margin": 0.05,
+                "post_hit_top_k_support_ratio": 0.33,
             },
         ]
 
@@ -187,6 +195,36 @@ class StopThresholdTests(unittest.TestCase):
         self.assertTrue(summary["recommend_stop"])
         self.assertGreater(summary["decision_score_breakdown"]["fragile_rollout_pressure"], 0.0)
         self.assertEqual(summary["decision_score_breakdown"]["rollout_pressure"], 0.0)
+        self.assertLess(summary["continue_margin"], 0.0)
+
+    def test_choose_best_move_penalizes_weak_top_k_followup_support(self):
+        engine = DaVinciDecisionEngine()
+        all_moves = [
+            {
+                "expected_value": 0.80,
+                "win_probability": 0.57,
+                "continuation_value": 0.18,
+                "continuation_likelihood": 0.64,
+                "attackability_after_hit": 0.76,
+                "post_hit_continue_score": 0.41,
+                "post_hit_stop_score": 0.24,
+                "post_hit_continue_margin": 0.17,
+                "post_hit_best_gap": 0.30,
+                "post_hit_top_k_continue_margin": 0.03,
+                "post_hit_top_k_support_ratio": 0.33,
+            },
+        ]
+
+        best_move, summary = engine.choose_best_move(
+            all_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNone(best_move)
+        self.assertTrue(summary["recommend_stop"])
+        self.assertGreater(summary["decision_score_breakdown"]["top_k_rollout_pressure"], 0.0)
+        self.assertEqual(summary["decision_score_breakdown"]["fragile_rollout_pressure"], 0.0)
         self.assertLess(summary["continue_margin"], 0.0)
 
     def test_choose_best_move_stops_when_attackability_cannot_support_pressing(self):

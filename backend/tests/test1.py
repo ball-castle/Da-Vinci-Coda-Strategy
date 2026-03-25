@@ -172,6 +172,8 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("continue_score", result["decision_summary"])
         self.assertIn("continue_margin", result["decision_summary"])
         self.assertIn("decision_score_breakdown", result["decision_summary"])
+        self.assertIn("best_post_hit_top_k_continue_margin", result["decision_summary"])
+        self.assertIn("best_post_hit_top_k_support_ratio", result["decision_summary"])
         if result["top_moves"]:
             self.assertIn("recommendation_reason", result["top_moves"][0])
             self.assertIn("score_breakdown", result["top_moves"][0])
@@ -181,6 +183,8 @@ class GameControllerOutputTests(unittest.TestCase):
             self.assertIn("post_hit_stop_score", result["top_moves"][0])
             self.assertIn("post_hit_continue_margin", result["top_moves"][0])
             self.assertIn("post_hit_best_gap", result["top_moves"][0])
+            self.assertIn("post_hit_top_k_continue_margin", result["top_moves"][0])
+            self.assertIn("post_hit_top_k_support_ratio", result["top_moves"][0])
 
 
 if __name__ == "__main__":

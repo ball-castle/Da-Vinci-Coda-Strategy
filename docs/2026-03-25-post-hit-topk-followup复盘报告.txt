@@ -1,0 +1,157 @@
+3/25-post-hit-topk-followup复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 14:31:05 +08:00
+
+一、本轮推进目标
+本轮继续沿着上一份最新复盘里的第 3 条建议推进：
+
+把 rollout 从“只看命中后下一手的 best move”
+继续推进到
+“对命中后 top-k follow-up 做轻量聚合”。
+
+这轮要解决的问题是：
+- 如果命中后确实存在一个最优 follow-up
+- 但除此之外几乎没有其他可打选项
+
+那么当前这手是不是被单点最优答案抬得过于乐观？
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+- backend/tests/test2.py
+
+具体推进如下：
+
+1. post-hit rollout 新增 top-k 聚合
+本轮在 `_evaluate_post_hit_rollout(...)` 中，不再只返回：
+- continue_score
+- stop_score
+- continue_margin
+- best_gap
+
+还新增返回：
+- top_k_continue_margin
+- top_k_support_ratio
+- top_k_positive_count
+
+做法是：
+- 先取命中后下一手的 top-k 候选动作
+- 再计算这些 follow-up 相对 stop_score 的正边际
+- 最终形成一个轻量的聚合续压强度
+
+这样系统不再只问：
+- 下一手最优动作可不可以继续
+
+还会进一步问：
+- top-k 里到底有多少条 follow-up 真正站得住
+
+2. continuation value 开始吸收 top-k follow-up 信息
+本轮 continuation value 不再只依赖：
+- post_hit_continue_margin
+
+而是改成混合：
+- 单点最优的 post_hit_continue_margin
+- top-k 聚合后的 post_hit_top_k_continue_margin
+
+这意味着：
+- 如果命中后只有 best move 看起来能继续
+- 但 top-k 整体支撑度不足
+
+那么当前动作的 continuation value 就会被主动压低。
+
+3. stop_score 新增 top_k_rollout_pressure
+本轮在 `decision_score_breakdown` 中新增：
+- top_k_rollout_pressure
+
+它用于处理一种新情况：
+- 命中后 best move 看起来还能继续
+- fragile gap 也未必特别糟
+- 但 top-k follow-up 的整体支撑明显偏弱
+
+此时系统会显式抬高当前 stop_score。
+
+这样 should_stop 已经不再只分：
+- 负的 post-hit margin
+- fragile 的正 margin
+- 低 attackability
+
+而是开始进一步分辨：
+- top-k follow-up 是否真的有群体支撑
+
+4. 对外解释字段继续扩展
+本轮为 move 与 decision_summary 新增：
+- post_hit_top_k_continue_margin
+- post_hit_top_k_support_ratio
+
+这样后续做 case review 时，可以更直接看出：
+- 命中后是不是有多条 viable follow-up
+- 还是只有一个 best move 孤零零地撑着继续建议
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. controller 输出包含新的 top-k 字段
+验证：
+- post_hit_top_k_continue_margin
+- post_hit_top_k_support_ratio
+已经对外可见。
+
+2. 强 continuation edge 且 top-k 支撑足够时仍然继续
+验证高 continuation likelihood、正的 post-hit margin 且 top-k 有支撑时，系统仍然保持继续建议。
+
+3. top-k follow-up 支撑不足会触发 top_k_rollout_pressure
+新增测试覆盖：
+- best move 的 post-hit margin 仍为正
+- fragile gap 不一定触发
+- 但 top-k follow-up 的整体支撑明显偏弱
+
+此时系统会通过 `top_k_rollout_pressure` 抬高当前 stop_score，并最终建议停手。
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 10 个测试全部通过
+
+四、本轮解决了什么问题
+1. post-hit rollout 第一次摆脱了单点最优答案依赖
+这是本轮最大的推进。
+
+过去 continuation 的一个潜在问题是：
+- 命中后只要存在一个看起来不错的 best move
+- 当前动作就容易被抬高
+
+本轮之后，系统开始更认真地区分：
+- 是“下一手真的有多条路可打”
+- 还是“只有一条路勉强能打”
+
+2. continuation value 更接近 follow-up 可兑现度
+引入 top-k 聚合后，
+当前动作获得的 continuation 加分，
+更接近命中后 follow-up 的整体支撑度，
+而不是只靠一个点估计撑起来。
+
+3. should_stop 更接近真实策略判断
+当前 stop_score 现在已经会同时受到：
+- 当前动作质量
+- post-hit continue_margin
+- post-hit best-gap 稳定性
+- post-hit top-k 支撑度
+- 风险敞口
+共同影响。
+
+这比上一轮只看 best move 的 rollout 又更接近真实控回合逻辑。
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 建立固定 case 集，把当前的几类 stop / continue 边界彻底固化成回归测试
+
+2. 继续把行为层从 heuristic 近似推进成更完整的动作似然模型
+
+3. 如果后面性能还能撑住，再考虑把 top-k 聚合从简单平均推进到更细的加权聚合
+
+六、一句话总结
+本轮推进的核心成果，是让系统第一次不只看命中后“最优下一手能不能继续”，而是开始看命中后“top-k follow-up 整体有没有支撑”，把单点最优的乐观偏差继续往下压了一层。
