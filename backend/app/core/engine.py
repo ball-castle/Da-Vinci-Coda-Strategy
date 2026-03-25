@@ -1964,6 +1964,13 @@ class DaVinciDecisionEngine:
         post_hit_top_k_expected_support_ratio = 0.0
         post_hit_top_k_support_ratio = 0.0
         post_hit_top_k_positive_count = 0.0
+        post_hit_behavior_support_adjustment = 0.0
+        post_hit_behavior_support_gain = 0.0
+        post_hit_behavior_fragility_drag = 0.0
+        post_hit_behavior_support_signal = 0.0
+        post_hit_behavior_fragility_signal = 0.0
+        post_hit_behavior_support_strength = 0.0
+        post_hit_behavior_fragility_strength = 0.0
         behavior_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
         behavior_guidance_support = 0.0
         behavior_guidance_stable_ratio = 0.0
@@ -2063,6 +2070,27 @@ class DaVinciDecisionEngine:
                     * post_hit_gap_adjustment
                 )
                 continuation_value = probability * post_hit_continuation_value
+                post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
+                    best_move={
+                        "post_hit_stop_score": post_hit_stop_score,
+                        "post_hit_continue_margin": post_hit_continue_margin,
+                        "continuation_value": continuation_value,
+                        "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
+                        "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
+                        "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
+                        "post_hit_top_k_support_ratio": post_hit_top_k_support_ratio,
+                        "post_hit_guidance_multiplier": post_hit_guidance_multiplier,
+                        "post_hit_guidance_support": post_hit_guidance_support,
+                        "post_hit_guidance_stable_ratio": post_hit_guidance_stable_ratio,
+                    }
+                )
+                post_hit_behavior_support_adjustment = post_hit_behavior_support_breakdown["adjustment"]
+                post_hit_behavior_support_gain = post_hit_behavior_support_breakdown["support_gain"]
+                post_hit_behavior_fragility_drag = post_hit_behavior_support_breakdown["fragility_drag"]
+                post_hit_behavior_support_signal = post_hit_behavior_support_breakdown["support_signal"]
+                post_hit_behavior_fragility_signal = post_hit_behavior_support_breakdown["fragility_signal"]
+                post_hit_behavior_support_strength = post_hit_behavior_support_breakdown["support_strength"]
+                post_hit_behavior_fragility_strength = post_hit_behavior_support_breakdown["fragility_strength"]
 
         hit_reward = probability * self.HIT_REWARD
         miss_penalty = (1.0 - probability) * risk_factor
@@ -2156,6 +2184,13 @@ class DaVinciDecisionEngine:
             "post_hit_guidance_stable_ratio": post_hit_guidance_stable_ratio,
             "post_hit_guidance_signal_count": post_hit_guidance_signal_count,
             "post_hit_guidance_debug": post_hit_guidance_debug,
+            "post_hit_behavior_support_adjustment": post_hit_behavior_support_adjustment,
+            "post_hit_behavior_support_gain": post_hit_behavior_support_gain,
+            "post_hit_behavior_fragility_drag": post_hit_behavior_fragility_drag,
+            "post_hit_behavior_support_signal": post_hit_behavior_support_signal,
+            "post_hit_behavior_fragility_signal": post_hit_behavior_fragility_signal,
+            "post_hit_behavior_support_strength": post_hit_behavior_support_strength,
+            "post_hit_behavior_fragility_strength": post_hit_behavior_fragility_strength,
             "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
             "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
             "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
@@ -2199,6 +2234,13 @@ class DaVinciDecisionEngine:
                 "post_hit_guidance_support": post_hit_guidance_support,
                 "post_hit_guidance_stable_ratio": post_hit_guidance_stable_ratio,
                 "post_hit_guidance_signal_count": post_hit_guidance_signal_count,
+                "post_hit_behavior_support_adjustment": post_hit_behavior_support_adjustment,
+                "post_hit_behavior_support_gain": post_hit_behavior_support_gain,
+                "post_hit_behavior_fragility_drag": post_hit_behavior_fragility_drag,
+                "post_hit_behavior_support_signal": post_hit_behavior_support_signal,
+                "post_hit_behavior_fragility_signal": post_hit_behavior_fragility_signal,
+                "post_hit_behavior_support_strength": post_hit_behavior_support_strength,
+                "post_hit_behavior_fragility_strength": post_hit_behavior_fragility_strength,
                 "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
                 "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
                 "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,

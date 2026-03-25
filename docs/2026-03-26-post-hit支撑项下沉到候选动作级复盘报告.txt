@@ -1,0 +1,176 @@
+2026-03-26 post-hit 支撑项下沉到候选动作级复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《post-hit guidance 重建 debug 输出复盘报告》的第一条下一步建议，这一轮把 post-hit 的正向支撑 / 负向脆弱性继续从 final decision summary 下沉到候选动作级输出。
+
+上一轮虽然已经有了：
+
+- `support_gain`
+- `fragility_drag`
+
+但它们主要仍然存在于：
+
+- `decision_summary`
+- `decision_score_breakdown`
+
+这意味着外部只能看到 best move 最后的这两个值，
+却没法在 top moves 之间做横向比较。
+
+所以这一轮的目标是：
+
+- 把 post-hit 行为支撑拆分项直接挂到每个候选动作
+- 让 top moves 可以逐个比较 support gain / fragility drag
+- 保持 choose_best_move 侧的最终 summary 不变
+
+二、本轮核心改动
+1. `_evaluate_move(...)` 开始直接计算 post-hit 行为支撑 breakdown
+位置：
+- `backend/app/core/engine.py`
+
+本轮之前：
+- 候选动作只会带 rollout 结果
+- `support_gain / fragility_drag` 只在 choose_best_move 阶段对 best move 计算
+
+本轮之后：
+- 每个候选动作在 rollout 完成后
+- 会立刻调用 `_post_hit_behavior_support_breakdown(...)`
+- 生成自己的 post-hit 支撑拆分结果
+
+这样结构就变成：
+
+- 候选动作级先有一份自己的 support / fragility 画像
+- final decision summary 再对 best move 读取同一套结构
+
+2. 候选动作级新增 post-hit 支撑拆分字段
+位置：
+- `backend/app/core/engine.py`
+- `backend/tests/test1.py`
+
+本轮新增的候选动作字段包括：
+
+- `post_hit_behavior_support_adjustment`
+- `post_hit_behavior_support_gain`
+- `post_hit_behavior_fragility_drag`
+- `post_hit_behavior_support_signal`
+- `post_hit_behavior_fragility_signal`
+- `post_hit_behavior_support_strength`
+- `post_hit_behavior_fragility_strength`
+
+并且这些字段也同步写进了每个 move 的：
+
+- `score_breakdown`
+
+这意味着现在 top moves 不只是在看：
+
+- `expected_value`
+- `ranking_score`
+- `post_hit_guidance_multiplier`
+
+还可以继续看：
+
+- 这个动作的 post-hit 支撑到底有多少
+- fragility drag 是否已经开始把它往 stop 线下拉
+
+3. choose_best_move 与候选动作级结构保持同构
+位置：
+- `backend/app/core/engine.py`
+
+这一轮没有另起一套动作级近似公式，
+而是直接复用了已经在 final decision 层使用的：
+
+- `_post_hit_behavior_support_breakdown(...)`
+
+这样做的好处是：
+
+- 候选动作级输出和最终 best move summary 不会口径不一致
+- 后续调一个 breakdown 公式，就能同时影响动作对比和最终决策解释
+
+三、本轮收益
+这一轮最大的收益，是让 post-hit 行为支撑第一次具备了“候选动作横向比较能力”。
+
+之前你只能看到：
+
+- best move 的 support_gain / fragility_drag 是多少
+
+但没法回答：
+
+- 第二名动作其实是不是有更高的 support gain
+- 只是 immediate value 稍低
+- 或者某个动作为什么 ranking 看起来还行，但 post-hit fragility 已经很重
+
+这轮之后，top moves 已经可以直接比较这些量，
+后续如果要继续做更细的排序优化，
+就不需要先把所有问题都压到 final summary 才能观察。
+
+四、测试补充
+1. controller 候选动作输出回归
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+- top move 包含
+  - `post_hit_behavior_support_adjustment`
+  - `post_hit_behavior_support_gain`
+  - `post_hit_behavior_fragility_drag`
+
+这保证了这轮不是只在内部算完，
+而是确实把字段下沉到了外部可见的候选动作对象上。
+
+2. 回归 evaluate_all_moves 主链路
+文件：
+- `backend/tests/test2.py`
+
+继续回归：
+- `test_evaluate_all_moves_applies_behavior_guidance_to_continuation`
+
+价值在于：
+- 验证动作级新字段加入后
+- 原有 continuation guidance 逻辑没有被带偏
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 42 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，post-hit 行为支撑这条线已经具备了三层输出：
+
+1. rollout 级
+- `post_hit_guidance_*`
+
+2. 候选动作级
+- `post_hit_behavior_support_gain`
+- `post_hit_behavior_fragility_drag`
+
+3. final decision 级
+- `best_post_hit_behavior_support_gain`
+- `best_post_hit_behavior_fragility_drag`
+
+也就是说：
+- 现在这条链路已经不再只在最后一步可解释
+- 而是从 rollout 到 move ranking 到 final decision 都有可读字段
+
+但边界依然存在：
+
+- `base_profile / rebuilt_profile / blended_profile` 还只有原始值，没有直接 delta
+- 目前虽然能看到三份 profile，但还不够一眼看出“这一轮 rebuild 到底改了什么”
+
+七、下一步建议
+下一轮可以优先沿两个方向继续推进：
+
+1. 给 post-hit guidance rebuild 增加 profile delta 输出
+目标：
+- 直接展示 rebuilt 相对 base、blended 相对 base 的变化量
+- 让复盘时不用手动对照三份 profile
+
+2. 给 best move summary 增加 post-hit rebuild 的轻量摘要
+目标：
+- 不必展开完整 `post_hit_guidance_debug`
+- 也能在 `decision_summary` 里快速看到是否发生 rebuild、用了几条 signal、增强了几个 confirmed slot
+
+八、一句话总结
+本轮推进的核心成果，是把 post-hit 行为支撑的 `support_gain / fragility_drag` 从 final decision summary 下沉到了候选动作级输出，让 top moves 第一次能够直接横向比较 post-hit 的正向支撑与负向脆弱性。
