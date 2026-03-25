@@ -126,6 +126,99 @@ class StopThresholdTests(unittest.TestCase):
             damped_moves[0]["behavior_guidance_support"],
         )
 
+    def test_evaluate_all_moves_uses_behavior_match_bonus_in_ranking(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="anchor_target",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=6, is_revealed=True),
+                    ],
+                ),
+                "anchor_target": PlayerState(
+                    player_id="anchor_target",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+                "neutral_target": PlayerState(
+                    player_id="neutral_target",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="anchor_target",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+            ],
+        )
+        full_probability_matrix = {
+            "anchor_target": {
+                1: {("W", 5): 0.650, ("W", 7): 0.350},
+            },
+            "neutral_target": {
+                1: {("B", 3): 0.651, ("B", 5): 0.349},
+            },
+        }
+        hidden_index_by_player = {
+            "anchor_target": {1: 0},
+            "neutral_target": {1: 0},
+        }
+        behavior_map_hypothesis = {
+            "anchor_target": {1: ("W", 5)},
+            "neutral_target": {1: ("B", 3)},
+        }
+
+        ranked_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=10,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            behavior_guidance_profile={
+                "signal_count": 1.0,
+                "average_posterior_support": 0.90,
+                "average_weighted_strength": 0.18,
+                "stable_signal_ratio": 1.0,
+                "guidance_multiplier": 1.0,
+                "source_support_progressive": 0.0,
+                "source_support_same_color_anchor": 1.0,
+                "source_support_local_boundary": 0.0,
+            },
+            game_state=game_state,
+            behavior_map_hypothesis=behavior_map_hypothesis,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        self.assertEqual(ranked_moves[0]["target_player_id"], "anchor_target")
+        self.assertGreater(ranked_moves[0]["behavior_match_bonus"], 0.0)
+        self.assertGreater(
+            ranked_moves[0]["ranking_score"],
+            ranked_moves[0]["expected_value"],
+        )
+        self.assertGreater(
+            ranked_moves[0]["behavior_match_multiplier"],
+            ranked_moves[1]["behavior_match_multiplier"],
+        )
+
     def test_choose_best_move_stops_on_weak_endgame_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

@@ -836,6 +836,78 @@ class BehavioralLikelihoodModel:
             "value_selection": value_selection,
         }
 
+    def describe_candidate_value_signal(
+        self,
+        *,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        guesser_id: str,
+        target_player_id: str,
+        target_slot_index: int,
+        guessed_card: Card,
+    ) -> Dict[str, Any]:
+        guessed_numeric = numeric_card_value(guessed_card)
+        if guessed_numeric is None:
+            neutral = {"weight": 1.0, "reason": "neutral"}
+            return {
+                "signal_tags": [],
+                "dominant_signal": {
+                    "source": "neutral",
+                    "reason": "neutral",
+                    "weight": 1.0,
+                },
+                "progressive": neutral,
+                "anchor": neutral,
+                "boundary": neutral,
+            }
+
+        guesser_cards = self._player_cards(
+            game_state,
+            guesser_id,
+            hypothesis_by_player.get(guesser_id, {}),
+        )
+        low, high, width = self._slot_numeric_interval(
+            game_state,
+            hypothesis_by_player,
+            target_player_id,
+            target_slot_index,
+        )
+        progressive = self._candidate_progressive_probe_component(
+            game_state,
+            guesser_id=guesser_id,
+            target_player_id=target_player_id,
+            target_slot_index=target_slot_index,
+            guessed_numeric=guessed_numeric,
+        )
+        anchor = self._same_color_anchor_value_component(
+            guessed_numeric,
+            self._same_color_numeric_values(guesser_cards, guessed_card[0]),
+        )
+        boundary = self._local_boundary_value_component(
+            guessed_numeric,
+            low,
+            high,
+            width,
+        )
+        signal_tags = [
+            component["reason"]
+            for component in (progressive, anchor, boundary)
+            if component["reason"] != "neutral"
+        ]
+        return {
+            "signal_tags": signal_tags,
+            "dominant_signal": self._dominant_signal(
+                {
+                    "progressive": progressive,
+                    "same_color_anchor": anchor,
+                    "local_boundary": boundary,
+                }
+            ),
+            "progressive": progressive,
+            "anchor": anchor,
+            "boundary": boundary,
+        }
+
     def _same_color_anchor_value_component(
         self,
         guessed_numeric: int,
@@ -945,6 +1017,42 @@ class BehavioralLikelihoodModel:
             "reason": dominant_reason,
             "weight": dominant_weight,
         }
+
+    def _candidate_progressive_probe_component(
+        self,
+        game_state: GameState,
+        *,
+        guesser_id: str,
+        target_player_id: str,
+        target_slot_index: int,
+        guessed_numeric: int,
+    ) -> Dict[str, Any]:
+        component: Dict[str, Any] = {
+            "weight": 1.0,
+            "reason": "neutral",
+            "latest_failed_value": None,
+        }
+        latest_failed = self._latest_failed_numeric_guess_on_slot(
+            game_state,
+            guesser_id=guesser_id,
+            target_player_id=target_player_id,
+            target_slot_index=target_slot_index,
+        )
+        if latest_failed is None:
+            return component
+
+        component["latest_failed_value"] = latest_failed
+        delta = guessed_numeric - latest_failed
+        if abs(delta) == 1:
+            component["weight"] = 1.05
+            component["reason"] = "retry_step_probe"
+        elif abs(delta) == 2:
+            component["weight"] = 1.02
+            component["reason"] = "retry_directional_probe"
+        elif delta == 0:
+            component["weight"] = 0.97
+            component["reason"] = "retry_stalled_probe"
+        return component
 
     def _same_color_numeric_values(
         self,
@@ -1109,6 +1217,29 @@ class BehavioralLikelihoodModel:
 
             guess_action_index += 1
         return failed_values
+
+    def _latest_failed_numeric_guess_on_slot(
+        self,
+        game_state: GameState,
+        *,
+        guesser_id: str,
+        target_player_id: str,
+        target_slot_index: int,
+    ) -> Optional[int]:
+        latest_failed: Optional[int] = None
+        for action in getattr(game_state, "actions", ()):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+            if (
+                getattr(action, "guesser_id", None) == guesser_id
+                and getattr(action, "target_player_id", None) == target_player_id
+                and getattr(action, "target_slot_index", None) == target_slot_index
+                and not bool(getattr(action, "result", False))
+            ):
+                guessed_numeric = numeric_card_value(action.guessed_card())
+                if guessed_numeric is not None:
+                    latest_failed = guessed_numeric
+        return latest_failed
 
     def _slot_numeric_interval(
         self,
@@ -1536,6 +1667,7 @@ class DaVinciDecisionEngine:
     WEAK_EDGE_GUARD_MARGIN = 0.18
     ATTACKABILITY_REFERENCE = BehavioralLikelihoodModel.ATTACKABILITY_TIGHT_THRESHOLD
     DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER = 1.0
+    DEFAULT_BEHAVIOR_MATCH_MULTIPLIER = 1.0
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -1551,6 +1683,8 @@ class DaVinciDecisionEngine:
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         acting_player_id: Optional[str],
         behavior_guidance_profile: Optional[Dict[str, float]] = None,
+        game_state: Optional[GameState] = None,
+        behavior_map_hypothesis: Optional[Dict[str, Dict[int, Card]]] = None,
         blocked_slots: Optional[Set[SlotKey]] = None,
         rollout_depth: int = 1,
     ) -> Tuple[List[Dict[str, Any]], float]:
@@ -1585,13 +1719,15 @@ class DaVinciDecisionEngine:
                         guess_signals_by_player=guess_signals_by_player,
                         acting_player_id=acting_player_id,
                         behavior_guidance_profile=behavior_guidance_profile,
+                        game_state=game_state,
+                        behavior_map_hypothesis=behavior_map_hypothesis,
                         rollout_depth=rollout_depth,
                     )
                     moves.append(move)
 
         moves.sort(
             key=lambda move: (
-                -move["expected_value"],
+                -move.get("ranking_score", move["expected_value"]),
                 -move["win_probability"],
                 -move["continuation_value"],
                 -move["continuation_likelihood"],
@@ -1626,6 +1762,10 @@ class DaVinciDecisionEngine:
                 "best_behavior_guidance_signal_count": 0.0,
                 "best_behavior_guidance_support": 0.0,
                 "best_behavior_guidance_stable_ratio": 0.0,
+                "best_ranking_score": 0.0,
+                "best_behavior_match_multiplier": self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER,
+                "best_behavior_match_bonus": 0.0,
+                "best_behavior_match_support": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -1677,6 +1817,10 @@ class DaVinciDecisionEngine:
             "best_behavior_guidance_signal_count": best_move.get("behavior_guidance_signal_count", 0.0),
             "best_behavior_guidance_support": best_move.get("behavior_guidance_support", 0.0),
             "best_behavior_guidance_stable_ratio": best_move.get("behavior_guidance_stable_ratio", 0.0),
+            "best_ranking_score": best_move.get("ranking_score", best_move["expected_value"]),
+            "best_behavior_match_multiplier": best_move.get("behavior_match_multiplier", self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER),
+            "best_behavior_match_bonus": best_move.get("behavior_match_bonus", 0.0),
+            "best_behavior_match_support": best_move.get("behavior_match_support", 0.0),
             "best_attackability_after_hit": best_move.get("attackability_after_hit", 0.0),
             "best_post_hit_continue_score": best_move.get("post_hit_continue_score", 0.0),
             "best_post_hit_stop_score": best_move.get("post_hit_stop_score", 0.0),
@@ -1711,6 +1855,8 @@ class DaVinciDecisionEngine:
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
         acting_player_id: Optional[str],
         behavior_guidance_profile: Optional[Dict[str, float]],
+        game_state: Optional[GameState],
+        behavior_map_hypothesis: Optional[Dict[str, Dict[int, Card]]],
         rollout_depth: int,
     ) -> Dict[str, Any]:
         info_gain = self._expected_slot_entropy_reduction(slot_distribution, card)
@@ -1733,6 +1879,17 @@ class DaVinciDecisionEngine:
         behavior_guidance_support = 0.0
         behavior_guidance_stable_ratio = 0.0
         behavior_guidance_signal_count = 0.0
+        behavior_match_multiplier = self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER
+        behavior_match_bonus = 0.0
+        behavior_match_support = 0.0
+        behavior_candidate_signal = {
+            "signal_tags": [],
+            "dominant_signal": {
+                "source": "neutral",
+                "reason": "neutral",
+                "weight": 1.0,
+            },
+        }
 
         success_matrix = self._success_posterior(full_probability_matrix, player_id, slot_index, card)
         if success_matrix:
@@ -1802,6 +1959,30 @@ class DaVinciDecisionEngine:
         info_bonus = info_gain * self.INFORMATION_GAIN_WEIGHT
         immediate_expected_value = hit_reward - miss_penalty + info_bonus
         expected_value = immediate_expected_value + continuation_value
+        if (
+            behavior_guidance_profile is not None
+            and game_state is not None
+            and behavior_map_hypothesis is not None
+            and acting_player_id is not None
+        ):
+            behavior_candidate_signal = behavior_model.describe_candidate_value_signal(
+                game_state=game_state,
+                hypothesis_by_player=behavior_map_hypothesis,
+                guesser_id=acting_player_id,
+                target_player_id=player_id,
+                target_slot_index=slot_index,
+                guessed_card=card,
+            )
+            behavior_match_support = self._behavior_match_support(
+                behavior_guidance_profile=behavior_guidance_profile,
+                behavior_candidate_signal=behavior_candidate_signal,
+            )
+            behavior_match_multiplier = self._behavior_match_multiplier(
+                behavior_match_support=behavior_match_support,
+                stable_signal_ratio=float(behavior_guidance_profile.get("stable_signal_ratio", 0.0)),
+            )
+            behavior_match_bonus = max(0.0, immediate_expected_value) * (behavior_match_multiplier - 1.0)
+        ranking_score = expected_value + behavior_match_bonus
 
         return {
             "target_player_id": player_id,
@@ -1820,6 +2001,11 @@ class DaVinciDecisionEngine:
             "behavior_guidance_support": behavior_guidance_support,
             "behavior_guidance_stable_ratio": behavior_guidance_stable_ratio,
             "behavior_guidance_signal_count": behavior_guidance_signal_count,
+            "behavior_match_multiplier": behavior_match_multiplier,
+            "behavior_match_bonus": behavior_match_bonus,
+            "behavior_match_support": behavior_match_support,
+            "behavior_candidate_signal": behavior_candidate_signal,
+            "ranking_score": ranking_score,
             "attackability_after_hit": attackability_after_hit,
             "post_hit_continue_score": post_hit_continue_score,
             "post_hit_stop_score": post_hit_stop_score,
@@ -1846,6 +2032,10 @@ class DaVinciDecisionEngine:
                 "behavior_guidance_support": behavior_guidance_support,
                 "behavior_guidance_stable_ratio": behavior_guidance_stable_ratio,
                 "behavior_guidance_signal_count": behavior_guidance_signal_count,
+                "behavior_match_multiplier": behavior_match_multiplier,
+                "behavior_match_bonus": behavior_match_bonus,
+                "behavior_match_support": behavior_match_support,
+                "ranking_score": ranking_score,
                 "attackability_after_hit": attackability_after_hit,
                 "post_hit_continue_score": post_hit_continue_score,
                 "post_hit_stop_score": post_hit_stop_score,
@@ -1886,6 +2076,8 @@ class DaVinciDecisionEngine:
             guess_signals_by_player=guess_signals_by_player,
             acting_player_id=acting_player_id,
             behavior_guidance_profile=behavior_guidance_profile,
+            game_state=None,
+            behavior_map_hypothesis=None,
             blocked_slots=set(),
             rollout_depth=rollout_depth,
         )
@@ -1921,6 +2113,47 @@ class DaVinciDecisionEngine:
             "top_k_support_ratio": top_k_support_ratio,
             "top_k_positive_count": top_k_positive_count,
         }
+
+    def _behavior_match_support(
+        self,
+        *,
+        behavior_guidance_profile: Dict[str, float],
+        behavior_candidate_signal: Dict[str, Any],
+    ) -> float:
+        source_weight_mapping = {
+            "progressive": max(
+                0.0,
+                float(behavior_candidate_signal["progressive"].get("weight", 1.0)) - 1.0,
+            ),
+            "same_color_anchor": max(
+                0.0,
+                float(behavior_candidate_signal["anchor"].get("weight", 1.0)) - 1.0,
+            ),
+            "local_boundary": max(
+                0.0,
+                float(behavior_candidate_signal["boundary"].get("weight", 1.0)) - 1.0,
+            ),
+        }
+        return sum(
+            float(behavior_guidance_profile.get(f"source_support_{source}", 0.0)) * weight
+            for source, weight in source_weight_mapping.items()
+        )
+
+    def _behavior_match_multiplier(
+        self,
+        *,
+        behavior_match_support: float,
+        stable_signal_ratio: float,
+    ) -> float:
+        if behavior_match_support <= 0.0:
+            if stable_signal_ratio >= 0.65:
+                return 0.99
+            return self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER
+        return clamp(
+            1.0 + ((0.32 + (0.16 * stable_signal_ratio)) * behavior_match_support),
+            0.99,
+            1.08,
+        )
 
     def _hidden_index_by_player_from_matrix(
         self,
@@ -2222,6 +2455,9 @@ class GameController:
                     "average_weighted_strength": 0.0,
                     "stable_signal_ratio": 0.0,
                     "guidance_multiplier": 1.0,
+                    "source_support_progressive": 0.0,
+                    "source_support_same_color_anchor": 0.0,
+                    "source_support_local_boundary": 0.0,
                 },
                 "should_stop": True,
             }
@@ -2231,9 +2467,11 @@ class GameController:
             guess_signals_by_player,
             self.behavior_model,
         )
+        behavior_map_hypothesis = self._map_hypothesis_from_matrix(full_probability_matrix)
         behavior_debug = self._build_behavior_debug(
             full_probability_matrix=full_probability_matrix,
             guess_signals_by_player=guess_signals_by_player,
+            map_hypothesis=behavior_map_hypothesis,
         )
         behavior_guidance_profile = self._build_behavior_guidance_profile(
             behavior_debug_signals=behavior_debug["signals"],
@@ -2252,6 +2490,8 @@ class GameController:
             guess_signals_by_player=guess_signals_by_player,
             acting_player_id=self.game_state.self_player_id,
             behavior_guidance_profile=behavior_guidance_profile,
+            game_state=self.game_state,
+            behavior_map_hypothesis=behavior_map_hypothesis,
             blocked_slots=self.inference_engine.publicly_collapsed_slots,
         )
         best_move, decision_summary = self.decision_engine.choose_best_move(
@@ -2364,8 +2604,9 @@ class GameController:
         *,
         full_probability_matrix: FullProbabilityMatrix,
         guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        map_hypothesis: Optional[Dict[str, Dict[int, Card]]] = None,
     ) -> Dict[str, Any]:
-        map_hypothesis = self._map_hypothesis_from_matrix(full_probability_matrix)
+        map_hypothesis = map_hypothesis or self._map_hypothesis_from_matrix(full_probability_matrix)
         map_signals = self.behavior_model.explain_guess_signals(
             map_hypothesis,
             guess_signals_by_player,
@@ -2578,6 +2819,9 @@ class GameController:
                 "average_weighted_strength": 0.0,
                 "stable_signal_ratio": 0.0,
                 "guidance_multiplier": 1.0,
+                "source_support_progressive": 0.0,
+                "source_support_same_color_anchor": 0.0,
+                "source_support_local_boundary": 0.0,
             }
 
         relevant_signals = [
@@ -2592,6 +2836,9 @@ class GameController:
                 "average_weighted_strength": 0.0,
                 "stable_signal_ratio": 0.0,
                 "guidance_multiplier": 1.0,
+                "source_support_progressive": 0.0,
+                "source_support_same_color_anchor": 0.0,
+                "source_support_local_boundary": 0.0,
             }
 
         signal_count = float(len(relevant_signals))
@@ -2608,6 +2855,12 @@ class GameController:
             for signal in relevant_signals
             if float(signal["value_selection"]["dominant_signal"].get("posterior_support", 0.0)) >= 0.55
         ) / signal_count
+        source_support_sums: DefaultDict[str, float] = defaultdict(float)
+        for signal in relevant_signals:
+            for source_support in signal["value_selection"].get("source_support", []):
+                source_support_sums[str(source_support.get("source", "neutral"))] += float(
+                    source_support.get("posterior_support", 0.0)
+                )
         guidance_multiplier = clamp(
             0.95
             + (0.08 * average_posterior_support)
@@ -2622,4 +2875,7 @@ class GameController:
             "average_weighted_strength": average_weighted_strength,
             "stable_signal_ratio": stable_signal_ratio,
             "guidance_multiplier": guidance_multiplier,
+            "source_support_progressive": source_support_sums["progressive"] / signal_count,
+            "source_support_same_color_anchor": source_support_sums["same_color_anchor"] / signal_count,
+            "source_support_local_boundary": source_support_sums["local_boundary"] / signal_count,
         }

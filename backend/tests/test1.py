@@ -778,6 +778,9 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertEqual(result["behavior_debug"]["map_signals"], [])
         self.assertIn("behavior_guidance_profile", result)
         self.assertEqual(result["behavior_guidance_profile"]["guidance_multiplier"], 1.0)
+        self.assertEqual(result["behavior_guidance_profile"]["source_support_progressive"], 0.0)
+        self.assertEqual(result["behavior_guidance_profile"]["source_support_same_color_anchor"], 0.0)
+        self.assertEqual(result["behavior_guidance_profile"]["source_support_local_boundary"], 0.0)
         self.assertIn("evaluated_move_count", result["decision_summary"])
         self.assertIn("stop_score", result["decision_summary"])
         self.assertIn("continue_score", result["decision_summary"])
@@ -842,6 +845,8 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("component_weights", result["behavior_debug"]["signals"][0])
         self.assertIn("value_selection", result["behavior_debug"]["signals"][0])
         self.assertIn("candidate_explanations", result["behavior_debug"]["signals"][0])
+        self.assertIn("source_support_same_color_anchor", result["behavior_guidance_profile"])
+        self.assertIn("source_support_local_boundary", result["behavior_guidance_profile"])
         self.assertEqual(
             result["behavior_debug"]["signals"][0]["aggregation_mode"],
             "target_slot_top_k_posterior",
@@ -862,6 +867,9 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("best_behavior_guidance_signal_count", result["decision_summary"])
         self.assertIn("best_behavior_guidance_support", result["decision_summary"])
         self.assertIn("best_behavior_guidance_stable_ratio", result["decision_summary"])
+        self.assertIn("best_behavior_match_multiplier", result["decision_summary"])
+        self.assertIn("best_behavior_match_bonus", result["decision_summary"])
+        self.assertIn("best_behavior_match_support", result["decision_summary"])
 
     def test_controller_aggregates_behavior_debug_across_top_k_posterior_candidates(self):
         game_state = GameState(
@@ -910,6 +918,10 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertGreater(
             result["behavior_guidance_profile"]["guidance_multiplier"],
             1.0,
+        )
+        self.assertGreaterEqual(
+            result["behavior_guidance_profile"]["source_support_same_color_anchor"],
+            0.0,
         )
 
 

@@ -1,0 +1,214 @@
+3/25-行为signal匹配排序复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 22:28:38 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的下一步建议推进：
+
+让 behavior guidance 不只影响 continuation，也开始轻量影响候选动作排序。
+
+上一轮已经把 posterior 行为解释接回了 continuation 分支，
+也就是说当前系统已经会因为：
+- 历史行为在 posterior 上是否稳定
+
+而轻量调整 continuation likelihood。
+
+但这条链路还缺一块：
+- 它还没有开始影响“当前我该优先打哪一个候选动作”
+
+所以本轮目标很明确：
+- 不去重写整个 score 体系
+- 而是先建立一条更轻的 ranking 反馈路径
+- 让历史上稳定的 `anchor / boundary / progressive` 信号
+- 开始对当前候选动作排序产生小幅、可控、可解释的影响
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+- backend/tests/test2.py
+
+具体推进如下：
+
+1. 新增“当前候选动作像哪类 signal”的描述器
+本轮在 `BehavioralLikelihoodModel` 中新增：
+- `describe_candidate_value_signal(...)`
+- `_candidate_progressive_probe_component(...)`
+- `_latest_failed_numeric_guess_on_slot(...)`
+
+这一步的作用是：
+- 不再只会解释历史动作
+- 还开始能描述“当前候选动作本身”更像哪类 value signal
+
+当前候选动作会被轻量描述成：
+- `progressive`
+- `same_color_anchor`
+- `local_boundary`
+
+也就是说，
+系统第一次开始显式回答：
+- 这个准备下的动作，本身更像历史上哪种稳定的人类报数习惯
+
+2. `behavior_guidance_profile` 新增 source-level 支持度
+本轮 `_build_behavior_guidance_profile(...)` 在原有：
+- `average_posterior_support`
+- `average_weighted_strength`
+- `stable_signal_ratio`
+- `guidance_multiplier`
+
+之外，又新增了：
+- `source_support_progressive`
+- `source_support_same_color_anchor`
+- `source_support_local_boundary`
+
+这意味着 guidance profile 终于不再只是：
+- 这个人整体上稳不稳
+
+而是开始细化到：
+- 他历史上稳定 signal 更偏 progressive
+- 还是更偏 same-color anchor
+- 还是更偏 local boundary
+
+3. decision 层新增 behavior match bonus
+本轮在 `DaVinciDecisionEngine` 中新增：
+- `_behavior_match_support(...)`
+- `_behavior_match_multiplier(...)`
+
+具体做法是：
+- 先用历史 `source_support_*` 形成行为偏好
+- 再拿当前候选动作的 `describe_candidate_value_signal(...)`
+- 计算它和历史稳定 signal 的匹配度
+- 最后得到一个很小的 `behavior_match_bonus`
+
+这一步不是直接去改 stop threshold，
+也不是粗暴重写 `expected_value`，
+而是新增：
+- `ranking_score = expected_value + behavior_match_bonus`
+
+然后让候选动作排序开始按 `ranking_score` 走。
+
+换句话说，本轮首次让：
+- “历史上稳定的行为类型”
+- 去影响“当前更像你会打出来的动作”
+
+4. move / summary 输出新增排序反馈字段
+本轮之后，move 结果中会新增：
+- `behavior_match_multiplier`
+- `behavior_match_bonus`
+- `behavior_match_support`
+- `behavior_candidate_signal`
+- `ranking_score`
+
+同时 `decision_summary` 里也新增：
+- `best_ranking_score`
+- `best_behavior_match_multiplier`
+- `best_behavior_match_bonus`
+- `best_behavior_match_support`
+
+这一步很重要，因为它让这条新链路不是黑箱：
+- 现在不只知道它影响了排序
+- 还可以看到它影响了多少
+- 以及当前 top move 是因为什么 signal 匹配被轻量抬上去的
+
+5. 行为解释 -> guidance -> ranking 的链路首次闭环
+本轮之后，这条链路已经完整闭合为：
+
+posterior 聚合行为解释
+-> source-level guidance profile
+-> 当前候选动作 signal 描述
+-> behavior match bonus
+-> ranking_score 排序
+
+也就是说，
+上一轮的 continuation 反馈只打通了“继续猜”一支，
+本轮则把“当前先打哪个候选动作”这条路也接上了。
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. guidance profile source-level 字段测试
+新增测试验证：
+- `behavior_guidance_profile` 会显式返回 source-level 支持度字段
+
+2. decision summary / move 排序反馈字段测试
+新增测试验证：
+- `decision_summary` 会返回 best move 的 match 排序字段
+
+3. behavior match ranking 测试
+新增测试验证：
+- 构造两个原始分数非常接近的候选动作
+- 其中一个在 same-color anchor 上与历史偏好更匹配
+- 排序后该动作会因为 `behavior_match_bonus` 升到前面
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 25 个测试全部通过
+
+四、本轮解决了什么问题
+1. 历史稳定 signal 开始真正影响当前候选动作排序
+这是本轮最核心的推进。
+
+过去虽然已经有：
+- posterior support
+- dominant signal
+- weighted strength
+
+但这些信息主要还是在：
+- continuation 分支
+- 或 debug 输出
+
+本轮之后，
+它们第一次开始进入：
+- 候选动作排序本身
+
+也就是说，
+现在系统已经不只是问：
+- 这一步打中了以后值不值得继续
+
+还开始轻量地问：
+- 这个动作本身像不像你历史上会打出来的那种稳定动作
+
+2. 行为层和 decision 层的耦合开始更细粒度
+上一轮的 guidance 更像是：
+- 行动者整体画像
+
+本轮则推进到：
+- 当前候选动作和历史 signal 的匹配度
+
+这比单纯整体乘一个 guidance multiplier 更细，
+也更接近真实策略系统需要的那种“动作级行为一致性”。
+
+3. 风险仍然保持可控
+本轮没有直接把 behavior match 重写进所有得分项，
+而是仅仅通过：
+- 很小的 `behavior_match_bonus`
+- 去影响 `ranking_score`
+
+所以当前改动具备两个优点：
+- 已经能真实改变候选动作先后顺序
+- 但又不会一下子把 stop / continue 的整套边界打乱
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 继续把当前候选动作匹配度从 MAP 上下文推进到更稳的 posterior 近似
+当前 `behavior_candidate_signal` 仍然更接近：
+- 当前候选动作在 MAP 上下文下像哪类 signal
+
+下一步可以继续尝试：
+- 让候选动作匹配度也开始吃 top-k posterior 近似
+
+2. 让 behavior match 不只影响 ranking，也开始轻量影响 stop / continue 边界
+当前这轮只接到了排序。
+
+下一步可以继续尝试：
+- 在保持幅度可控的前提下
+- 把 match 信号继续反馈到 stop margin 或 continue score
+
+3. 如果继续补这条线，保持“动作级匹配 + 输出字段 + 测试 + 复盘”同步推进
+
+六、一句话总结
+本轮推进的核心成果，是让 posterior 聚合出来的历史行为偏好，第一次开始通过 `behavior_match_bonus` 影响当前候选动作排序，把“解释层的稳定 signal”推进成了真正会改变 top move 先后顺序的 decision 信号。
