@@ -1,0 +1,129 @@
+2026-03-25 候选动作 neighbor posterior 匹配复盘报告
+
+记录时间：2026-03-25 22:39:52 +08:00
+
+一、本轮推进目标
+按照上一轮《行为 signal 匹配排序复盘报告》的后续方向，继续把“当前候选动作的 signal 匹配”从单一 MAP 上下文，推进到更稳定的 posterior 近似。
+
+上一轮已经做到：
+- 用历史行为解释提炼 `behavior_guidance_profile`
+- 用 `source_support_*` 和当前候选动作 signal 做匹配
+- 让 `behavior_match_bonus` 参与候选动作排序
+
+但当时的当前动作 signal 仍然是：
+- 只在单个 `behavior_map_hypothesis` 下解释
+
+这会带来一个问题：
+- 如果当前 target slot 的左右邻居在 posterior 里仍然有明显不确定性，单个 MAP 世界下得到的 `local_boundary` / `anchor` 判断可能偏脆弱
+- 于是历史行为里明明稳定支持某种 signal，当前动作匹配时却可能因为 MAP 邻居取值偶然落点，被低估
+
+所以这一轮的目标是：
+- 不直接改全局决策框架
+- 先把“当前动作行为 signal”本身做得更稳
+- 尤其优先加强 `local_boundary` 这类强依赖邻近上下文的取值信号
+
+二、本轮核心改动
+1. 在 `DaVinciDecisionEngine` 中新增 `BEHAVIOR_MATCH_CONTEXT_TOP_K = 3`
+用途：
+- 限制候选动作 signal 匹配时，对邻近上下文展开的 posterior 候选数
+- 保持解释稳定性的同时，控制组合爆炸
+
+2. 新增 `_posterior_candidate_signal(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 先保留原来的 MAP 解释结果 `map_signal`
+- 然后只取 target slot 左右相邻 slot 作为局部上下文
+- 对每个相邻 slot：
+  - 如果是明牌，直接固定
+  - 如果有 posterior 分布，就取 top-k 候选并重新归一化
+  - 如果没有分布，就回退到 MAP 假设
+- 之后对这些相邻 slot 的候选做组合，构造多个局部 hypothesis variant
+- 在每个 variant 上重新调用 `describe_candidate_value_signal(...)`
+- 最后把 `progressive / anchor / boundary` 三段权重和 reason support 聚合起来
+
+3. 输出 posterior 近似下的当前动作 signal
+新的 `behavior_candidate_signal` 现在包含：
+- `mode`
+- `context_candidate_count`
+- `context_covered_probability`
+- `map_signal`
+- 聚合后的 `progressive`
+- 聚合后的 `anchor`
+- 聚合后的 `boundary`
+- posterior 语义下的 `dominant_signal`
+
+其中：
+- `mode = neighbor_top_k_posterior` 表示这次不是单纯 MAP 上下文，而是邻近 slot 的 top-k posterior 近似
+- 如果没有可展开的邻近不确定上下文，则回退为 `map_context_fallback`
+
+4. 当前候选动作排序正式使用 posterior-aware signal
+`_score_single_move(...)` 中，当前动作的 `behavior_candidate_signal` 不再直接来自：
+- `behavior_model.describe_candidate_value_signal(...)`
+
+而是改为：
+- `self._posterior_candidate_signal(...)`
+
+这意味着：
+- 历史行为解释提炼出的 `source_support_local_boundary`
+- 不再只和单个 MAP 世界里的当前动作做匹配
+- 而是和“邻近上下文 posterior 近似聚合后的当前动作 signal”做匹配
+
+三、本轮收益
+这一轮最大的收益不是“多加一个 heuristic”，而是把上一轮已经接进排序的 `behavior_match_bonus` 做得更可信。
+
+具体来说：
+- 当前动作如果在单一 MAP 世界下看不出明显 `local_boundary`
+- 但在多个高概率邻近上下文下都能形成一致的 boundary 支撑
+- 那么当前动作现在就能拿到更稳定的 `behavior_match_bonus`
+
+这一步的意义在于：
+- 历史行为解释的 posterior 聚合，开始真正和当前动作的 posterior 近似解释对齐
+- 而不是“历史端是 posterior 聚合，当前端还是 MAP 单点”
+
+四、测试补充
+新增测试：
+- `backend/tests/test2.py`
+- `test_evaluate_all_moves_uses_neighbor_posterior_for_candidate_signal`
+
+这条测试验证了：
+- 某个候选动作在 MAP 邻近上下文下，`boundary` 信号较弱
+- 但在左右邻居 top-k posterior 组合后，聚合出的 `boundary` 权重更强
+- 并且 `behavior_candidate_signal.mode` 会变成 `neighbor_top_k_posterior`
+- 最终该动作能够拿到正的 `behavior_match_bonus`
+
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 26 个测试全部通过
+
+五、当前阶段判断
+这一轮还不是“完整的 top-k 全局 hypothesis 候选动作匹配”。
+
+当前实现的边界是：
+- 只对 target slot 的左右邻居做 posterior 近似
+- 重点修复 `local_boundary` 这种局部上下文敏感信号
+- 没有把整手牌、整玩家、整世界的 top-k hypothesis 全面展开
+
+但从工程推进顺序上，这一步是对的，因为：
+- 它已经覆盖了当前最敏感、最容易被 MAP 单点误导的 value signal
+- 成本低于全局 hypothesis 展开
+- 又能直接提升上一轮 `behavior_match_bonus` 的稳定性
+
+六、下一步建议
+下一轮可以优先做两个方向之一：
+
+1. 继续把当前候选动作匹配从“邻近 slot posterior”推进到更完整的局部 hypothesis 近似
+目标：
+- 不只看左右邻居
+- 逐步覆盖对 `anchor` 也更敏感的上下文结构
+
+2. 开始让 `behavior_match_bonus` 轻量影响 stop / continue 边界
+目标：
+- 不是只影响候选动作排序
+- 而是开始影响“这手猜中以后是否值得继续压”的信心边界
+
+七、一句话总结
+本轮推进的核心成果，是把“当前候选动作的行为 signal 匹配”从单个 MAP 上下文，推进成了“邻近 slot top-k posterior 近似”的局部聚合解释，让历史行为信号与当前动作排序之间的连接更稳了一步。

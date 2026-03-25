@@ -219,6 +219,94 @@ class StopThresholdTests(unittest.TestCase):
             ranked_moves[1]["behavior_match_multiplier"],
         )
 
+    def test_evaluate_all_moves_uses_neighbor_posterior_for_candidate_signal(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="boundary_target",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "boundary_target": PlayerState(
+                    player_id="boundary_target",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+        full_probability_matrix = {
+            "boundary_target": {
+                0: {("B", 1): 0.51, ("B", 2): 0.49},
+                1: {("W", 3): 0.58, ("W", 4): 0.42},
+                2: {("B", 6): 0.51, ("B", 4): 0.49},
+            },
+        }
+        hidden_index_by_player = {
+            "boundary_target": {0: 0, 1: 1, 2: 2},
+        }
+        behavior_map_hypothesis = {
+            "boundary_target": {
+                0: ("B", 1),
+                1: ("W", 3),
+                2: ("B", 6),
+            },
+        }
+        map_signal = model.describe_candidate_value_signal(
+            game_state=game_state,
+            hypothesis_by_player=behavior_map_hypothesis,
+            guesser_id="me",
+            target_player_id="boundary_target",
+            target_slot_index=1,
+            guessed_card=("W", 3),
+        )
+
+        ranked_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=10,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            behavior_guidance_profile={
+                "signal_count": 1.0,
+                "average_posterior_support": 0.80,
+                "average_weighted_strength": 0.10,
+                "stable_signal_ratio": 1.0,
+                "guidance_multiplier": 1.0,
+                "source_support_progressive": 0.0,
+                "source_support_same_color_anchor": 0.0,
+                "source_support_local_boundary": 1.0,
+            },
+            game_state=game_state,
+            behavior_map_hypothesis=behavior_map_hypothesis,
+            blocked_slots={("boundary_target", 0), ("boundary_target", 2)},
+            rollout_depth=0,
+        )
+
+        target_move = ranked_moves[0]
+        self.assertEqual(target_move["guess_card"], ["W", 3])
+        self.assertEqual(
+            target_move["behavior_candidate_signal"]["mode"],
+            "neighbor_top_k_posterior",
+        )
+        self.assertEqual(target_move["behavior_candidate_signal"]["context_candidate_count"], 4)
+        self.assertGreater(
+            target_move["behavior_candidate_signal"]["context_covered_probability"],
+            0.0,
+        )
+        self.assertGreater(
+            target_move["behavior_candidate_signal"]["boundary"]["weight"],
+            map_signal["boundary"]["weight"],
+        )
+        self.assertGreater(target_move["behavior_match_bonus"], 0.0)
+
     def test_choose_best_move_stops_on_weak_endgame_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [
