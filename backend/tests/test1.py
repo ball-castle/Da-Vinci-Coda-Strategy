@@ -795,6 +795,8 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("best_post_hit_guidance_augmented_slot_count", result["decision_summary"])
         self.assertIn("best_post_hit_guidance_multiplier_delta", result["decision_summary"])
         self.assertIn("best_post_hit_guidance_source_shift", result["decision_summary"])
+        self.assertIn("best_post_hit_guidance_source_shift_strength", result["decision_summary"])
+        self.assertIn("best_post_hit_guidance_rebuild_reason", result["decision_summary"])
         self.assertIn("best_post_hit_top_k_continue_margin", result["decision_summary"])
         self.assertIn("best_post_hit_top_k_expected_continue_margin", result["decision_summary"])
         self.assertIn("best_post_hit_top_k_support_ratio", result["decision_summary"])
@@ -830,6 +832,10 @@ class GameControllerOutputTests(unittest.TestCase):
             )
             self.assertIn(
                 "blended_dominant_source_shift",
+                result["top_moves"][0]["post_hit_guidance_debug"],
+            )
+            self.assertIn(
+                "blended_dominant_source_shift_strength",
                 result["top_moves"][0]["post_hit_guidance_debug"],
             )
             self.assertIn("post_hit_top_k_expected_continue_margin", result["top_moves"][0])

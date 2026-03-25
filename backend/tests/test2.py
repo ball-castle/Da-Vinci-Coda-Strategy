@@ -1449,6 +1449,10 @@ class StopThresholdTests(unittest.TestCase):
             rollout["guidance_debug"]["blended_dominant_source_shift"],
             {"progressive", "same_color_anchor", "local_boundary", "neutral"},
         )
+        self.assertGreaterEqual(
+            rollout["guidance_debug"]["blended_dominant_source_shift_strength"],
+            0.0,
+        )
 
     def test_choose_best_move_uses_post_hit_behavior_support_adjustment_on_narrow_edge(self):
         engine = DaVinciDecisionEngine()

@@ -1,0 +1,162 @@
+2026-03-26 post-hit 重建一句式摘要复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+按照上一轮《post-hit 主导 source-shift 标签复盘报告》的第二条下一步建议，这一轮继续把 post-hit rebuild 的摘要从“结构化字段”推进到“可直接阅读的一句话解释”。
+
+上一轮之后，summary 虽然已经有：
+
+- `best_post_hit_guidance_source_shift`
+- `best_post_hit_guidance_multiplier_delta`
+
+但在批量看日志或回归输出时，
+仍然需要自己把多个字段拼起来理解。
+
+所以这一轮的目标是：
+
+- 给 best move 的 summary 增加一句式 rebuild 解释
+- 同时补充主导 source-shift 的强度字段
+
+二、本轮核心改动
+1. 新增 `_dominant_guidance_source_shift_strength(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 从 source support delta 中取出主导变化方向的强度值
+
+这样当前 post-hit rebuild 已经不只知道：
+
+- 主导方向是什么
+
+还知道：
+
+- 这个主导方向到底有多强
+
+2. `post_hit_guidance_debug` 新增强度字段
+位置：
+- `backend/app/core/engine.py`
+- `backend/tests/test1.py`
+- `backend/tests/test2.py`
+
+本轮新增：
+
+- `rebuilt_dominant_source_shift_strength`
+- `blended_dominant_source_shift_strength`
+
+这使得 move 级 debug 结构现在具备：
+
+- 方向标签
+- 方向强度
+
+3. 新增 `_build_post_hit_guidance_rebuild_reason(...)`
+位置：
+- `backend/app/core/engine.py`
+
+作用：
+- 把 best move 的 post-hit rebuild 轻量摘要压缩成一句可直接阅读的话
+
+当前句式包含：
+
+- 主导 source shift
+- source shift strength
+- rebuild signal 数量
+- multiplier delta
+
+当 rebuild 未发生时，则回退为：
+
+- `post-hit rebuild unavailable`
+
+4. `decision_summary` 新增一句式摘要字段
+位置：
+- `backend/app/core/engine.py`
+- `backend/tests/test1.py`
+
+本轮新增：
+
+- `best_post_hit_guidance_source_shift_strength`
+- `best_post_hit_guidance_rebuild_reason`
+
+这意味着现在只看 best move 的 summary，
+已经可以直接读到一条完整的 post-hit rebuild 简述。
+
+三、本轮收益
+这一轮最大的收益，是让 post-hit rebuild 从“多字段摘要”进一步推进到了“人可以直接扫读的一句话解释”。
+
+现在在看一条 summary 时，
+已经不需要先自己拼接：
+
+- 方向
+- 强度
+- 信号数
+- multiplier 净变化
+
+而是可以直接读：
+
+- post-hit rebuild favors ...
+
+这对你现在这种连续多轮迭代、批量看实验结果的工作流会更友好，
+因为 summary 已经越来越接近日志友好格式。
+
+四、测试补充
+1. full-history rebuild 强度回归
+文件：
+- `backend/tests/test2.py`
+
+增强测试：
+- `test_post_hit_rollout_rebuilds_guidance_from_full_post_hit_signal_history`
+
+新增验证：
+- `blended_dominant_source_shift_strength >= 0`
+
+2. controller summary 输出回归
+文件：
+- `backend/tests/test1.py`
+
+新增断言：
+
+- `decision_summary` 包含
+  - `best_post_hit_guidance_source_shift_strength`
+  - `best_post_hit_guidance_rebuild_reason`
+
+- `post_hit_guidance_debug` 包含
+  - `blended_dominant_source_shift_strength`
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 42 个测试全部通过
+
+六、当前阶段判断
+到这一轮为止，best move 的 post-hit rebuild 解释已经具备：
+
+1. 结构化字段
+2. 方向标签
+3. 强度数值
+4. 一句式摘要
+
+也就是说：
+- 现在 `decision_summary` 已经能相对完整地概括 best move 的 post-hit rebuild 状态
+
+但边界仍然存在：
+
+- 当前一句式摘要还主要描述 guidance rebuild 自身
+- 还没有把 `support_gain / fragility_drag` 与 rebuild 结果合并成一条更高层的 stop / continue 解释
+
+七、下一步建议
+下一轮可以优先沿两个方向继续推进：
+
+1. 把 `support_gain / fragility_drag` 与 rebuild 摘要合并成一句式决策解释
+目标：
+- 不只说 rebuild 发生了什么
+- 还说它最终是推高 continue 还是拉低 continue
+
+2. 给 post-hit behavior support breakdown 增加强弱分档标签
+目标：
+- 让 `support_gain` / `fragility_drag` 也有轻量等级解释
+
+八、一句话总结
+本轮推进的核心成果，是给 best move 的 `decision_summary` 补上了 post-hit rebuild 的强度字段和一句式摘要，让这条链路第一次具备了接近日志友好的直接可读解释。

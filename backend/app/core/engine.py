@@ -1808,6 +1808,8 @@ class DaVinciDecisionEngine:
                 "best_post_hit_guidance_augmented_slot_count": 0.0,
                 "best_post_hit_guidance_multiplier_delta": 0.0,
                 "best_post_hit_guidance_source_shift": "neutral",
+                "best_post_hit_guidance_source_shift_strength": 0.0,
+                "best_post_hit_guidance_rebuild_reason": "post-hit rebuild unavailable",
                 "best_post_hit_top_k_expected_continue_margin": 0.0,
                 "best_post_hit_top_k_continue_margin": 0.0,
                 "best_post_hit_top_k_expected_support_ratio": 0.0,
@@ -1927,6 +1929,13 @@ class DaVinciDecisionEngine:
                 "post_hit_guidance_debug",
                 {},
             ).get("blended_dominant_source_shift", "neutral"),
+            "best_post_hit_guidance_source_shift_strength": best_move.get(
+                "post_hit_guidance_debug",
+                {},
+            ).get("blended_dominant_source_shift_strength", 0.0),
+            "best_post_hit_guidance_rebuild_reason": self._build_post_hit_guidance_rebuild_reason(
+                best_move.get("post_hit_guidance_debug", {})
+            ),
             "best_post_hit_top_k_expected_continue_margin": best_move.get("post_hit_top_k_expected_continue_margin", 0.0),
             "best_post_hit_top_k_continue_margin": best_move.get("post_hit_top_k_continue_margin", 0.0),
             "best_post_hit_top_k_expected_support_ratio": best_move.get("post_hit_top_k_expected_support_ratio", 0.0),
@@ -2568,7 +2577,19 @@ class DaVinciDecisionEngine:
                     updated_profile=rebuilt_profile,
                 )
             ),
+            "rebuilt_dominant_source_shift_strength": self._dominant_guidance_source_shift_strength(
+                self._behavior_guidance_profile_delta(
+                    base_profile=fallback_profile,
+                    updated_profile=rebuilt_profile,
+                )
+            ),
             "blended_dominant_source_shift": self._dominant_guidance_source_shift(
+                self._behavior_guidance_profile_delta(
+                    base_profile=fallback_profile,
+                    updated_profile=blended_profile,
+                )
+            ),
+            "blended_dominant_source_shift_strength": self._dominant_guidance_source_shift_strength(
                 self._behavior_guidance_profile_delta(
                     base_profile=fallback_profile,
                     updated_profile=blended_profile,
@@ -2656,6 +2677,8 @@ class DaVinciDecisionEngine:
             ),
             "rebuilt_dominant_source_shift": "neutral",
             "blended_dominant_source_shift": "neutral",
+            "rebuilt_dominant_source_shift_strength": 0.0,
+            "blended_dominant_source_shift_strength": 0.0,
         }
 
     def _summarize_guidance_rebuild_signals(
@@ -2723,6 +2746,36 @@ class DaVinciDecisionEngine:
         if dominant_delta <= 0.0:
             return "neutral"
         return dominant_source
+
+    def _dominant_guidance_source_shift_strength(
+        self,
+        delta_profile: Dict[str, float],
+    ) -> float:
+        return max(
+            0.0,
+            float(delta_profile.get("source_support_progressive", 0.0)),
+            float(delta_profile.get("source_support_same_color_anchor", 0.0)),
+            float(delta_profile.get("source_support_local_boundary", 0.0)),
+        )
+
+    def _build_post_hit_guidance_rebuild_reason(
+        self,
+        guidance_debug: Dict[str, Any],
+    ) -> str:
+        if not guidance_debug.get("rebuild_applied", False):
+            return "post-hit rebuild unavailable"
+        source_shift = str(guidance_debug.get("blended_dominant_source_shift", "neutral"))
+        shift_strength = float(guidance_debug.get("blended_dominant_source_shift_strength", 0.0))
+        multiplier_delta = float(
+            guidance_debug.get("blended_delta_from_base", {}).get("guidance_multiplier", 0.0)
+        )
+        rebuilt_signal_count = float(guidance_debug.get("rebuilt_signal_count", 0.0))
+        return (
+            f"post-hit rebuild favors {source_shift}, "
+            f"strength {shift_strength:.3f}, "
+            f"signals {rebuilt_signal_count:.0f}, "
+            f"multiplier delta {multiplier_delta:.3f}"
+        )
 
     def _blend_behavior_guidance_profiles(
         self,
