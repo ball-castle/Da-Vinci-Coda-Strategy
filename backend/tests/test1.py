@@ -640,6 +640,106 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(center_score, edge_score)
 
+    def test_behavior_explanation_labels_same_color_anchor_sandwich(self):
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+            ],
+        )
+        hypothesis = {
+            "me": {0: ("W", 4), 1: ("W", 6)},
+            "opp": {1: ("W", 5)},
+        }
+
+        explanation = model.explain_guess_signals(
+            hypothesis,
+            model.build_guess_signals(game_state),
+            game_state,
+        )[0]
+
+        self.assertEqual(
+            explanation["value_selection"]["anchor"]["reason"],
+            "same_color_sandwich_exact",
+        )
+        self.assertEqual(
+            explanation["value_selection"]["dominant_signal"]["source"],
+            "same_color_anchor",
+        )
+
+    def test_behavior_explanation_labels_wide_gap_center_probe(self):
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        )
+        hypothesis = {"opp": {1: ("W", 5)}}
+
+        explanation = model.explain_guess_signals(
+            hypothesis,
+            model.build_guess_signals(game_state),
+            game_state,
+        )[0]
+
+        self.assertEqual(
+            explanation["value_selection"]["boundary"]["reason"],
+            "wide_gap_center_probe",
+        )
+        self.assertEqual(
+            explanation["value_selection"]["dominant_signal"]["source"],
+            "local_boundary",
+        )
+
 
 class GameControllerOutputTests(unittest.TestCase):
     def test_controller_returns_decision_summary_and_reasoning(self):
@@ -668,6 +768,8 @@ class GameControllerOutputTests(unittest.TestCase):
 
         result = GameController(game_state).run_turn()
         self.assertIn("decision_summary", result)
+        self.assertIn("behavior_debug", result)
+        self.assertEqual(result["behavior_debug"]["signal_count"], 0)
         self.assertIn("evaluated_move_count", result["decision_summary"])
         self.assertIn("stop_score", result["decision_summary"])
         self.assertIn("continue_score", result["decision_summary"])
@@ -686,6 +788,48 @@ class GameControllerOutputTests(unittest.TestCase):
             self.assertIn("post_hit_best_gap", result["top_moves"][0])
             self.assertIn("post_hit_top_k_continue_margin", result["top_moves"][0])
             self.assertIn("post_hit_top_k_support_ratio", result["top_moves"][0])
+
+    def test_controller_returns_behavior_debug_for_guess_actions(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        )
+
+        result = GameController(game_state).run_turn()
+
+        self.assertEqual(result["behavior_debug"]["hypothesis_source"], "map_blended_posterior")
+        self.assertEqual(result["behavior_debug"]["signal_count"], 1)
+        self.assertEqual(len(result["behavior_debug"]["signals"]), 1)
+        self.assertIn("component_weights", result["behavior_debug"]["signals"][0])
+        self.assertIn("value_selection", result["behavior_debug"]["signals"][0])
+        self.assertIn(
+            "dominant_signal",
+            result["behavior_debug"]["signals"][0]["value_selection"],
+        )
 
 
 if __name__ == "__main__":

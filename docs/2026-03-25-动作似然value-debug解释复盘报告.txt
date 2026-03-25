@@ -1,0 +1,194 @@
+3/25-动作似然value-debug解释复盘报告
+
+项目：Da Vinci Code Strategy
+记录时间：2026-03-25 22:04:41 +08:00
+
+一、本轮推进目标
+本轮继续严格沿着上一份最新复盘里的下一步建议推进：
+
+继续把 value-selection 的理由显式化。
+
+上一轮虽然已经把 value-selection 的结构补到了：
+- progressive probing
+- same-color anchor
+- local boundary
+
+但这些信号仍然主要停留在内部乘权重阶段。
+
+也就是说，
+系统虽然已经会“因为这些理由去加权”，
+但外部还看不到：
+- 当前动作到底主要吃了哪类 value 信号
+- 这次更像是 anchor 精确卡位
+- 还是 boundary 下的盲探填缝
+
+所以本轮目标不是继续加 heuristic，
+而是把现有 value-selection 变成真正可解释、可调试的输出。
+
+二、本轮实际代码改动
+本轮核心修改文件：
+- backend/app/core/engine.py
+- backend/tests/test1.py
+
+具体推进如下：
+
+1. 把 value-selection 评分改造成可解释 breakdown
+本轮在 `BehavioralLikelihoodModel` 中新增：
+- `_value_selection_breakdown(...)`
+- `_progressive_value_component(...)`
+- `_same_color_anchor_value_component(...)`
+- `_local_boundary_value_component(...)`
+- `_dominant_signal(...)`
+
+现在 `_score_target_value_selection(...)` 不再自己内部直接堆权重，
+而是改为复用同一套 breakdown 结果，再取其中的 `total_weight`。
+
+这样带来的直接好处是：
+- 评分逻辑和解释逻辑终于共用同一份来源
+- 不会出现“加权是一套、debug 文案是另一套”的偏差
+
+2. 为每个 value 信号补上显式 reason label
+本轮开始为 value-selection 的主要分支输出显式标签，例如：
+- `progressive_step`
+- `stalled_after_failure`
+- `directional_progress`
+- `same_color_sandwich_exact`
+- `same_color_gap_fill`
+- `wide_gap_center_probe`
+- `narrow_boundary_probe`
+
+同时还会输出：
+- `signal_tags`
+- `dominant_signal`
+
+这意味着现在对于一条历史猜测，
+系统终于可以回答：
+- 它触发了哪些 value 信号
+- 其中哪一条是当前最强主导理由
+
+3. 新增行为解释接口
+本轮新增：
+- `explain_signal(...)`
+- `explain_guess_signals(...)`
+
+输出内容不再只是一个黑箱分数，
+而是会显式给出：
+- `component_weights`
+- `value_selection.total_weight`
+- `value_selection.progressive`
+- `value_selection.anchor`
+- `value_selection.boundary`
+- `value_selection.dominant_signal`
+
+这一步的意义很直接：
+- 之后继续调行为层，不需要再靠猜
+- 可以直接看到某条动作到底是哪里在拉高、哪里在压低
+
+4. controller 结果正式挂出 `behavior_debug`
+本轮在 `GameController.run_turn()` 的返回结构里新增：
+- `behavior_debug`
+
+当前实现会基于 blended posterior 的 MAP 假设，
+对现有 guess action 列表输出一份行为解释 debug：
+- `hypothesis_source`
+- `signal_count`
+- `signals`
+
+也就是说，
+前端或调用方现在已经可以直接看到：
+- 当前行为解释是按什么假设世界生成的
+- 每条历史 guess 的 component weight
+- 当前这条动作的主导 value 信号是什么
+
+5. 解释输出也纳入测试
+这轮不是只把字段挂出来，
+还专门补了标签级测试，验证：
+- same-color sandwich 场景会打出 `same_color_sandwich_exact`
+- wide-gap center probe 场景会打出 `wide_gap_center_probe`
+
+同时补了 controller 集成测试，
+确认 `run_turn()` 的结果里确实会返回 `behavior_debug`。
+
+三、本轮测试验证
+本轮新增 / 补强的测试点包括：
+
+1. 行为解释标签测试
+新增测试验证：
+- anchor sandwich 场景下，解释里会输出正确 anchor reason
+- wide gap center 场景下，解释里会输出正确 boundary reason
+
+2. dominant signal 测试
+新增测试验证：
+- 在 anchor sandwich 场景里，主导信号是 `same_color_anchor`
+- 在 wide gap center 场景里，主导信号是 `local_boundary`
+
+3. controller 行为调试输出测试
+新增测试验证：
+- 无历史 guess 时，`behavior_debug.signal_count == 0`
+- 有历史 guess 时，`behavior_debug` 会返回 signal 级 breakdown
+
+本轮本地测试命令：
+`python -m unittest discover -s backend/tests -p 'test*.py'`
+
+结果：
+- 22 个测试全部通过
+
+四、本轮解决了什么问题
+1. 行为层不再是纯黑箱加权
+这是本轮最关键的推进。
+
+过去系统虽然已经在用：
+- progressive probing
+- anchor 卡位
+- boundary 填缝
+
+但外部只能看到最终概率变化，
+看不到内部到底是哪一条信号起作用。
+
+本轮之后，
+这些 value 信号第一次开始具备：
+- 显式标签
+- 分项权重
+- 主导来源
+
+2. “为什么他会报这个值”第一次能直接落到接口输出
+这让当前模型更接近你最初要的那种解释能力：
+- 不是只输出一个推荐动作
+- 而是能解释历史行为在模型里是怎么被理解的
+
+这一步虽然没有继续扩 heuristic，
+但它为后面继续扩 heuristic、调 heuristic、接 decision 层都提供了非常关键的可观测性。
+
+3. 后续调参和回归验证会更稳
+因为现在不是只有“分数变了”，
+而是可以看到：
+- 是 progressive 在变
+- 还是 anchor 在变
+- 还是 boundary 在变
+
+这会明显降低后续继续补动作似然模型时的调试成本。
+
+五、下一步建议
+在当前基础上，下一步最值得继续推进的是：
+
+1. 把行为解释从 MAP 单世界推进到更稳的 posterior 聚合解释
+当前 `behavior_debug` 是基于 blended posterior 的 MAP 假设。
+
+下一步可以继续尝试：
+- 不只解释单个 MAP 世界
+- 而是聚合 top-k 高权重假设里的共同 value signal
+
+这样可以减少单世界解释带来的偶然性。
+
+2. 让解释信号开始反哺 decision 层
+现在已经能看清某条历史动作主要是：
+- anchor 驱动
+- 还是 boundary 驱动
+
+下一步可以尝试：
+- 让这些更强的解释信号更明确地反馈给候选动作排序或 stop/continue 边界
+
+3. 如果继续补行为层，保持“新 heuristic + 新解释 + 新测试”同步落地
+
+六、一句话总结
+本轮推进的核心成果，不是继续加新的 value heuristic，而是把现有的 progressive / anchor / boundary 取值逻辑真正变成了可解释、可输出、可测试的行为 debug 能力，让系统第一次能直接回答：这条动作主要是因为什么 value 信号而显得合理。

@@ -607,110 +607,344 @@ class BehavioralLikelihoodModel:
         target_card: Card,
         guesser_cards: Sequence[Card],
     ) -> float:
+        return self._value_selection_breakdown(
+            game_state,
+            hypothesis_by_player,
+            signal,
+            target_card,
+            guesser_cards,
+        )["total_weight"]
+
+    def _value_selection_breakdown(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+        target_card: Card,
+        guesser_cards: Sequence[Card],
+    ) -> Dict[str, Any]:
         guessed_numeric = numeric_card_value(signal.guessed_card)
         target_numeric = numeric_card_value(target_card)
         if guessed_numeric is None or target_numeric is None:
-            return 1.0
+            neutral = {"weight": 1.0, "reason": "neutral"}
+            return {
+                "total_weight": 1.0,
+                "signal_tags": [],
+                "dominant_signal": {
+                    "source": "neutral",
+                    "reason": "neutral",
+                    "weight": 1.0,
+                },
+                "progressive": neutral,
+                "anchor": neutral,
+                "boundary": neutral,
+            }
 
-        weight = 1.0
         low, high, width = self._slot_numeric_interval(
             game_state,
             hypothesis_by_player,
             signal.target_player_id,
             signal.target_slot_index,
         )
-
-        prior_failed_values = self._prior_failed_numeric_guesses_on_slot(game_state, signal)
-        if prior_failed_values:
-            latest_failed = prior_failed_values[-1]
-            direction = 0
-            if target_numeric > latest_failed:
-                direction = 1
-            elif target_numeric < latest_failed:
-                direction = -1
-
-            if direction != 0:
-                expected_progress = latest_failed + direction
-                delta = guessed_numeric - latest_failed
-                if guessed_numeric == expected_progress:
-                    weight *= self.TARGET_VALUE_PROGRESSIVE_STEP_BONUS
-                elif delta == 0:
-                    weight *= self.TARGET_VALUE_STALLED_PENALTY
-                elif delta * direction > 0:
-                    weight *= self.TARGET_VALUE_DIRECTIONAL_BONUS
-                else:
-                    weight *= self.TARGET_VALUE_WRONG_DIRECTION_PENALTY
-
-        same_color_values = self._same_color_numeric_values(guesser_cards, signal.guessed_card[0])
-        weight *= self._score_same_color_anchor_value_fit(
+        progressive = self._progressive_value_component(
             guessed_numeric,
-            same_color_values,
+            target_numeric,
+            self._prior_failed_numeric_guesses_on_slot(game_state, signal),
         )
-        weight *= self._score_local_boundary_value_fit(
+        anchor = self._same_color_anchor_value_component(
+            guessed_numeric,
+            self._same_color_numeric_values(guesser_cards, signal.guessed_card[0]),
+        )
+        boundary = self._local_boundary_value_component(
             guessed_numeric,
             low,
             high,
             width,
         )
+        signal_tags = [
+            component["reason"]
+            for component in (progressive, anchor, boundary)
+            if component["reason"] != "neutral"
+        ]
+        return {
+            "total_weight": progressive["weight"] * anchor["weight"] * boundary["weight"],
+            "signal_tags": signal_tags,
+            "dominant_signal": self._dominant_signal(
+                {
+                    "progressive": progressive,
+                    "same_color_anchor": anchor,
+                    "local_boundary": boundary,
+                }
+            ),
+            "progressive": progressive,
+            "anchor": anchor,
+            "boundary": boundary,
+        }
 
-        return weight
+    def _progressive_value_component(
+        self,
+        guessed_numeric: int,
+        target_numeric: int,
+        prior_failed_values: Sequence[int],
+    ) -> Dict[str, Any]:
+        component: Dict[str, Any] = {
+            "weight": 1.0,
+            "reason": "neutral",
+            "latest_failed_value": None,
+            "expected_progress": None,
+            "direction": 0,
+        }
+        if not prior_failed_values:
+            return component
 
-    def _score_same_color_anchor_value_fit(
+        latest_failed = prior_failed_values[-1]
+        direction = 0
+        if target_numeric > latest_failed:
+            direction = 1
+        elif target_numeric < latest_failed:
+            direction = -1
+
+        component["latest_failed_value"] = latest_failed
+        component["direction"] = direction
+        if direction == 0:
+            return component
+
+        expected_progress = latest_failed + direction
+        delta = guessed_numeric - latest_failed
+        component["expected_progress"] = expected_progress
+        if guessed_numeric == expected_progress:
+            component["weight"] = self.TARGET_VALUE_PROGRESSIVE_STEP_BONUS
+            component["reason"] = "progressive_step"
+        elif delta == 0:
+            component["weight"] = self.TARGET_VALUE_STALLED_PENALTY
+            component["reason"] = "stalled_after_failure"
+        elif delta * direction > 0:
+            component["weight"] = self.TARGET_VALUE_DIRECTIONAL_BONUS
+            component["reason"] = "directional_progress"
+        else:
+            component["weight"] = self.TARGET_VALUE_WRONG_DIRECTION_PENALTY
+            component["reason"] = "wrong_direction"
+        return component
+
+    def explain_guess_signals(
+        self,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        game_state: GameState,
+    ) -> List[Dict[str, Any]]:
+        explanations: List[Dict[str, Any]] = []
+        for player_id in sorted(guess_signals_by_player):
+            for signal in guess_signals_by_player[player_id]:
+                explanations.append(
+                    self.explain_signal(
+                        hypothesis_by_player,
+                        game_state,
+                        signal,
+                    )
+                )
+        return explanations
+
+    def explain_signal(
+        self,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> Dict[str, Any]:
+        target_card = self._resolve_slot_card(
+            game_state,
+            hypothesis_by_player,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
+        base_explanation = {
+            "action_index": signal.action_index,
+            "guesser_id": signal.guesser_id,
+            "target_player_id": signal.target_player_id,
+            "target_slot_index": signal.target_slot_index,
+            "guessed_card": serialize_card(signal.guessed_card),
+            "result": signal.result,
+            "continued_turn": signal.continued_turn,
+        }
+        if target_card is None:
+            return {
+                **base_explanation,
+                "hypothesis_target_card": None,
+                "total_weight": 1.0,
+                "component_weights": {},
+                "value_selection": {
+                    "total_weight": 1.0,
+                    "signal_tags": [],
+                    "dominant_signal": {
+                        "source": "neutral",
+                        "reason": "neutral",
+                        "weight": 1.0,
+                    },
+                },
+            }
+
+        guesser_cards = self._player_cards(
+            game_state,
+            signal.guesser_id,
+            hypothesis_by_player.get(signal.guesser_id, {}),
+        )
+        self_hand_weight = self._score_self_hand(guesser_cards, signal.guessed_card)
+        target_player_weight = self._score_target_player_selection(
+            game_state,
+            hypothesis_by_player,
+            signal,
+        )
+        target_slot_selection_weight = self._score_target_slot_selection(
+            game_state,
+            hypothesis_by_player,
+            signal,
+        )
+        value_selection = self._value_selection_breakdown(
+            game_state,
+            hypothesis_by_player,
+            signal,
+            target_card,
+            guesser_cards,
+        )
+        target_slot_weight = self._score_target_slot(
+            game_state,
+            hypothesis_by_player,
+            signal,
+            target_card,
+        )
+        continue_weight = self._score_continue_decision(
+            game_state,
+            hypothesis_by_player,
+            signal,
+        )
+        component_weights = {
+            "self_hand": self_hand_weight,
+            "target_player_selection": target_player_weight,
+            "target_slot_selection": target_slot_selection_weight,
+            "target_value_selection": value_selection["total_weight"],
+            "target_slot_fit": target_slot_weight,
+            "continue_decision_fit": continue_weight,
+        }
+        total_weight = 1.0
+        for weight in component_weights.values():
+            total_weight *= weight
+
+        return {
+            **base_explanation,
+            "hypothesis_target_card": serialize_card(target_card),
+            "total_weight": max(self.EPSILON, total_weight),
+            "component_weights": component_weights,
+            "value_selection": value_selection,
+        }
+
+    def _same_color_anchor_value_component(
         self,
         guessed_numeric: int,
         same_color_values: Sequence[int],
-    ) -> float:
+    ) -> Dict[str, Any]:
+        component: Dict[str, Any] = {
+            "weight": 1.0,
+            "reason": "neutral",
+            "same_color_values": list(same_color_values),
+            "left_anchor": None,
+            "right_anchor": None,
+            "anchor_gap": None,
+            "nearest_anchor_distance": None,
+        }
         if not same_color_values:
-            return 1.0
+            return component
 
-        weight = 1.0
         nearest_anchor_distance = min(abs(guessed_numeric - value) for value in same_color_values)
+        component["nearest_anchor_distance"] = nearest_anchor_distance
         if nearest_anchor_distance >= 4:
-            weight *= 0.97
+            component["weight"] *= 0.97
+            component["reason"] = "far_from_same_color_anchor"
 
         left_anchor = max((value for value in same_color_values if value < guessed_numeric), default=None)
         right_anchor = min((value for value in same_color_values if value > guessed_numeric), default=None)
+        component["left_anchor"] = left_anchor
+        component["right_anchor"] = right_anchor
 
         if left_anchor is None or right_anchor is None:
-            return weight
+            return component
 
         anchor_gap = right_anchor - left_anchor
+        component["anchor_gap"] = anchor_gap
         midpoint = (left_anchor + right_anchor) / 2.0
         if anchor_gap == 2 and guessed_numeric == left_anchor + 1:
-            weight *= self.TARGET_VALUE_SANDWICH_EXACT_BONUS
+            component["weight"] *= self.TARGET_VALUE_SANDWICH_EXACT_BONUS
+            component["reason"] = "same_color_sandwich_exact"
         elif 2 < anchor_gap <= 4 and left_anchor < guessed_numeric < right_anchor:
-            weight *= self.TARGET_VALUE_SANDWICH_FILL_BONUS
+            component["weight"] *= self.TARGET_VALUE_SANDWICH_FILL_BONUS
+            component["reason"] = "same_color_gap_fill"
         elif anchor_gap >= 6 and abs(guessed_numeric - midpoint) <= 1.0:
-            weight *= self.TARGET_VALUE_WIDE_GAP_CENTER_BONUS
-        return weight
+            component["weight"] *= self.TARGET_VALUE_WIDE_GAP_CENTER_BONUS
+            component["reason"] = "same_color_wide_gap_center"
+        return component
 
-    def _score_local_boundary_value_fit(
+    def _local_boundary_value_component(
         self,
         guessed_numeric: int,
         low: Optional[int],
         high: Optional[int],
         width: int,
-    ) -> float:
+    ) -> Dict[str, Any]:
+        component: Dict[str, Any] = {
+            "weight": 1.0,
+            "reason": "neutral",
+            "low": low,
+            "high": high,
+            "width": width,
+        }
         if low is None and high is None:
-            return 1.0
+            return component
 
-        weight = 1.0
         if low is not None and high is not None:
             if width <= 3 and guessed_numeric in {low + 1, high - 1}:
-                weight *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
+                component["weight"] *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
+                component["reason"] = "narrow_boundary_probe"
             elif width >= 6:
                 midpoint = (low + high) / 2.0
+                component["midpoint"] = midpoint
                 if abs(guessed_numeric - midpoint) <= 1.0:
-                    weight *= self.TARGET_VALUE_WIDE_GAP_CENTER_BONUS
+                    component["weight"] *= self.TARGET_VALUE_WIDE_GAP_CENTER_BONUS
+                    component["reason"] = "wide_gap_center_probe"
                 elif guessed_numeric in {low + 1, high - 1}:
-                    weight *= self.TARGET_VALUE_WIDE_GAP_EDGE_PENALTY
-            return weight
+                    component["weight"] *= self.TARGET_VALUE_WIDE_GAP_EDGE_PENALTY
+                    component["reason"] = "wide_gap_edge_hug"
+            return component
 
         if low is not None and guessed_numeric == low + 1:
-            weight *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
+            component["weight"] *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
+            component["reason"] = "single_sided_low_boundary_probe"
         if high is not None and guessed_numeric == high - 1:
-            weight *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
-        return weight
+            component["weight"] *= self.TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS
+            component["reason"] = "single_sided_high_boundary_probe"
+        return component
+
+    def _dominant_signal(
+        self,
+        components_by_source: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        dominant_source = "neutral"
+        dominant_reason = "neutral"
+        dominant_weight = 1.0
+        dominant_strength = 0.0
+
+        for source, component in components_by_source.items():
+            weight = float(component.get("weight", 1.0))
+            strength = abs(weight - 1.0)
+            if strength <= dominant_strength + self.EPSILON:
+                continue
+            dominant_source = source
+            dominant_reason = str(component.get("reason", "neutral"))
+            dominant_weight = weight
+            dominant_strength = strength
+
+        return {
+            "source": dominant_source,
+            "reason": dominant_reason,
+            "weight": dominant_weight,
+        }
 
     def _same_color_numeric_values(
         self,
@@ -1933,6 +2167,11 @@ class GameController:
                 "effective_weight_sum": 0.0,
                 "opponent_hidden_count": 0,
                 "risk_factor": default_risk,
+                "behavior_debug": {
+                    "hypothesis_source": "map_blended_posterior",
+                    "signal_count": 0,
+                    "signals": [],
+                },
                 "should_stop": True,
             }
 
@@ -1964,6 +2203,16 @@ class GameController:
         target_player_id = getattr(self.game_state, "target_player_id", None)
         target_probability_matrix = full_probability_matrix.get(target_player_id, {})
         target_hard_matrix = hard_full_probability_matrix.get(target_player_id, {})
+        behavior_debug_hypothesis = self._map_hypothesis_from_matrix(full_probability_matrix)
+        behavior_debug = {
+            "hypothesis_source": "map_blended_posterior",
+            "signal_count": sum(len(signals) for signals in guess_signals_by_player.values()),
+            "signals": self.behavior_model.explain_guess_signals(
+                behavior_debug_hypothesis,
+                guess_signals_by_player,
+                self.game_state,
+            ),
+        }
 
         return {
             "best_move": best_move,
@@ -1990,6 +2239,7 @@ class GameController:
             "risk_factor": risk_factor,
             "effective_weight_sum": total_soft_weight,
             "behavior_blend": SOFT_BEHAVIOR_BLEND,
+            "behavior_debug": behavior_debug,
             "decision_summary": decision_summary,
             "should_stop": best_move is None,
         }
@@ -2038,3 +2288,22 @@ class GameController:
                 }
             )
         return serialized_players
+
+    def _map_hypothesis_from_matrix(
+        self,
+        full_probability_matrix: FullProbabilityMatrix,
+    ) -> Dict[str, Dict[int, Card]]:
+        hypothesis_by_player: Dict[str, Dict[int, Card]] = {}
+        for player_id, probability_matrix in full_probability_matrix.items():
+            player_hypothesis: Dict[int, Card] = {}
+            for slot_index, slot_distribution in probability_matrix.items():
+                if not slot_distribution:
+                    continue
+                best_card = max(
+                    slot_distribution.items(),
+                    key=lambda item: (item[1], -card_sort_key(item[0])[0], -card_sort_key(item[0])[1]),
+                )[0]
+                player_hypothesis[slot_index] = best_card
+            if player_hypothesis:
+                hypothesis_by_player[player_id] = player_hypothesis
+        return hypothesis_by_player
