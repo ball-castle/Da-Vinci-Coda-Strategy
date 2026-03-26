@@ -232,6 +232,192 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(finishable_score, spread_score)
 
+    def test_continue_decision_rewards_same_target_followup_cluster(self):
+        model = BehavioralLikelihoodModel()
+
+        focused_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=7, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=6, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+        dispersed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=11, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=6, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+
+        focused_signal = model.build_guess_signals(focused_world)["me"][0]
+        dispersed_signal = model.build_guess_signals(dispersed_world)["me"][0]
+        focused_weight = model._score_continue_decision(
+            focused_world,
+            {"opp": {0: ("W", 5), 1: ("B", 6)}, "side": {1: ("W", 5)}},
+            focused_signal,
+        )
+        dispersed_weight = model._score_continue_decision(
+            dispersed_world,
+            {"opp": {0: ("W", 5), 1: ("B", 8)}, "side": {1: ("W", 5)}},
+            dispersed_signal,
+        )
+
+        self.assertGreater(focused_weight, dispersed_weight)
+
+    def test_stop_decision_penalizes_releasing_same_target_followup_cluster(self):
+        model = BehavioralLikelihoodModel()
+
+        focused_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=7, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=6, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                )
+            ],
+        )
+        dispersed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=11, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=6, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                )
+            ],
+        )
+
+        focused_signal = model.build_guess_signals(focused_world)["me"][0]
+        dispersed_signal = model.build_guess_signals(dispersed_world)["me"][0]
+        focused_weight = model._score_continue_decision(
+            focused_world,
+            {"opp": {0: ("W", 5), 1: ("B", 6)}, "side": {1: ("W", 5)}},
+            focused_signal,
+        )
+        dispersed_weight = model._score_continue_decision(
+            dispersed_world,
+            {"opp": {0: ("W", 5), 1: ("B", 8)}, "side": {1: ("W", 5)}},
+            dispersed_signal,
+        )
+
+        self.assertLess(focused_weight, dispersed_weight)
+
     def test_target_player_selection_prefers_more_attackable_target(self):
         model = BehavioralLikelihoodModel()
 

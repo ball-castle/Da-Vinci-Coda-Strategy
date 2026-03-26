@@ -219,6 +219,8 @@ class BehavioralLikelihoodModel:
     CONTINUE_LOW_ATTACKABILITY_PENALTY = 0.93
     STOP_LOW_ATTACKABILITY_BONUS = 1.04
     STOP_HIGH_ATTACKABILITY_PENALTY = 0.97
+    CONTINUE_TARGET_FOLLOWUP_BONUS = 1.06
+    STOP_TARGET_FOLLOWUP_PENALTY = 0.94
     CONTINUE_TARGET_FINISH_BONUS = 1.05
     STOP_TARGET_FINISH_PENALTY = 0.96
 
@@ -1265,12 +1267,20 @@ class BehavioralLikelihoodModel:
             acting_player_id=signal.guesser_id,
             exclude_slot=slot_key(signal.target_player_id, signal.target_slot_index),
         )
+        target_followup_attackability = self._player_attackability(
+            game_state,
+            hypothesis_by_player,
+            signal.target_player_id,
+            exclude_slot=slot_key(signal.target_player_id, signal.target_slot_index),
+        )
         if signal.continued_turn:
             weight = (
                 self.CONTINUE_HIGH_ATTACKABILITY_BONUS
                 if attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD
                 else self.CONTINUE_LOW_ATTACKABILITY_PENALTY
             )
+            if target_followup_attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD:
+                weight *= self.CONTINUE_TARGET_FOLLOWUP_BONUS
             if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
                 weight *= self.CONTINUE_TARGET_FINISH_BONUS
             return weight
@@ -1280,6 +1290,8 @@ class BehavioralLikelihoodModel:
             if attackability < self.ATTACKABILITY_TIGHT_THRESHOLD
             else self.STOP_HIGH_ATTACKABILITY_PENALTY
         )
+        if target_followup_attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD:
+            weight *= self.STOP_TARGET_FOLLOWUP_PENALTY
         if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
             weight *= self.STOP_TARGET_FINISH_PENALTY
         return weight
