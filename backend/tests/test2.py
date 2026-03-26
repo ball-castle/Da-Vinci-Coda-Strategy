@@ -68,6 +68,61 @@ class ContinuationLikelihoodTests(unittest.TestCase):
         self.assertGreater(tight["continue_likelihood"], loose["continue_likelihood"])
         self.assertGreater(tight["attackability"], loose["attackability"])
 
+    def test_continue_likelihood_rewards_secondary_attackable_followup(self):
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+        signals = model.build_guess_signals(game_state)
+
+        clustered_matrix = {
+            "side": {
+                0: {("W", 3): 0.74, ("W", 4): 0.26},
+                1: {("B", 6): 0.70, ("B", 7): 0.30},
+            }
+        }
+        isolated_matrix = {
+            "side": {
+                0: {("W", 3): 0.74, ("W", 4): 0.26},
+                1: {("B", 5): 0.26, ("B", 7): 0.24, ("B", 9): 0.25, ("B", 11): 0.25},
+            }
+        }
+
+        clustered = model.estimate_continue_likelihood(clustered_matrix, signals, "me")
+        isolated = model.estimate_continue_likelihood(isolated_matrix, signals, "me")
+
+        self.assertGreater(clustered["continue_likelihood"], isolated["continue_likelihood"])
+        self.assertGreater(clustered["attackability"], isolated["attackability"])
+
     def test_continuation_profile_prefers_recent_continue_signal(self):
         model = BehavioralLikelihoodModel()
         recent_continue_world = GameState(
