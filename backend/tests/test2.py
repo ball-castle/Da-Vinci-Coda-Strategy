@@ -60,6 +60,84 @@ class ContinuationLikelihoodTests(unittest.TestCase):
         self.assertGreater(tight["continue_likelihood"], loose["continue_likelihood"])
         self.assertGreater(tight["attackability"], loose["attackability"])
 
+    def test_continuation_profile_prefers_recent_continue_signal(self):
+        model = BehavioralLikelihoodModel()
+        recent_continue_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=True,
+                    continued_turn=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=True,
+                    continued_turn=True,
+                ),
+            ],
+        )
+        recent_stop_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=recent_continue_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=True,
+                    continued_turn=True,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=True,
+                    continued_turn=False,
+                ),
+            ],
+        )
+
+        recent_continue_profile = model.continuation_profile(
+            model.build_guess_signals(recent_continue_world),
+            "me",
+        )
+        recent_stop_profile = model.continuation_profile(
+            model.build_guess_signals(recent_stop_world),
+            "me",
+        )
+
+        self.assertGreater(
+            recent_continue_profile["continue_rate"],
+            recent_stop_profile["continue_rate"],
+        )
+        self.assertEqual(recent_continue_profile["observations"], 2.0)
+        self.assertEqual(recent_stop_profile["observations"], 2.0)
+
 
 class StopThresholdTests(unittest.TestCase):
     def test_evaluate_all_moves_applies_behavior_guidance_to_continuation(self):

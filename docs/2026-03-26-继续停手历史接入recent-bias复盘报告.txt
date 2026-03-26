@@ -1,0 +1,141 @@
+2026-03-26 继续停手历史接入 recent-bias 复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+本轮开始前，先重新读取了 `direction/VinCi.txt`。
+
+按照方向文档里“目标 3 是风险敞口评估，且应由动态信息持续更新”的主线，这一轮继续补强 continue / stop 主链里的历史利用方式：
+
+- 不再只看总 continue_rate
+- 也开始显式吸收最近一次 continue / stop 结果
+
+此前 `continuation_profile(...)` 的结构是：
+
+- 所有历史继续次数做一个平滑比例
+
+这有一个边界：
+
+- 很久以前的历史
+- 和最近一次刚发生的行为
+- 权重几乎一样
+
+但在达芬奇里，最近一次命中后到底是继续还是停，
+往往比更早的旧历史更能反映当前玩家状态。
+
+二、本轮核心改动
+1. continuation history 新增 recent bias
+位置：
+- `backend/app/core/engine.py`
+
+本轮新增常量：
+
+- `CONTINUATION_RECENT_CONTINUE_BONUS`
+- `CONTINUATION_RECENT_STOP_PENALTY`
+
+并把 `continuation_profile(...)` 从：
+
+- 单纯 Beta 平滑 continue_rate
+
+推进成：
+
+- 先做历史 continue_rate 平滑
+- 再根据最近一次观测到的 `continued_turn`
+  - 最近继续：轻量上调
+  - 最近停手：轻量下调
+
+也就是说：
+
+- 历史整体倾向仍然保留
+- 但最近一次行为会开始产生额外方向性
+
+2. recent bias 直接进入 continue_likelihood 主链
+由于 `estimate_continue_likelihood(...)` 本来就是读取：
+
+- `continuation_profile(...)`
+
+所以这一轮不需要再在决策层加一套新公式，
+recent bias 会自动进入：
+
+- `history_continue_rate`
+- 以及最终 `continue_likelihood`
+
+这让 continue / stop 主链第一次开始明确表达：
+
+- “最近一次刚继续”的人
+- 和“最近一次刚停手”的人
+
+不该被当成同一种历史玩家。
+
+三、本轮收益
+这一轮最大的收益，是把 continue / stop 历史从“纯累计统计”推进到了“累计统计 + 最近行为方向”。
+
+这比只看总 continue_rate 更符合真实对局节奏，因为：
+
+- 玩家行为风格会漂移
+- 最近一手的选择，往往比更早历史更有信息量
+
+所以这一轮不是调解释，
+而是在直接增强：
+
+- 目标 3 的行为历史建模
+- 以及 continue / stop 的逻辑敏感度
+
+四、测试补充
+文件：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_continuation_profile_prefers_recent_continue_signal`
+
+验证内容：
+
+- 两段历史的 continue 总次数相同
+- 观测数也相同
+- 唯一区别是最近一次：
+  - 一个是继续
+  - 一个是停手
+
+预期：
+
+- recent-continue 历史得到更高的 `continue_rate`
+
+同时回归旧测试：
+- `test_continue_likelihood_prefers_tighter_success_world`
+
+确认这轮没有把 attackability 主链打歪。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 44 个测试全部通过
+
+六、当前阶段判断
+本轮仍然属于逻辑主线推进，而不是解释推进。
+
+它补的不是新 debug 字段，
+而是 continue / stop 历史真正如何进入决策。
+
+从方向文档角度看，这一轮是在继续把：
+
+- “命中后继续还是停止”
+
+从静态启发式，往更动态的历史条件化评估推进。
+
+七、下一步建议
+下一轮可以继续沿两条逻辑线之一推进：
+
+1. 把 recent bias 继续细化成“成功后 recent bias”和“失败后 recent bias”
+目标：
+- 让 continue history 不只看 continue / stop
+- 也看这些选择发生在什么结果之后
+
+2. 把固定 case / benchmark 体系开始抽成独立测试骨架
+目标：
+- 从这轮开始同步补验证体系
+- 避免逻辑主线越做越长但缺少标准对照集
+
+八、一句话总结
+本轮推进的核心成果，是把 continue / stop 历史从“纯累计 continue_rate”推进成了“累计 continue_rate + 最近行为方向”的 recent-bias 结构，让 continue / stop 主链开始显式吸收最近一次继续或停手的条件化信息。
