@@ -5,6 +5,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tests.fixed_controller_cases import (
+    FixedControllerCase,
+    all_serialized_candidate_cards,
+    assert_serialized_probability_mass,
+    run_controller_case,
+)
 from app.core.engine import BehavioralLikelihoodModel, GameController
 from app.core.state import CardSlot, GameState, GuessAction, PlayerState
 
@@ -832,6 +838,58 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
 
 class GameControllerOutputTests(unittest.TestCase):
+    def test_fixed_controller_case_runner_covers_public_reveal_collapse(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                    revealed_player_id="side",
+                    revealed_slot_index=1,
+                    revealed_color="W",
+                    revealed_value=5,
+                )
+            ],
+        )
+
+        result = run_controller_case(
+            FixedControllerCase(
+                name="public_reveal_collapse",
+                game_state=game_state,
+                checks=(assert_serialized_probability_mass,),
+            )
+        )
+
+        self.assertNotIn(["W", 5], all_serialized_candidate_cards(result))
+
     def test_controller_returns_decision_summary_and_reasoning(self):
         game_state = GameState(
             self_player_id="me",

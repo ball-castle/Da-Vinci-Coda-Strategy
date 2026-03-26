@@ -1,0 +1,121 @@
+2026-03-26 固定 controller case 骨架与公开翻牌回归复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+本轮开始前，先重新读取了 `direction/VinCi.txt`。
+
+按照方向文档和 `algorithm_remaining_optimizations.txt` 的 P0 优先级，这一轮不继续追加解释层，而是开始补固定 case / 验证体系。
+
+本轮要解决的问题很实际：
+
+- 现在逻辑主线已经开始继续增强
+- 但如果没有可复用的固定 case 骨架
+- 后面很容易出现“每轮都过了单测，但没有统一回归抓手”
+
+所以这一轮的目标是：
+
+- 先建立一套最小可复用的 controller case runner
+- 再用一条“公开惩罚翻牌”场景把概率归一化和公共信息坍缩锁住
+
+二、本轮核心改动
+1. 新增固定 controller case helper
+位置：
+- `backend/tests/fixed_controller_cases.py`
+
+本轮新增：
+
+- `FixedControllerCase`
+- `run_controller_case(...)`
+- `assert_serialized_probability_mass(...)`
+- `all_serialized_candidate_cards(...)`
+
+这套 helper 的作用是：
+
+- 让后续固定 case 不必每轮都手写一套 controller 调用和基础断言
+- 把 case 结构慢慢沉淀成可复用基座
+
+2. 首条固定 case 锁定“公开惩罚翻牌后，候选池不能再包含该牌”
+位置：
+- `backend/tests/test1.py`
+
+新增测试：
+- `test_fixed_controller_case_runner_covers_public_reveal_collapse`
+
+场景内容：
+
+- `side` 猜 `opp` 失败
+- 并公开自己的一张惩罚翻牌 `W5`
+
+验证两件事：
+
+1. controller 输出的序列化概率矩阵都保持归一化
+2. `W5` 不能再出现在任何隐藏槽位候选池里
+
+这一步的价值很直接：
+
+- 它把“公开信息坍缩”从功能层描述
+- 变成了固定 case 的可回归断言
+
+三、本轮收益
+这一轮最大的收益，不是算法打分更花，
+而是验证体系终于开始有固定 case 骨架。
+
+这和前几轮最大的区别在于：
+
+- 前几轮主要补局部逻辑
+- 这一轮开始给后续逻辑增强铺对照基座
+
+同时，本轮选的第一条 case 也不是随便挑的，
+而是直接选了方向文档里一直强调的：
+
+- 公共信息更新后应立刻影响全场状态空间
+
+也就是说，这轮是“验证体系补强”和“公共信息坍缩主线”同时推进。
+
+四、测试补充
+文件：
+- `backend/tests/fixed_controller_cases.py`
+- `backend/tests/test1.py`
+
+新增内容：
+
+- 固定 case runner
+- 概率矩阵归一化断言
+- 公开翻牌后候选池剔除断言
+
+并回归旧测试：
+- `test_controller_returns_decision_summary_and_reasoning`
+
+确认这轮没有把 controller 既有输出结构打歪。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 45 个测试全部通过
+
+六、当前阶段判断
+本轮不是解释推进，而是标准的验证体系推进。
+
+它的价值在于：
+
+- 后面再继续做动作似然和公共信息逻辑增强
+- 就不必每次都重新搭测试上下文
+
+这符合方向文档里“固定测试局面集”和“基础验证体系”优先级必须提前的要求。
+
+七、下一步建议
+下一轮可以继续沿两个方向之一推进：
+
+1. 再补一条固定 case，锁定 continue / stop 的关键边界
+目标：
+- 把决策主链也逐步纳入固定 case 回归
+
+2. 回到动作似然主线，继续补“失败后换目标”的历史逻辑
+目标：
+- 让目标玩家选择进一步吸收结果条件化证据
+
+八、一句话总结
+本轮推进的核心成果，是把固定 case / 验证体系正式拉进了工程主线：先用可复用的 controller case helper 建好基座，再用一条公开惩罚翻牌场景把概率归一化和公共信息坍缩锁成回归断言。
