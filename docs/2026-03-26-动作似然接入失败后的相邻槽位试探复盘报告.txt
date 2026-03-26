@@ -1,0 +1,26 @@
+【本轮目标】
+把“同一玩家上猜错后，转去相邻槽位继续试探”也纳入动作似然。
+
+【本轮改动】
+1. 在 `backend/app/core/engine.py` 新增 `TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS = 1.03`。
+2. 新增 `_is_adjacent_slot_probe_after_failure(...)`：
+   - 上一手必须失败
+   - 当前仍攻击同一玩家
+   - 当前槽位与上一手槽位相邻
+3. 在 `_score_target_slot_selection(...)` 中接入该 bonus。
+4. 在 `backend/tests/test1.py` 新增
+   `test_target_slot_selection_prefers_adjacent_probe_after_failed_guess`。
+
+【为什么这轮值得做】
+失败并不等于完全重开推理。
+很多时候 miss 只是在局部边界上排掉一个点，下一手合理的动作是沿着附近槽位继续压缩不确定区间。
+这轮让 slot 选择开始体现这种“失败后的局部试探惯性”。
+
+【结果】
+在新测试里，`slot1 miss -> slot2` 会比 `slot1 miss -> slot3` 获得更高的 slot-selection 权重。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续补 continuation profile，把“连续两次成功继续”的历史强度比单次继续更明显地区分出来。

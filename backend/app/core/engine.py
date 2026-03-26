@@ -186,6 +186,7 @@ class BehavioralLikelihoodModel:
     TARGET_SLOT_WEAK_CHOICE_PENALTY = 0.91
     TARGET_SLOT_RETRY_AFTER_FAILURE_BONUS = 1.06
     TARGET_SLOT_CONFIDENT_ADJACENT_FOLLOW_BONUS = 1.04
+    TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS = 1.03
 
     TARGET_IN_INTERVAL_BONUS = 1.15
     TARGET_NARROW_INTERVAL_BONUS = 1.10
@@ -605,6 +606,8 @@ class BehavioralLikelihoodModel:
             weight *= self.TARGET_SLOT_RETRY_AFTER_FAILURE_BONUS
         if self._is_adjacent_slot_follow_after_confident_hit(game_state, signal):
             weight *= self.TARGET_SLOT_CONFIDENT_ADJACENT_FOLLOW_BONUS
+        if self._is_adjacent_slot_probe_after_failure(game_state, signal):
+            weight *= self.TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS
         return weight
 
     def _is_adjacent_slot_follow_after_confident_hit(
@@ -616,6 +619,20 @@ class BehavioralLikelihoodModel:
         if previous_signal is None:
             return False
         if not previous_signal.result or not previous_signal.continued_turn:
+            return False
+        if previous_signal.target_player_id != signal.target_player_id:
+            return False
+        return abs(previous_signal.target_slot_index - signal.target_slot_index) == 1
+
+    def _is_adjacent_slot_probe_after_failure(
+        self,
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> bool:
+        previous_signal = self._previous_guess_signal(game_state, signal)
+        if previous_signal is None:
+            return False
+        if previous_signal.result:
             return False
         if previous_signal.target_player_id != signal.target_player_id:
             return False
