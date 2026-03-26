@@ -4266,6 +4266,8 @@ class GameController:
             "active_opening_ratio": {"B": 0.0, "W": 0.0},
             "best_value_stddev": {"B": 0.0, "W": 0.0},
             "win_probability_stddev": {"B": 0.0, "W": 0.0},
+            "best_value_floor": {"B": 0.0, "W": 0.0},
+            "win_probability_floor": {"B": 0.0, "W": 0.0},
             "sample_count": {"B": 0.0, "W": 0.0},
         }
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4373,6 +4375,13 @@ class GameController:
                     for probability in sampled_win_probabilities
                 ) / len(sampled_win_probabilities)
             )
+            floor_count = max(1, len(sampled_best_values) // 2)
+            summary["best_value_floor"][color] = sum(
+                sorted(sampled_best_values)[:floor_count]
+            ) / floor_count
+            summary["win_probability_floor"][color] = sum(
+                sorted(sampled_win_probabilities)[:floor_count]
+            ) / floor_count
 
         best_value_gap = (
             summary["expected_best_value"]["B"] - summary["expected_best_value"]["W"]
@@ -4420,6 +4429,14 @@ class GameController:
         win_probability_stddev_gap = (
             summary["win_probability_stddev"]["W"]
             - summary["win_probability_stddev"]["B"]
+        )
+        best_value_floor_gap = (
+            summary["best_value_floor"]["B"]
+            - summary["best_value_floor"]["W"]
+        )
+        win_probability_floor_gap = (
+            summary["win_probability_floor"]["B"]
+            - summary["win_probability_floor"]["W"]
         )
         summary["value_pressure"] = {
             "B": clamp(
@@ -4516,6 +4533,22 @@ class GameController:
         summary["win_probability_stability_pressure"] = {
             "B": clamp(win_probability_stddev_gap, -1.0, 1.0),
             "W": clamp(-win_probability_stddev_gap, -1.0, 1.0),
+        }
+        summary["best_value_floor_pressure"] = {
+            "B": clamp(
+                best_value_floor_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-best_value_floor_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["win_probability_floor_pressure"] = {
+            "B": clamp(win_probability_floor_gap, -1.0, 1.0),
+            "W": clamp(-win_probability_floor_gap, -1.0, 1.0),
         }
         return summary
 
@@ -4665,6 +4698,8 @@ class GameController:
                     + (0.08 * draw_rollout["active_opening_pressure"][color])
                     + (0.08 * draw_rollout["best_value_stability_pressure"][color])
                     + (0.05 * draw_rollout["win_probability_stability_pressure"][color])
+                    + (0.10 * draw_rollout["best_value_floor_pressure"][color])
+                    + (0.06 * draw_rollout["win_probability_floor_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -4764,10 +4799,18 @@ class GameController:
             "draw_rollout_best_value_stddev_white": draw_rollout["best_value_stddev"]["W"],
             "draw_rollout_win_probability_stddev_black": draw_rollout["win_probability_stddev"]["B"],
             "draw_rollout_win_probability_stddev_white": draw_rollout["win_probability_stddev"]["W"],
+            "draw_rollout_best_value_floor_black": draw_rollout["best_value_floor"]["B"],
+            "draw_rollout_best_value_floor_white": draw_rollout["best_value_floor"]["W"],
+            "draw_rollout_win_probability_floor_black": draw_rollout["win_probability_floor"]["B"],
+            "draw_rollout_win_probability_floor_white": draw_rollout["win_probability_floor"]["W"],
             "draw_rollout_best_value_stability_pressure_black": draw_rollout["best_value_stability_pressure"]["B"],
             "draw_rollout_best_value_stability_pressure_white": draw_rollout["best_value_stability_pressure"]["W"],
             "draw_rollout_win_probability_stability_pressure_black": draw_rollout["win_probability_stability_pressure"]["B"],
             "draw_rollout_win_probability_stability_pressure_white": draw_rollout["win_probability_stability_pressure"]["W"],
+            "draw_rollout_best_value_floor_pressure_black": draw_rollout["best_value_floor_pressure"]["B"],
+            "draw_rollout_best_value_floor_pressure_white": draw_rollout["best_value_floor_pressure"]["W"],
+            "draw_rollout_win_probability_floor_pressure_black": draw_rollout["win_probability_floor_pressure"]["B"],
+            "draw_rollout_win_probability_floor_pressure_white": draw_rollout["win_probability_floor_pressure"]["W"],
             "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
