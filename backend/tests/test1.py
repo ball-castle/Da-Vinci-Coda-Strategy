@@ -150,6 +150,88 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(tight_score, loose_score)
 
+    def test_continue_signal_prefers_pressing_finishable_target(self):
+        model = BehavioralLikelihoodModel()
+
+        finishable_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=6, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+        spread_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=9, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+
+        finishable_score = model.score_hypothesis(
+            {"opp": {0: ("W", 5)}, "side": {0: ("W", 7)}},
+            model.build_guess_signals(finishable_world),
+            finishable_world,
+        )
+        spread_score = model.score_hypothesis(
+            {"opp": {0: ("W", 5), 1: ("B", 6)}, "side": {0: ("W", 7)}},
+            model.build_guess_signals(spread_world),
+            spread_world,
+        )
+
+        self.assertGreater(finishable_score, spread_score)
+
     def test_target_player_selection_prefers_more_attackable_target(self):
         model = BehavioralLikelihoodModel()
 

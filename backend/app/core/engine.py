@@ -219,6 +219,8 @@ class BehavioralLikelihoodModel:
     CONTINUE_LOW_ATTACKABILITY_PENALTY = 0.93
     STOP_LOW_ATTACKABILITY_BONUS = 1.04
     STOP_HIGH_ATTACKABILITY_PENALTY = 0.97
+    CONTINUE_TARGET_FINISH_BONUS = 1.05
+    STOP_TARGET_FINISH_PENALTY = 0.96
 
     ATTACKABILITY_TIGHT_THRESHOLD = 0.34
     CONTINUATION_PRIOR_BASE = 0.52
@@ -1226,13 +1228,36 @@ class BehavioralLikelihoodModel:
             exclude_slot=slot_key(signal.target_player_id, signal.target_slot_index),
         )
         if signal.continued_turn:
-            if attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD:
-                return self.CONTINUE_HIGH_ATTACKABILITY_BONUS
-            return self.CONTINUE_LOW_ATTACKABILITY_PENALTY
+            weight = (
+                self.CONTINUE_HIGH_ATTACKABILITY_BONUS
+                if attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD
+                else self.CONTINUE_LOW_ATTACKABILITY_PENALTY
+            )
+            if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
+                weight *= self.CONTINUE_TARGET_FINISH_BONUS
+            return weight
 
-        if attackability < self.ATTACKABILITY_TIGHT_THRESHOLD:
-            return self.STOP_LOW_ATTACKABILITY_BONUS
-        return self.STOP_HIGH_ATTACKABILITY_PENALTY
+        weight = (
+            self.STOP_LOW_ATTACKABILITY_BONUS
+            if attackability < self.ATTACKABILITY_TIGHT_THRESHOLD
+            else self.STOP_HIGH_ATTACKABILITY_PENALTY
+        )
+        if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
+            weight *= self.STOP_TARGET_FINISH_PENALTY
+        return weight
+
+    def _remaining_hidden_on_target_after_hit(
+        self,
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> int:
+        hidden_count = 0
+        for slot in game_state.resolved_ordered_slots(signal.target_player_id):
+            if slot.slot_index == signal.target_slot_index:
+                continue
+            if slot.known_card() is None:
+                hidden_count += 1
+        return hidden_count
 
     def _player_attackability(
         self,
