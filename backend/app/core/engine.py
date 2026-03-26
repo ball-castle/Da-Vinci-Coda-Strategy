@@ -4211,6 +4211,37 @@ class GameController:
         safety_gap = clamp((my_hidden_count - target_hidden_count) * 0.08, -0.18, 0.24)
         return clamp(1.0 + finish_bonus + safety_gap, 0.78, 1.55)
 
+    def _draw_rollout_phase_gate(self) -> float:
+        target_hidden_count = len(self.game_state.target_hidden_slots())
+        my_hidden_count = self.game_state.my_hidden_count()
+        late_target_bonus = clamp((2 - target_hidden_count) * 0.16, 0.0, 0.32)
+        safety_bonus = clamp((my_hidden_count - target_hidden_count) * 0.08, -0.18, 0.24)
+        return clamp(0.62 + late_target_bonus + safety_bonus, 0.32, 1.0)
+
+    def _draw_rollout_plan_gate(
+        self,
+        draw_rollout: Dict[str, Any],
+    ) -> float:
+        active_opening_signal = max(
+            draw_rollout["active_opening_ratio"]["B"],
+            draw_rollout["active_opening_ratio"]["W"],
+        )
+        opening_plan_signal = max(
+            draw_rollout["opening_plan"]["B"]["support_ratio"],
+            draw_rollout["opening_plan"]["W"]["support_ratio"],
+        )
+        information_signal = max(
+            abs(draw_rollout["information_gain_pressure"]["B"]),
+            abs(draw_rollout["information_gain_pressure"]["W"]),
+        )
+        return clamp(
+            (0.50 * active_opening_signal)
+            + (0.35 * opening_plan_signal)
+            + (0.15 * information_signal),
+            0.18,
+            1.0,
+        )
+
     def _representative_draw_cards(self, color: str) -> List[Card]:
         cards = sorted(
             (card for card in self.inference_engine.available_cards if card[0] == color),
@@ -4899,8 +4930,13 @@ class GameController:
             0.0,
             1.0,
         )
+        draw_rollout_phase_gate = self._draw_rollout_phase_gate()
+        draw_rollout_plan_gate = self._draw_rollout_plan_gate(draw_rollout)
         draw_rollout_activation_scale = (
-            draw_rollout_edge_scale * draw_rollout_target_gate
+            draw_rollout_edge_scale
+            * draw_rollout_target_gate
+            * draw_rollout_phase_gate
+            * draw_rollout_plan_gate
         )
         color_scores = {
             color: base_color_scores[color]
@@ -5072,6 +5108,8 @@ class GameController:
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
             "draw_rollout_target_gate": draw_rollout_target_gate,
+            "draw_rollout_phase_gate": draw_rollout_phase_gate,
+            "draw_rollout_plan_gate": draw_rollout_plan_gate,
             "draw_rollout_activation_scale": draw_rollout_activation_scale,
             "offense_pressure_black": offense_pressure["B"],
             "offense_pressure_white": offense_pressure["W"],

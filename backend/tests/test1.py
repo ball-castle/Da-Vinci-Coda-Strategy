@@ -2586,6 +2586,10 @@ class GameControllerOutputTests(unittest.TestCase):
             conservative_summary["target_attack_window_factor"],
         )
         self.assertGreater(
+            aggressive_summary["draw_rollout_phase_gate"],
+            conservative_summary["draw_rollout_phase_gate"],
+        )
+        self.assertGreater(
             aggressive_summary["black_score"] - aggressive_summary["white_score"],
             conservative_summary["black_score"] - conservative_summary["white_score"],
         )
