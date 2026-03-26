@@ -180,6 +180,7 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_BREAK_CONFIDENT_CHAIN_PENALTY = 0.95
     TARGET_PLAYER_SWITCH_AFTER_FAILURE_BONUS = 1.04
     TARGET_PLAYER_SWITCH_FAILURE_CONTINUITY_BONUS = 1.03
+    PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
 
     TARGET_SLOT_BEST_MATCH_BONUS = 1.08
     TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
@@ -1234,7 +1235,19 @@ class BehavioralLikelihoodModel:
                     slot.slot_index,
                 ),
             )
-        return best
+        hidden_count = sum(
+            1
+            for slot in game_state.resolved_ordered_slots(player_id)
+            if slot.known_card() is None
+            and (exclude_slot is None or slot_key(player_id, slot.slot_index) != exclude_slot)
+        )
+        finish_pressure = clamp(
+            (self.PLAYER_FINISH_PRESSURE_REFERENCE - float(hidden_count))
+            / self.PLAYER_FINISH_PRESSURE_REFERENCE,
+            0.0,
+            1.0,
+        )
+        return best * (1.0 + (0.10 * finish_pressure))
 
     def _slot_attackability(
         self,
