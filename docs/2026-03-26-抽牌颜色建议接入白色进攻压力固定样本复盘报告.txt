@@ -1,0 +1,24 @@
+【本轮目标】
+把白色隐藏压力更高时推荐摸白的样本，也收成 fixed controller case。
+
+【本轮改动】
+1. 在 `backend/tests/test1.py` 新增
+   `test_fixed_controller_case_runner_prefers_white_under_white_offense_pressure`。
+2. 固定 case 直接约束：
+   - `recommended_color == "W"`
+   - `dominant_factor == "offense_pressure"`
+
+【为什么这轮值得做】
+到这里 draw offense 才算有了完整的黑白两侧固定基准。
+否则我们仍然只能证明黑色那条链稳定，不能保证白色分支不会被后续改动打坏。
+
+【结果】
+draw offense 现在已经形成：
+1. 黑色进攻压力 fixed case
+2. 白色进攻压力 fixed case
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+开始把 availability 从 tiebreak 提升为真正的 draw pressure，处理“某种颜色剩余池太薄时不值得去摸”的情形。

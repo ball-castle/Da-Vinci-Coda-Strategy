@@ -1796,6 +1796,56 @@ class GameControllerOutputTests(unittest.TestCase):
         )
         self.assertEqual(draw_summary["dominant_factor"], "offense_pressure")
 
+    def test_fixed_controller_case_runner_prefers_white_under_white_offense_pressure(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=2, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=7, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        result = run_controller_case(
+            FixedControllerCase(
+                name="draw_color_white_under_white_offense_pressure",
+                game_state=game_state,
+                checks=(
+                    assert_draw_color_recommendation("W"),
+                    assert_draw_color_dominant_factor("offense_pressure"),
+                ),
+            )
+        )
+
+        self.assertGreater(
+            result["draw_color_summary"]["offense_pressure_white"],
+            result["draw_color_summary"]["offense_pressure_black"],
+        )
+
     def test_controller_returns_behavior_debug_for_guess_actions(self):
         game_state = GameState(
             self_player_id="me",
