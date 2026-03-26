@@ -3919,6 +3919,7 @@ class GameController:
     DRAW_ROLLOUT_SAMPLE_LIMIT = 4
     DRAW_ROLLOUT_VALUE_REFERENCE = 8.0
     DRAW_ROLLOUT_EDGE_WINDOW = 0.80
+    DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE = 3.0
 
     def __init__(self, game_state: GameState):
         self.game_state = game_state
@@ -4253,6 +4254,8 @@ class GameController:
         summary: Dict[str, Any] = {
             "expected_best_value": {"B": 0.0, "W": 0.0},
             "expected_immediate_value": {"B": 0.0, "W": 0.0},
+            "expected_continuation_value": {"B": 0.0, "W": 0.0},
+            "expected_continuation_likelihood": {"B": 0.0, "W": 0.0},
             "sample_count": {"B": 0.0, "W": 0.0},
         }
 
@@ -4264,6 +4267,8 @@ class GameController:
 
             best_value_sum = 0.0
             immediate_value_sum = 0.0
+            continuation_value_sum = 0.0
+            continuation_likelihood_sum = 0.0
             for drawn_card in sample_cards:
                 simulated_state = self._simulated_draw_game_state(drawn_card)
                 simulated_result = GameController(simulated_state).run_turn(
@@ -4274,10 +4279,22 @@ class GameController:
                 immediate_value_sum += float(
                     simulated_decision.get("best_immediate_value", 0.0)
                 )
+                continuation_value_sum += float(
+                    simulated_decision.get("best_continuation_value", 0.0)
+                )
+                continuation_likelihood_sum += float(
+                    simulated_decision.get("best_continuation_likelihood", 0.0)
+                )
 
             summary["expected_best_value"][color] = best_value_sum / len(sample_cards)
             summary["expected_immediate_value"][color] = (
                 immediate_value_sum / len(sample_cards)
+            )
+            summary["expected_continuation_value"][color] = (
+                continuation_value_sum / len(sample_cards)
+            )
+            summary["expected_continuation_likelihood"][color] = (
+                continuation_likelihood_sum / len(sample_cards)
             )
 
         best_value_gap = (
@@ -4286,6 +4303,14 @@ class GameController:
         immediate_value_gap = (
             summary["expected_immediate_value"]["B"]
             - summary["expected_immediate_value"]["W"]
+        )
+        continuation_value_gap = (
+            summary["expected_continuation_value"]["B"]
+            - summary["expected_continuation_value"]["W"]
+        )
+        continuation_likelihood_gap = (
+            summary["expected_continuation_likelihood"]["B"]
+            - summary["expected_continuation_likelihood"]["W"]
         )
         summary["value_pressure"] = {
             "B": clamp(
@@ -4310,6 +4335,22 @@ class GameController:
                 -1.0,
                 1.0,
             ),
+        }
+        summary["continuation_value_pressure"] = {
+            "B": clamp(
+                continuation_value_gap / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-continuation_value_gap) / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["continuation_likelihood_pressure"] = {
+            "B": clamp(continuation_likelihood_gap, -1.0, 1.0),
+            "W": clamp(-continuation_likelihood_gap, -1.0, 1.0),
         }
         return summary
 
@@ -4436,6 +4477,8 @@ class GameController:
                 * (
                     (0.16 * draw_rollout["value_pressure"][color])
                     + (0.08 * draw_rollout["immediate_value_pressure"][color])
+                    + (0.10 * draw_rollout["continuation_value_pressure"][color])
+                    + (0.06 * draw_rollout["continuation_likelihood_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -4499,6 +4542,14 @@ class GameController:
             "draw_rollout_value_pressure_white": draw_rollout["value_pressure"]["W"],
             "draw_rollout_immediate_value_pressure_black": draw_rollout["immediate_value_pressure"]["B"],
             "draw_rollout_immediate_value_pressure_white": draw_rollout["immediate_value_pressure"]["W"],
+            "draw_rollout_expected_continuation_value_black": draw_rollout["expected_continuation_value"]["B"],
+            "draw_rollout_expected_continuation_value_white": draw_rollout["expected_continuation_value"]["W"],
+            "draw_rollout_expected_continuation_likelihood_black": draw_rollout["expected_continuation_likelihood"]["B"],
+            "draw_rollout_expected_continuation_likelihood_white": draw_rollout["expected_continuation_likelihood"]["W"],
+            "draw_rollout_continuation_value_pressure_black": draw_rollout["continuation_value_pressure"]["B"],
+            "draw_rollout_continuation_value_pressure_white": draw_rollout["continuation_value_pressure"]["W"],
+            "draw_rollout_continuation_likelihood_pressure_black": draw_rollout["continuation_likelihood_pressure"]["B"],
+            "draw_rollout_continuation_likelihood_pressure_white": draw_rollout["continuation_likelihood_pressure"]["W"],
             "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
