@@ -1743,6 +1743,43 @@ class StopThresholdTests(unittest.TestCase):
             weak_summary["stop_score"],
         )
 
+    def test_fixed_decision_case_runner_covers_post_hit_behavior_support_continue_edge(self):
+        case = FixedDecisionCase(
+            name="post_hit_behavior_support_continue_edge",
+            my_hidden_count=2,
+            all_moves=[
+                {
+                    "expected_value": 0.676,
+                    "win_probability": 0.56,
+                    "continuation_value": 0.18,
+                    "continuation_likelihood": 0.60,
+                    "attackability_after_hit": 0.74,
+                    "post_hit_continue_score": 0.36,
+                    "post_hit_stop_score": 0.24,
+                    "post_hit_continue_margin": 0.10,
+                    "post_hit_best_gap": 0.24,
+                    "post_hit_guidance_multiplier": 1.08,
+                    "post_hit_guidance_support": 0.82,
+                    "post_hit_guidance_stable_ratio": 1.0,
+                    "post_hit_guidance_signal_count": 2.0,
+                    "post_hit_top_k_expected_continue_margin": 0.03,
+                    "post_hit_top_k_continue_margin": 0.10,
+                    "post_hit_top_k_expected_support_ratio": 0.33,
+                    "post_hit_top_k_support_ratio": 1.0,
+                },
+            ],
+            checks=(
+                assert_continue_summary,
+                assert_positive_breakdown("post_hit_behavior_support_adjustment"),
+                assert_positive_breakdown("post_hit_behavior_support_gain"),
+            ),
+        )
+
+        best_move, summary = run_decision_case(case)
+
+        self.assertIsNotNone(best_move)
+        self.assertEqual(summary["decision_score_breakdown"]["post_hit_behavior_fragility_drag"], 0.0)
+
     def test_choose_best_move_continues_on_strong_continuation_edge(self):
         engine = DaVinciDecisionEngine()
         all_moves = [

@@ -1,0 +1,27 @@
+【本轮目标】
+把 `post_hit_behavior_support_adjustment` 为正、最终把窄 continue edge 顶过去的场景收成固定 decision case。
+
+【本轮改动】
+1. 在 `backend/tests/test2.py` 新增
+   `test_fixed_decision_case_runner_covers_post_hit_behavior_support_continue_edge`。
+2. 固定 case 复现：
+   - `post_hit_continue_margin` 为窄正值
+   - guidance/support 强
+   - top-k support 明显好于 expected
+   - 最终应该继续
+3. case 直接约束：
+   - `post_hit_behavior_support_adjustment > 0`
+   - `post_hit_behavior_support_gain > 0`
+
+【为什么这轮值得做】
+前面 stop 边界的固定样本已经不少，但“为什么继续”这边还缺一个明确钉住 `behavior support` 的 case。
+如果后续调 guidance 或 top-k support 逻辑，这类窄边界很容易从 continue 悄悄滑回 stop。
+
+【结果】
+固定 decision case 现在覆盖了一类“behavior support 主导继续”的样本。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续把对应的负向样本也收成 fixed case，把 `fragility drag` 主导停手单独钉住。
