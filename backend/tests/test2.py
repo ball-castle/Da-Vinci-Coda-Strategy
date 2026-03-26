@@ -1911,6 +1911,30 @@ class StopThresholdTests(unittest.TestCase):
         self.assertGreater(summary["stop_score"], summary["stop_threshold"])
         self.assertLess(summary["continue_margin"], 0.0)
 
+    def test_fixed_decision_case_runner_covers_low_attackability_stop_edge(self):
+        case = FixedDecisionCase(
+            name="low_attackability_stop_edge",
+            my_hidden_count=2,
+            all_moves=[
+                {
+                    "expected_value": 0.79,
+                    "win_probability": 0.55,
+                    "continuation_value": 0.18,
+                    "continuation_likelihood": 0.51,
+                    "attackability_after_hit": 0.05,
+                },
+            ],
+            checks=(
+                assert_stop_summary,
+                assert_positive_breakdown("attackability_pressure"),
+            ),
+        )
+
+        best_move, summary = run_decision_case(case)
+
+        self.assertIsNone(best_move)
+        self.assertEqual(summary["decision_score_breakdown"]["rollout_pressure"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

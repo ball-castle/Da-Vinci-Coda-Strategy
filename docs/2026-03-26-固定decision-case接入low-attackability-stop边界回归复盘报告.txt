@@ -1,0 +1,25 @@
+【本轮目标】
+把“post-hit 后续可攻击面太差，因此应该停手”的场景沉淀成固定 decision case。
+
+【本轮改动】
+1. 在 `backend/tests/test2.py` 新增
+   `test_fixed_decision_case_runner_covers_low_attackability_stop_edge`。
+2. 固定 case 直接复现：
+   - `continuation_likelihood` 仍有一定值
+   - 但 `attackability_after_hit` 极低
+   - 最终应停手
+3. case 额外要求 `attackability_pressure > 0`，并断言 `rollout_pressure = 0`，避免把 stop 原因混淆成 rollout 分支。
+
+【为什么这轮值得做】
+`VinCi` 里对“继续还是停”强调的是长期收益，而不只是单手命中率。
+如果猜中之后场面没有可继续攻击的高把握点，那么就算当前动作本身不差，也不应该硬冲。
+这类 stop 原因和 rollout negative 不是一回事，应该单独留固定样本。
+
+【结果】
+fixed decision case 现在额外覆盖了 `low attackability stop` 分支。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续回到动作似然，把“失败后同玩家跨槽推进”的局部连续性也补进 slot selection。
