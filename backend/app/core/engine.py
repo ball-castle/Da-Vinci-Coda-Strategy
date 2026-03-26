@@ -190,6 +190,7 @@ class BehavioralLikelihoodModel:
     TARGET_SLOT_RETRY_AFTER_FAILURE_BONUS = 1.06
     TARGET_SLOT_CONFIDENT_ADJACENT_FOLLOW_BONUS = 1.04
     TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS = 1.03
+    SLOT_EDGE_PRESSURE_BONUS = 1.05
 
     TARGET_IN_INTERVAL_BONUS = 1.15
     TARGET_NARROW_INTERVAL_BONUS = 1.10
@@ -1310,6 +1311,14 @@ class BehavioralLikelihoodModel:
         confidence = color_bonus / max(1.0, float(width + 1))
         if low is not None and high is not None and width <= 2:
             confidence *= 1.08
+        if (
+            getattr(slot, "color", None) is not None
+            and (
+                (low is None and high is not None and high <= 4)
+                or (high is None and low is not None and low >= (MAX_CARD_VALUE - 4))
+            )
+        ):
+            confidence *= self.SLOT_EDGE_PRESSURE_BONUS
         return confidence
 
     def _previous_guess_signal(

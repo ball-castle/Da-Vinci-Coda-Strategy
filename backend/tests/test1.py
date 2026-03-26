@@ -489,6 +489,71 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(tight_slot_score, loose_slot_score)
 
+    def test_target_slot_selection_prefers_edge_pinned_slot_on_equal_width(self):
+        model = BehavioralLikelihoodModel()
+
+        edge_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="B", value=8, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                )
+            ],
+        )
+        middle_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=edge_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=2,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                )
+            ],
+        )
+
+        edge_signal = model.build_guess_signals(edge_world)["me"][-1]
+        middle_signal = model.build_guess_signals(middle_world)["me"][-1]
+        hypothesis = {"opp": {0: ("W", 2), 2: ("W", 6)}}
+
+        edge_score = model._score_target_slot_selection(
+            edge_world,
+            hypothesis,
+            edge_signal,
+        )
+        middle_score = model._score_target_slot_selection(
+            middle_world,
+            hypothesis,
+            middle_signal,
+        )
+
+        self.assertGreater(edge_score, middle_score)
+
     def test_target_player_selection_rewards_switch_after_failed_target_when_new_target_is_tighter(self):
         model = BehavioralLikelihoodModel()
 
