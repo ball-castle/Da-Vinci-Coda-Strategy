@@ -3923,7 +3923,10 @@ class GameController:
         self.behavior_model = BehavioralLikelihoodModel()
         self.decision_engine = DaVinciDecisionEngine()
 
-    def _build_draw_color_summary(self) -> Dict[str, Any]:
+    def _build_draw_color_summary(
+        self,
+        full_probability_matrix: Optional[FullProbabilityMatrix] = None,
+    ) -> Dict[str, Any]:
         available_counts = {
             color: sum(1 for card in self.inference_engine.available_cards if card[0] == color)
             for color in CARD_COLORS
@@ -3943,12 +3946,28 @@ class GameController:
             "B": (self_counts["W"] - self_counts["B"]) / total_self_cards,
             "W": (self_counts["B"] - self_counts["W"]) / total_self_cards,
         }
+        hidden_color_mass = {"B": 0.0, "W": 0.0}
+        total_hidden_positions = 0.0
+        for probability_matrix in (full_probability_matrix or {}).values():
+            for slot_distribution in probability_matrix.values():
+                total_hidden_positions += 1.0
+                for card, probability in slot_distribution.items():
+                    hidden_color_mass[card[0]] += float(probability)
+        if total_hidden_positions > 0.0:
+            offense_pressure = {
+                color: hidden_color_mass[color] / total_hidden_positions
+                for color in CARD_COLORS
+            }
+        else:
+            offense_pressure = {"B": 0.0, "W": 0.0}
         availability_tiebreak = {
             color: available_counts[color] / total_available
             for color in CARD_COLORS
         }
         color_scores = {
-            color: defense_balance[color] + (0.01 * availability_tiebreak[color])
+            color: defense_balance[color]
+            + (0.35 * offense_pressure[color])
+            + (0.01 * availability_tiebreak[color])
             for color in CARD_COLORS
         }
         recommended_color = max(
@@ -3961,11 +3980,18 @@ class GameController:
             "white_score": color_scores["W"],
             "defense_balance_black": defense_balance["B"],
             "defense_balance_white": defense_balance["W"],
+            "offense_pressure_black": offense_pressure["B"],
+            "offense_pressure_white": offense_pressure["W"],
             "available_black_count": available_counts["B"],
             "available_white_count": available_counts["W"],
             "self_black_count": self_counts["B"],
             "self_white_count": self_counts["W"],
-            "dominant_factor": "defense_balance",
+            "dominant_factor": (
+                "offense_pressure"
+                if abs(offense_pressure["B"] - offense_pressure["W"])
+                > abs(defense_balance["B"] - defense_balance["W"])
+                else "defense_balance"
+            ),
         }
 
     def run_turn(self) -> Dict[str, Any]:
@@ -4027,6 +4053,7 @@ class GameController:
             behavior_debug_signals=behavior_debug["signals"],
             acting_player_id=self.game_state.self_player_id,
         )
+        draw_color_summary = self._build_draw_color_summary(full_probability_matrix)
 
         hidden_index_by_player = {
             player_id: self.game_state.hidden_index_by_slot(player_id)

@@ -1,0 +1,30 @@
+【本轮目标】
+让 draw color 不再只看我方颜色失衡，也开始看对手隐藏分布里哪种颜色的进攻需求更高。
+
+【本轮改动】
+1. 扩展 `GameController._build_draw_color_summary(...)`，允许接收 `full_probability_matrix`。
+2. 新增：
+   - `offense_pressure_black`
+   - `offense_pressure_white`
+3. 进攻压力按“隐藏槽位里的颜色期望占比”聚合。
+4. `recommended_color` 现在由：
+   - 防守平衡
+   - 进攻压力
+   - 极小 availability tiebreak
+   三部分共同决定。
+5. 在 `backend/tests/test1.py` 新增
+   `test_controller_draw_color_summary_uses_hidden_color_pressure_for_offense`。
+
+【为什么这轮值得做】
+direction 文档里，抽黑/抽白不是纯防守问题。
+如果场上的隐藏信息明显集中在某一种颜色上，抽那种颜色本身就是更有进攻价值的动作。
+这轮先把最基础的颜色期望占比接进来，为后面更细的熵/不确定性版本打底。
+
+【结果】
+在新测试里，即便我方手牌黑白平衡，只要对手隐藏槽位明显黑色占优，`draw_color_summary` 也会开始推荐摸黑。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续把 draw color 的进攻项钉成 fixed controller case，并补白色进攻压力的镜像样本。
