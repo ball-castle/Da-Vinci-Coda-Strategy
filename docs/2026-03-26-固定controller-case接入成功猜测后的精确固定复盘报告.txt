@@ -1,0 +1,26 @@
+【本轮目标】
+把“正确猜中后，目标槽位应被精确固定成单候选”收成固定 controller case。
+
+【本轮改动】
+1. 在 `backend/tests/test1.py` 新增
+   `test_fixed_controller_case_runner_covers_successful_guess_exact_fixation`。
+2. 固定 case 复现：
+   - `opp.slot1` 原本是隐藏白牌
+   - 我方猜中 `W3`
+   - 结果矩阵里该槽位应只剩一个候选 `W3`
+3. 通过 `assert_slot_candidate_set(...)` 直接约束目标槽位候选集合为单元素集合。
+
+【为什么这轮值得做】
+公共信息坍缩不只是 miss 后缩区间，也包括 hit 后直接把槽位钉死。
+如果这一步在后续推理里被意外放松，会直接破坏全场概率矩阵的可信度。
+
+【结果】
+controller fixed case 现在同时覆盖了：
+1. miss + public reveal 后的区间坍缩
+2. hit 后的精确固定
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续补 controller 侧的另一个 collapse 断言：公开失败牌不仅影响 target，也要影响其他玩家的候选池去重。

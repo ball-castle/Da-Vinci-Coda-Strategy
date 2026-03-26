@@ -1209,6 +1209,63 @@ class GameControllerOutputTests(unittest.TestCase):
 
         self.assertNotIn(["W", 6], all_serialized_candidate_cards(result))
 
+    def test_fixed_controller_case_runner_covers_successful_guess_exact_fixation(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=True,
+                )
+            ],
+        )
+
+        result = run_controller_case(
+            FixedControllerCase(
+                name="successful_guess_exact_fixation",
+                game_state=game_state,
+                checks=(
+                    assert_serialized_probability_mass,
+                    assert_slot_candidate_set(
+                        player_id="opp",
+                        slot_index=1,
+                        expected_cards=(
+                            ("W", 3),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        self.assertIn(["W", 3], all_serialized_candidate_cards(result))
+
     def test_controller_returns_decision_summary_and_reasoning(self):
         game_state = GameState(
             self_player_id="me",
