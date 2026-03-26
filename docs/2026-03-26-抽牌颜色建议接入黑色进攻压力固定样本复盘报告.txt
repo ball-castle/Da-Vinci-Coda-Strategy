@@ -1,0 +1,24 @@
+【本轮目标】
+把“黑色隐藏压力更高，因此推荐摸黑”的 draw color 样本收成 fixed controller case。
+
+【本轮改动】
+1. 在 `backend/tests/fixed_controller_cases.py` 新增
+   `assert_draw_color_dominant_factor(expected_factor)`。
+2. 在 `backend/tests/test1.py` 新增
+   `test_fixed_controller_case_runner_prefers_black_under_black_offense_pressure`。
+3. 固定 case 直接约束：
+   - `recommended_color == "B"`
+   - `dominant_factor == "offense_pressure"`
+
+【为什么这轮值得做】
+上一轮虽然已经有普通输出测试，但 draw color 一旦进入后续调参，仍然需要固定样本来防止“进攻项又被防守项覆盖”。
+把黑色进攻压力收成 fixed case，后续才能更稳地迭代白色镜像和更细的权重。
+
+【结果】
+draw color 的黑色进攻压力现在已经进入 fixed controller case。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续补白色进攻压力的镜像样本，形成黑白两侧对照。

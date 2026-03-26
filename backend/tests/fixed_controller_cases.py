@@ -158,3 +158,15 @@ def assert_draw_color_recommendation(expected_color: str) -> Callable[[Dict[str,
             )
 
     return _assert
+
+
+def assert_draw_color_dominant_factor(expected_factor: str) -> Callable[[Dict[str, Any]], None]:
+    def _assert(result: Dict[str, Any]) -> None:
+        draw_summary = result.get("draw_color_summary", {})
+        actual = draw_summary.get("dominant_factor")
+        if actual != expected_factor:
+            raise AssertionError(
+                f"Expected draw_color_summary.dominant_factor={expected_factor!r}, got {actual!r}."
+            )
+
+    return _assert
