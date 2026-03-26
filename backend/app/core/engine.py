@@ -4264,6 +4264,8 @@ class GameController:
             "color_alignment_ratio": {"B": 0.0, "W": 0.0},
             "expected_best_gap": {"B": 0.0, "W": 0.0},
             "active_opening_ratio": {"B": 0.0, "W": 0.0},
+            "best_value_stddev": {"B": 0.0, "W": 0.0},
+            "win_probability_stddev": {"B": 0.0, "W": 0.0},
             "sample_count": {"B": 0.0, "W": 0.0},
         }
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4284,6 +4286,8 @@ class GameController:
             color_alignment_count = 0.0
             best_gap_sum = 0.0
             active_opening_count = 0.0
+            sampled_best_values: List[float] = []
+            sampled_win_probabilities: List[float] = []
             for drawn_card in sample_cards:
                 simulated_state = self._simulated_draw_game_state(drawn_card)
                 simulated_result = GameController(simulated_state).run_turn(
@@ -4291,7 +4295,13 @@ class GameController:
                 )
                 simulated_decision = simulated_result.get("decision_summary", {})
                 simulated_best_move = simulated_result.get("best_move")
-                best_value_sum += float(simulated_decision.get("best_expected_value", 0.0))
+                sampled_best_value = float(
+                    simulated_decision.get("best_expected_value", 0.0)
+                )
+                sampled_win_probability = float(
+                    simulated_decision.get("best_win_probability", 0.0)
+                )
+                best_value_sum += sampled_best_value
                 immediate_value_sum += float(
                     simulated_decision.get("best_immediate_value", 0.0)
                 )
@@ -4301,13 +4311,13 @@ class GameController:
                 continuation_likelihood_sum += float(
                     simulated_decision.get("best_continuation_likelihood", 0.0)
                 )
-                win_probability_sum += float(
-                    simulated_decision.get("best_win_probability", 0.0)
-                )
+                win_probability_sum += sampled_win_probability
                 attackability_sum += float(
                     simulated_decision.get("best_attackability_after_hit", 0.0)
                 )
                 best_gap_sum += float(simulated_decision.get("best_gap", 0.0))
+                sampled_best_values.append(sampled_best_value)
+                sampled_win_probabilities.append(sampled_win_probability)
                 if isinstance(simulated_best_move, dict):
                     active_opening_count += 1.0
                     if (
@@ -4349,6 +4359,20 @@ class GameController:
             summary["active_opening_ratio"][color] = (
                 active_opening_count / len(sample_cards)
             )
+            best_value_mean = summary["expected_best_value"][color]
+            win_probability_mean = summary["expected_win_probability"][color]
+            summary["best_value_stddev"][color] = sqrt(
+                sum(
+                    (value - best_value_mean) ** 2
+                    for value in sampled_best_values
+                ) / len(sampled_best_values)
+            )
+            summary["win_probability_stddev"][color] = sqrt(
+                sum(
+                    (probability - win_probability_mean) ** 2
+                    for probability in sampled_win_probabilities
+                ) / len(sampled_win_probabilities)
+            )
 
         best_value_gap = (
             summary["expected_best_value"]["B"] - summary["expected_best_value"]["W"]
@@ -4388,6 +4412,14 @@ class GameController:
         active_opening_gap = (
             summary["active_opening_ratio"]["B"]
             - summary["active_opening_ratio"]["W"]
+        )
+        best_value_stddev_gap = (
+            summary["best_value_stddev"]["W"]
+            - summary["best_value_stddev"]["B"]
+        )
+        win_probability_stddev_gap = (
+            summary["win_probability_stddev"]["W"]
+            - summary["win_probability_stddev"]["B"]
         )
         summary["value_pressure"] = {
             "B": clamp(
@@ -4468,6 +4500,22 @@ class GameController:
         summary["active_opening_pressure"] = {
             "B": clamp(active_opening_gap, -1.0, 1.0),
             "W": clamp(-active_opening_gap, -1.0, 1.0),
+        }
+        summary["best_value_stability_pressure"] = {
+            "B": clamp(
+                best_value_stddev_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-best_value_stddev_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["win_probability_stability_pressure"] = {
+            "B": clamp(win_probability_stddev_gap, -1.0, 1.0),
+            "W": clamp(-win_probability_stddev_gap, -1.0, 1.0),
         }
         return summary
 
@@ -4615,6 +4663,8 @@ class GameController:
                     + (0.06 * draw_rollout["color_alignment_pressure"][color])
                     + (0.10 * draw_rollout["best_gap_pressure"][color])
                     + (0.08 * draw_rollout["active_opening_pressure"][color])
+                    + (0.08 * draw_rollout["best_value_stability_pressure"][color])
+                    + (0.05 * draw_rollout["win_probability_stability_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -4710,6 +4760,14 @@ class GameController:
             "draw_rollout_best_gap_pressure_white": draw_rollout["best_gap_pressure"]["W"],
             "draw_rollout_active_opening_pressure_black": draw_rollout["active_opening_pressure"]["B"],
             "draw_rollout_active_opening_pressure_white": draw_rollout["active_opening_pressure"]["W"],
+            "draw_rollout_best_value_stddev_black": draw_rollout["best_value_stddev"]["B"],
+            "draw_rollout_best_value_stddev_white": draw_rollout["best_value_stddev"]["W"],
+            "draw_rollout_win_probability_stddev_black": draw_rollout["win_probability_stddev"]["B"],
+            "draw_rollout_win_probability_stddev_white": draw_rollout["win_probability_stddev"]["W"],
+            "draw_rollout_best_value_stability_pressure_black": draw_rollout["best_value_stability_pressure"]["B"],
+            "draw_rollout_best_value_stability_pressure_white": draw_rollout["best_value_stability_pressure"]["W"],
+            "draw_rollout_win_probability_stability_pressure_black": draw_rollout["win_probability_stability_pressure"]["B"],
+            "draw_rollout_win_probability_stability_pressure_white": draw_rollout["win_probability_stability_pressure"]["W"],
             "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
