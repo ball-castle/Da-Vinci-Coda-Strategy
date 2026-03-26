@@ -3019,6 +3019,64 @@ class GameControllerOutputTests(unittest.TestCase):
             draw_summary["draw_rollout_win_probability_floor_black"],
         )
 
+    def test_controller_draw_color_summary_uses_post_draw_information_rollout(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=2, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=7, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        result = GameController(game_state).run_turn()
+        draw_summary = result["draw_color_summary"]
+
+        self.assertGreater(
+            abs(
+                draw_summary["draw_rollout_expected_information_gain_black"]
+                - draw_summary["draw_rollout_expected_information_gain_white"]
+            ),
+            0.01,
+        )
+        self.assertGreater(
+            abs(
+                draw_summary["draw_rollout_information_gain_floor_black"]
+                - draw_summary["draw_rollout_information_gain_floor_white"]
+            ),
+            0.01,
+        )
+        self.assertNotEqual(
+            draw_summary["draw_rollout_information_gain_pressure_black"],
+            draw_summary["draw_rollout_information_gain_pressure_white"],
+        )
+
     def test_controller_returns_behavior_debug_for_guess_actions(self):
         game_state = GameState(
             self_player_id="me",

@@ -1894,6 +1894,7 @@ class DaVinciDecisionEngine:
                 "best_behavior_guidance_signal_count": 0.0,
                 "best_behavior_guidance_support": 0.0,
                 "best_behavior_guidance_stable_ratio": 0.0,
+                "best_information_gain": 0.0,
                 "best_ranking_score": 0.0,
                 "best_behavior_match_multiplier": self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER,
                 "best_behavior_match_bonus": 0.0,
@@ -2000,6 +2001,7 @@ class DaVinciDecisionEngine:
             "best_behavior_guidance_signal_count": best_move.get("behavior_guidance_signal_count", 0.0),
             "best_behavior_guidance_support": best_move.get("behavior_guidance_support", 0.0),
             "best_behavior_guidance_stable_ratio": best_move.get("behavior_guidance_stable_ratio", 0.0),
+            "best_information_gain": best_move.get("information_gain", 0.0),
             "best_ranking_score": best_move.get("ranking_score", best_move["expected_value"]),
             "best_behavior_match_multiplier": best_move.get("behavior_match_multiplier", self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER),
             "best_behavior_match_bonus": best_move.get("behavior_match_bonus", 0.0),
@@ -4268,6 +4270,8 @@ class GameController:
             "win_probability_stddev": {"B": 0.0, "W": 0.0},
             "best_value_floor": {"B": 0.0, "W": 0.0},
             "win_probability_floor": {"B": 0.0, "W": 0.0},
+            "expected_information_gain": {"B": 0.0, "W": 0.0},
+            "information_gain_floor": {"B": 0.0, "W": 0.0},
             "sample_count": {"B": 0.0, "W": 0.0},
         }
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4290,6 +4294,7 @@ class GameController:
             active_opening_count = 0.0
             sampled_best_values: List[float] = []
             sampled_win_probabilities: List[float] = []
+            sampled_information_gains: List[float] = []
             for drawn_card in sample_cards:
                 simulated_state = self._simulated_draw_game_state(drawn_card)
                 simulated_result = GameController(simulated_state).run_turn(
@@ -4302,6 +4307,9 @@ class GameController:
                 )
                 sampled_win_probability = float(
                     simulated_decision.get("best_win_probability", 0.0)
+                )
+                sampled_information_gain = float(
+                    simulated_decision.get("best_information_gain", 0.0)
                 )
                 best_value_sum += sampled_best_value
                 immediate_value_sum += float(
@@ -4320,6 +4328,7 @@ class GameController:
                 best_gap_sum += float(simulated_decision.get("best_gap", 0.0))
                 sampled_best_values.append(sampled_best_value)
                 sampled_win_probabilities.append(sampled_win_probability)
+                sampled_information_gains.append(sampled_information_gain)
                 if isinstance(simulated_best_move, dict):
                     active_opening_count += 1.0
                     if (
@@ -4382,6 +4391,12 @@ class GameController:
             summary["win_probability_floor"][color] = sum(
                 sorted(sampled_win_probabilities)[:floor_count]
             ) / floor_count
+            summary["expected_information_gain"][color] = sum(
+                sampled_information_gains
+            ) / len(sampled_information_gains)
+            summary["information_gain_floor"][color] = sum(
+                sorted(sampled_information_gains)[:floor_count]
+            ) / floor_count
 
         best_value_gap = (
             summary["expected_best_value"]["B"] - summary["expected_best_value"]["W"]
@@ -4437,6 +4452,14 @@ class GameController:
         win_probability_floor_gap = (
             summary["win_probability_floor"]["B"]
             - summary["win_probability_floor"]["W"]
+        )
+        information_gain_gap = (
+            summary["expected_information_gain"]["B"]
+            - summary["expected_information_gain"]["W"]
+        )
+        information_gain_floor_gap = (
+            summary["information_gain_floor"]["B"]
+            - summary["information_gain_floor"]["W"]
         )
         summary["value_pressure"] = {
             "B": clamp(
@@ -4549,6 +4572,30 @@ class GameController:
         summary["win_probability_floor_pressure"] = {
             "B": clamp(win_probability_floor_gap, -1.0, 1.0),
             "W": clamp(-win_probability_floor_gap, -1.0, 1.0),
+        }
+        summary["information_gain_pressure"] = {
+            "B": clamp(
+                information_gain_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-information_gain_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["information_gain_floor_pressure"] = {
+            "B": clamp(
+                information_gain_floor_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-information_gain_floor_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
         }
         return summary
 
@@ -4700,6 +4747,8 @@ class GameController:
                     + (0.05 * draw_rollout["win_probability_stability_pressure"][color])
                     + (0.10 * draw_rollout["best_value_floor_pressure"][color])
                     + (0.06 * draw_rollout["win_probability_floor_pressure"][color])
+                    + (0.08 * draw_rollout["information_gain_pressure"][color])
+                    + (0.05 * draw_rollout["information_gain_floor_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -4803,6 +4852,10 @@ class GameController:
             "draw_rollout_best_value_floor_white": draw_rollout["best_value_floor"]["W"],
             "draw_rollout_win_probability_floor_black": draw_rollout["win_probability_floor"]["B"],
             "draw_rollout_win_probability_floor_white": draw_rollout["win_probability_floor"]["W"],
+            "draw_rollout_expected_information_gain_black": draw_rollout["expected_information_gain"]["B"],
+            "draw_rollout_expected_information_gain_white": draw_rollout["expected_information_gain"]["W"],
+            "draw_rollout_information_gain_floor_black": draw_rollout["information_gain_floor"]["B"],
+            "draw_rollout_information_gain_floor_white": draw_rollout["information_gain_floor"]["W"],
             "draw_rollout_best_value_stability_pressure_black": draw_rollout["best_value_stability_pressure"]["B"],
             "draw_rollout_best_value_stability_pressure_white": draw_rollout["best_value_stability_pressure"]["W"],
             "draw_rollout_win_probability_stability_pressure_black": draw_rollout["win_probability_stability_pressure"]["B"],
@@ -4811,6 +4864,10 @@ class GameController:
             "draw_rollout_best_value_floor_pressure_white": draw_rollout["best_value_floor_pressure"]["W"],
             "draw_rollout_win_probability_floor_pressure_black": draw_rollout["win_probability_floor_pressure"]["B"],
             "draw_rollout_win_probability_floor_pressure_white": draw_rollout["win_probability_floor_pressure"]["W"],
+            "draw_rollout_information_gain_pressure_black": draw_rollout["information_gain_pressure"]["B"],
+            "draw_rollout_information_gain_pressure_white": draw_rollout["information_gain_pressure"]["W"],
+            "draw_rollout_information_gain_floor_pressure_black": draw_rollout["information_gain_floor_pressure"]["B"],
+            "draw_rollout_information_gain_floor_pressure_white": draw_rollout["information_gain_floor_pressure"]["W"],
             "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
