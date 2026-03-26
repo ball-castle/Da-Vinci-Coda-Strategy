@@ -4272,6 +4272,30 @@ class GameController:
             "win_probability_floor": {"B": 0.0, "W": 0.0},
             "expected_information_gain": {"B": 0.0, "W": 0.0},
             "information_gain_floor": {"B": 0.0, "W": 0.0},
+            "opening_plan": {
+                "B": {
+                    "target_player_id": None,
+                    "target_slot_index": None,
+                    "guess_card": None,
+                    "support_ratio": 0.0,
+                    "guess_support_ratio": 0.0,
+                    "expected_value": 0.0,
+                    "win_probability": 0.0,
+                    "information_gain": 0.0,
+                    "continuation_likelihood": 0.0,
+                },
+                "W": {
+                    "target_player_id": None,
+                    "target_slot_index": None,
+                    "guess_card": None,
+                    "support_ratio": 0.0,
+                    "guess_support_ratio": 0.0,
+                    "expected_value": 0.0,
+                    "win_probability": 0.0,
+                    "information_gain": 0.0,
+                    "continuation_likelihood": 0.0,
+                },
+            },
             "sample_count": {"B": 0.0, "W": 0.0},
         }
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4295,6 +4319,7 @@ class GameController:
             sampled_best_values: List[float] = []
             sampled_win_probabilities: List[float] = []
             sampled_information_gains: List[float] = []
+            opening_plan_stats: Dict[Tuple[str, int], Dict[str, Any]] = {}
             for drawn_card in sample_cards:
                 simulated_state = self._simulated_draw_game_state(drawn_card)
                 simulated_result = GameController(simulated_state).run_turn(
@@ -4331,16 +4356,64 @@ class GameController:
                 sampled_information_gains.append(sampled_information_gain)
                 if isinstance(simulated_best_move, dict):
                     active_opening_count += 1.0
+                    simulated_target_player_id = simulated_best_move.get(
+                        "target_player_id"
+                    )
+                    simulated_target_slot_index = simulated_best_move.get(
+                        "target_slot_index"
+                    )
+                    if (
+                        isinstance(simulated_target_player_id, str)
+                        and isinstance(simulated_target_slot_index, int)
+                    ):
+                        target_key = (
+                            simulated_target_player_id,
+                            simulated_target_slot_index,
+                        )
+                        target_stats = opening_plan_stats.setdefault(
+                            target_key,
+                            {
+                                "count": 0.0,
+                                "expected_value_sum": 0.0,
+                                "win_probability_sum": 0.0,
+                                "information_gain_sum": 0.0,
+                                "continuation_likelihood_sum": 0.0,
+                                "guess_counts": defaultdict(float),
+                            },
+                        )
+                        target_stats["count"] += 1.0
+                        target_stats["expected_value_sum"] += sampled_best_value
+                        target_stats["win_probability_sum"] += sampled_win_probability
+                        target_stats["information_gain_sum"] += sampled_information_gain
+                        target_stats["continuation_likelihood_sum"] += float(
+                            simulated_decision.get("best_continuation_likelihood", 0.0)
+                        )
+                    guessed_card = simulated_best_move.get("guess_card")
+                    normalized_guessed_card = (
+                        (guessed_card[0], guessed_card[1])
+                        if isinstance(guessed_card, (list, tuple))
+                        and len(guessed_card) == 2
+                        else None
+                    )
+                    if (
+                        isinstance(simulated_target_player_id, str)
+                        and isinstance(simulated_target_slot_index, int)
+                        and normalized_guessed_card is not None
+                    ):
+                        opening_plan_stats[
+                            (
+                                simulated_target_player_id,
+                                simulated_target_slot_index,
+                            )
+                        ]["guess_counts"][normalized_guessed_card] += 1.0
                     if (
                         target_player_id is not None
                         and simulated_best_move.get("target_player_id") == target_player_id
                     ):
                         target_retention_count += 1.0
-                    guessed_card = simulated_best_move.get("guess_card")
                     if (
-                        isinstance(guessed_card, tuple)
-                        and len(guessed_card) == 2
-                        and guessed_card[0] == color
+                        normalized_guessed_card is not None
+                        and normalized_guessed_card[0] == color
                     ):
                         color_alignment_count += 1.0
 
@@ -4397,6 +4470,59 @@ class GameController:
             summary["information_gain_floor"][color] = sum(
                 sorted(sampled_information_gains)[:floor_count]
             ) / floor_count
+            if opening_plan_stats:
+                dominant_target_key, dominant_target_stats = max(
+                    opening_plan_stats.items(),
+                    key=lambda item: (
+                        item[1]["count"],
+                        (
+                            item[1]["expected_value_sum"] / item[1]["count"]
+                            if item[1]["count"] > 0.0
+                            else 0.0
+                        ),
+                        (
+                            item[1]["win_probability_sum"] / item[1]["count"]
+                            if item[1]["count"] > 0.0
+                            else 0.0
+                        ),
+                        -item[0][1],
+                        item[0][0],
+                    ),
+                )
+                dominant_guess_card = None
+                dominant_guess_count = 0.0
+                if dominant_target_stats["guess_counts"]:
+                    dominant_guess_card, dominant_guess_count = max(
+                        dominant_target_stats["guess_counts"].items(),
+                        key=lambda item: (
+                            item[1],
+                            tuple(-part for part in card_sort_key(item[0])),
+                        ),
+                    )
+                dominant_target_count = max(1.0, dominant_target_stats["count"])
+                summary["opening_plan"][color] = {
+                    "target_player_id": dominant_target_key[0],
+                    "target_slot_index": dominant_target_key[1],
+                    "guess_card": dominant_guess_card,
+                    "support_ratio": dominant_target_stats["count"] / len(sample_cards),
+                    "guess_support_ratio": dominant_guess_count / dominant_target_count,
+                    "expected_value": (
+                        dominant_target_stats["expected_value_sum"]
+                        / dominant_target_count
+                    ),
+                    "win_probability": (
+                        dominant_target_stats["win_probability_sum"]
+                        / dominant_target_count
+                    ),
+                    "information_gain": (
+                        dominant_target_stats["information_gain_sum"]
+                        / dominant_target_count
+                    ),
+                    "continuation_likelihood": (
+                        dominant_target_stats["continuation_likelihood_sum"]
+                        / dominant_target_count
+                    ),
+                }
 
         best_value_gap = (
             summary["expected_best_value"]["B"] - summary["expected_best_value"]["W"]
@@ -4599,6 +4725,54 @@ class GameController:
         }
         return summary
 
+    def _build_draw_opening_plan(
+        self,
+        draw_color_summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        recommended_color = draw_color_summary.get("recommended_color")
+        if recommended_color not in CARD_COLORS:
+            return {}
+        color_suffix = "black" if recommended_color == "B" else "white"
+        guess_card = draw_color_summary.get(
+            f"draw_rollout_opening_guess_card_{color_suffix}"
+        )
+        return {
+            "recommended_color": recommended_color,
+            "target_player_id": draw_color_summary.get(
+                f"draw_rollout_opening_target_player_id_{color_suffix}"
+            ),
+            "target_slot_index": draw_color_summary.get(
+                f"draw_rollout_opening_target_slot_{color_suffix}"
+            ),
+            "guess_card": [guess_card[0], guess_card[1]]
+            if isinstance(guess_card, (list, tuple)) and len(guess_card) == 2
+            else None,
+            "support_ratio": draw_color_summary.get(
+                f"draw_rollout_opening_support_{color_suffix}",
+                0.0,
+            ),
+            "guess_support_ratio": draw_color_summary.get(
+                f"draw_rollout_opening_guess_support_{color_suffix}",
+                0.0,
+            ),
+            "expected_value": draw_color_summary.get(
+                f"draw_rollout_opening_expected_value_{color_suffix}",
+                0.0,
+            ),
+            "win_probability": draw_color_summary.get(
+                f"draw_rollout_opening_win_probability_{color_suffix}",
+                0.0,
+            ),
+            "information_gain": draw_color_summary.get(
+                f"draw_rollout_opening_information_gain_{color_suffix}",
+                0.0,
+            ),
+            "continuation_likelihood": draw_color_summary.get(
+                f"draw_rollout_opening_continuation_likelihood_{color_suffix}",
+                0.0,
+            ),
+        }
+
     def _build_draw_color_summary(
         self,
         full_probability_matrix: Optional[FullProbabilityMatrix] = None,
@@ -4794,6 +4968,8 @@ class GameController:
                 availability_pressure["B"] - availability_pressure["W"]
             ),
         }
+        black_opening_plan = draw_rollout["opening_plan"]["B"]
+        white_opening_plan = draw_rollout["opening_plan"]["W"]
         return {
             "recommended_color": recommended_color,
             "black_score": color_scores["B"],
@@ -4868,6 +5044,30 @@ class GameController:
             "draw_rollout_information_gain_pressure_white": draw_rollout["information_gain_pressure"]["W"],
             "draw_rollout_information_gain_floor_pressure_black": draw_rollout["information_gain_floor_pressure"]["B"],
             "draw_rollout_information_gain_floor_pressure_white": draw_rollout["information_gain_floor_pressure"]["W"],
+            "draw_rollout_opening_target_player_id_black": black_opening_plan["target_player_id"],
+            "draw_rollout_opening_target_player_id_white": white_opening_plan["target_player_id"],
+            "draw_rollout_opening_target_slot_black": black_opening_plan["target_slot_index"],
+            "draw_rollout_opening_target_slot_white": white_opening_plan["target_slot_index"],
+            "draw_rollout_opening_guess_card_black": serialize_card(black_opening_plan["guess_card"])
+            if isinstance(black_opening_plan["guess_card"], tuple)
+            and len(black_opening_plan["guess_card"]) == 2
+            else None,
+            "draw_rollout_opening_guess_card_white": serialize_card(white_opening_plan["guess_card"])
+            if isinstance(white_opening_plan["guess_card"], tuple)
+            and len(white_opening_plan["guess_card"]) == 2
+            else None,
+            "draw_rollout_opening_support_black": black_opening_plan["support_ratio"],
+            "draw_rollout_opening_support_white": white_opening_plan["support_ratio"],
+            "draw_rollout_opening_guess_support_black": black_opening_plan["guess_support_ratio"],
+            "draw_rollout_opening_guess_support_white": white_opening_plan["guess_support_ratio"],
+            "draw_rollout_opening_expected_value_black": black_opening_plan["expected_value"],
+            "draw_rollout_opening_expected_value_white": white_opening_plan["expected_value"],
+            "draw_rollout_opening_win_probability_black": black_opening_plan["win_probability"],
+            "draw_rollout_opening_win_probability_white": white_opening_plan["win_probability"],
+            "draw_rollout_opening_information_gain_black": black_opening_plan["information_gain"],
+            "draw_rollout_opening_information_gain_white": white_opening_plan["information_gain"],
+            "draw_rollout_opening_continuation_likelihood_black": black_opening_plan["continuation_likelihood"],
+            "draw_rollout_opening_continuation_likelihood_white": white_opening_plan["continuation_likelihood"],
             "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
@@ -4922,6 +5122,11 @@ class GameController:
             if include_draw_color_summary
             else {}
         )
+        draw_opening_plan = (
+            self._build_draw_opening_plan(draw_color_summary)
+            if include_draw_color_summary
+            else {}
+        )
 
         if not has_any_hidden_slots:
             return {
@@ -4954,6 +5159,7 @@ class GameController:
                     "source_support_local_boundary": 0.0,
                 },
                 "draw_color_summary": draw_color_summary,
+                "draw_opening_plan": draw_opening_plan,
                 "should_stop": True,
             }
 
@@ -4974,6 +5180,11 @@ class GameController:
         )
         draw_color_summary = (
             self._build_draw_color_summary(full_probability_matrix)
+            if include_draw_color_summary
+            else {}
+        )
+        draw_opening_plan = (
+            self._build_draw_opening_plan(draw_color_summary)
             if include_draw_color_summary
             else {}
         )
@@ -5032,6 +5243,7 @@ class GameController:
             "behavior_debug": behavior_debug,
             "behavior_guidance_profile": behavior_guidance_profile,
             "draw_color_summary": draw_color_summary,
+            "draw_opening_plan": draw_opening_plan,
             "decision_summary": decision_summary,
             "should_stop": best_move is None,
         }
