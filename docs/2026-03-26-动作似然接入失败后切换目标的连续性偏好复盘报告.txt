@@ -1,0 +1,34 @@
+【本轮目标】
+在动作似然里补一个更贴近行为反推的小逻辑：同一名玩家失败后切换攻击目标时，如果新猜测沿着上一手失败线索继续走同色近邻区间，应比完全跳开的切换更合理。
+
+【本轮改动】
+1. 在 `backend/app/core/engine.py` 新增 `TARGET_PLAYER_SWITCH_FAILURE_CONTINUITY_BONUS = 1.03`。
+2. 新增 `_has_failure_switch_guess_continuity(previous_signal, signal)`：
+   - 必须是失败后换目标
+   - 当前猜测和上一手失败猜测同色
+   - 数值距离不超过 2
+3. 在 `_score_target_player_selection(...)` 的“失败后换目标”分支里接入这一额外权重。
+4. 在 `backend/tests/test1.py` 新增
+   `test_target_player_selection_rewards_continuous_switch_after_failed_guess`。
+
+【为什么这轮值得做】
+之前“失败后换目标”只看新目标是否更紧、更好打。
+这还不够表达真实玩家的推理惯性。
+实际对局里，失败后改打别人，往往不是完全重开，而是沿着刚才那条颜色/数值线索继续找更稳的落点。
+这轮让目标切换开始带一点“信息连续性”。
+
+【结果】
+1. 动作似然现在能区分两种都属于“失败后换目标”的行为：
+   - 沿着上一手失败线索连续转移
+   - 完全跳开的离散转移
+2. 在新测试里，`W2 miss -> switch to side W3` 会比 `W2 miss -> switch to side W8` 得到更高权重。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+这一批 10 轮已经把 recent continuation、失败后切换、fixed decision/controller case 都补了一圈。
+下一批更适合转去：
+1. 抽黑 / 抽白主决策接入
+2. 更完整的动作似然 `P(action | state)` 结构
+3. 更系统的 benchmark 套件

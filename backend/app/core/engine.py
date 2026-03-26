@@ -179,6 +179,7 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_CONFIDENT_CHAIN_BONUS = 1.05
     TARGET_PLAYER_BREAK_CONFIDENT_CHAIN_PENALTY = 0.95
     TARGET_PLAYER_SWITCH_AFTER_FAILURE_BONUS = 1.04
+    TARGET_PLAYER_SWITCH_FAILURE_CONTINUITY_BONUS = 1.03
 
     TARGET_SLOT_BEST_MATCH_BONUS = 1.08
     TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
@@ -535,6 +536,8 @@ class BehavioralLikelihoodModel:
             previous_target_score = candidate_scores.get(previous_signal.target_player_id, 0.0)
             if chosen_score > (previous_target_score + 0.08):
                 weight *= self.TARGET_PLAYER_SWITCH_AFTER_FAILURE_BONUS
+            if self._has_failure_switch_guess_continuity(previous_signal, signal):
+                weight *= self.TARGET_PLAYER_SWITCH_FAILURE_CONTINUITY_BONUS
         elif (
             previous_signal is not None
             and previous_signal.result
@@ -542,6 +545,25 @@ class BehavioralLikelihoodModel:
         ):
             weight *= self.TARGET_PLAYER_BREAK_CONFIDENT_CHAIN_PENALTY
         return weight
+
+    def _has_failure_switch_guess_continuity(
+        self,
+        previous_signal: GuessSignal,
+        signal: GuessSignal,
+    ) -> bool:
+        if previous_signal.result or previous_signal.target_player_id == signal.target_player_id:
+            return False
+
+        previous_card = previous_signal.guessed_card
+        current_card = signal.guessed_card
+        if previous_card[0] != current_card[0]:
+            return False
+
+        previous_value = numeric_card_value(previous_card)
+        current_value = numeric_card_value(current_card)
+        if previous_value is None or current_value is None:
+            return False
+        return abs(previous_value - current_value) <= 2
 
     def _score_target_slot_selection(
         self,
