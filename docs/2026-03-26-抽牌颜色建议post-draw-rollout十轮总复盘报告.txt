@@ -1,0 +1,121 @@
+2026-03-26 抽牌颜色建议 post-draw rollout 十轮总复盘报告
+
+一、这十轮的主目标
+
+这批十轮的目标，不是继续给 draw_color_summary 叠更多静态 heuristic，而是把“摸黑/摸白”正式推进成一个带前瞻性的局部 rollout 决策：
+
+1. 先对黑牌和白牌分别抽取代表性候选摸牌样本
+2. 对每个样本构造模拟后的 self state
+3. 重新跑一整轮推理和选点
+4. 聚合“摸完后第一手”的价值、继续压力、攻击性、信息增益和 opening plan
+5. 再把这些 rollout 结果通过边界门控接回当前 draw color advice
+
+这意味着抽牌颜色建议不再只是“当前牌池和当前压力谁更高”，而是开始显式回答：
+
+- 摸这个颜色以后，下一手大概率能不能马上开到人
+- 开到了以后，值不值得
+- 猜中的后续滚动空间如何
+- 最差半边样本是否仍然站得住
+- 局面本身是否已经足够明确，不该让 rollout 喧宾夺主
+
+
+二、十轮核心推进
+
+第 1 轮 `dabbb7b add post-draw value rollout to draw color advice`
+- 建立代表性摸牌样本和模拟摸牌状态
+- 把 post-draw expected best value / immediate value 接入 draw_color_summary
+- rollout 只在窄边界里生效，不直接覆盖静态主分
+
+第 2 轮 `efd6a18 add post-draw continuation rollout to draw color advice`
+- 加入摸牌后第一手命中后的 continuation value / continuation likelihood
+- draw color advice 开始不只看“能不能开”，还看“开完能不能续”
+
+第 3 轮 `eafaba0 add post-draw attackability rollout to draw color advice`
+- 加入摸牌后 best move 的 win probability 和 attackability-after-hit
+- draw 选择开始显式区分“更容易打中”和“打中后对目标的压制能力”
+
+第 4 轮 `21a1ae5 add post-draw target retention rollout to draw color advice`
+- 加入 target retention ratio 和 color alignment ratio
+- 让抽牌颜色建议感知“摸完后是否还沿着当前攻击目标继续推进”
+
+第 5 轮 `a81239d add post-draw structure edge rollout to draw color advice`
+- 加入 expected best gap 和 active opening ratio
+- 同时加入 target gate，避免在 target boundary / finish 已经很强时被 rollout 翻盘
+
+第 6 轮 `98a2cdc add post-draw stability rollout to draw color advice`
+- 加入 best value stddev 和 win probability stddev
+- 让抽牌建议开始区分“均值高但波动大”和“均值略低但更稳”
+
+第 7 轮 `86c05c7 add post-draw downside rollout to draw color advice`
+- 加入 best value floor 和 win probability floor
+- 让 draw 逻辑显式看 rollout 的 downside，不只看均值
+
+第 8 轮 `04ec84d add post-draw information rollout to draw color advice`
+- 把 best_information_gain 接入 decision_summary
+- 汇总摸牌后的 expected information gain 和 information gain floor
+- 正式把“摸完后下一手更像探测步还是击杀步”纳入 draw 选择
+
+第 9 轮 `5280862 add rollout-backed opening plan to draw color advice`
+- 不再只输出 rollout pressure
+- 直接聚合每种摸牌颜色下最常见的 opening target / opening slot / opening guess / support ratio
+- controller 顶层新增 draw_opening_plan，给出推荐颜色下的第一手 opening plan
+
+第 10 轮 `bdb45d9 gate draw rollout by phase and opening reliability`
+- 给 rollout 增加 phase gate 和 opening reliability gate
+- 现在 rollout activation scale = edge scale * target gate * phase gate * plan gate
+- 让 rollout 在“局面晚、我方更安全、opening 更稳定”时更敢发力，在不稳定局面里自动收敛
+
+
+三、这一批完成后的能力变化
+
+做完这十轮后，draw color advice 已经从“静态颜色压力打分器”推进成“带一层轻量前瞻的局部策略选择器”。
+
+当前它综合考虑的已经不只是：
+
+- defense_balance
+- offense_pressure
+- entropy_pressure
+- target pressure
+- availability pressure
+
+还会额外考虑：
+
+- 摸完后的 expected best value
+- 摸完后的 immediate / continuation / attackability / information gain
+- 摸完后的 downside floor 和稳定性
+- 摸完后第一手是否存在稳定 opening plan
+- 当前局面阶段是否值得信 rollout
+
+也就是说，现在的“摸黑还是摸白”已经不再是纯静态启发式，而是一个简化版的“摸牌后看下一手局面”的 forward-looking 决策。
+
+
+四、验证结果
+
+验证命令：
+python -m unittest discover -s backend/tests -p "test*.py"
+
+最终结果：
+90 / 90 通过
+
+
+五、本批价值判断
+
+这批十轮是逻辑主线推进，不是解释链打磨。
+
+它真正增加的是模型能力本身：
+
+- 抽牌颜色建议开始显式依赖 post-draw future rollout
+- rollout 不再只看均值，而是兼顾续压、攻击性、稳定性、下界和信息增益
+- rollout 结果不再只是隐藏分数，而是直接产出 opening plan
+- rollout 本身又被阶段门控和可靠性门控约束住，避免过拟合式放大
+
+这比继续给 draw_color_summary 增加解释字段更接近当前 direction 里的主目标。
+
+
+六、下一步建议
+
+这一批已经把 draw color advice 的局部 rollout 骨架搭起来了，下一步更值得做的是：
+
+1. 让 draw rollout 不只看“摸完第一手”，而是区分更明确的 hit / miss 后续分支
+2. 把 draw decision 和主决策链里的 stop / continue / target switching 进一步打通
+3. 继续往“抽黑 / 抽白”正式进入主决策闭环推进，而不是只停留在 summary 建议层
