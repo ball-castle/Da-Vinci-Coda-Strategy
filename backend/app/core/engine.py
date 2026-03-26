@@ -3920,6 +3920,7 @@ class GameController:
     DRAW_ROLLOUT_VALUE_REFERENCE = 8.0
     DRAW_ROLLOUT_EDGE_WINDOW = 0.80
     DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE = 3.0
+    DRAW_ROLLOUT_ATTACKABILITY_REFERENCE = 0.40
 
     def __init__(self, game_state: GameState):
         self.game_state = game_state
@@ -4256,6 +4257,8 @@ class GameController:
             "expected_immediate_value": {"B": 0.0, "W": 0.0},
             "expected_continuation_value": {"B": 0.0, "W": 0.0},
             "expected_continuation_likelihood": {"B": 0.0, "W": 0.0},
+            "expected_win_probability": {"B": 0.0, "W": 0.0},
+            "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
             "sample_count": {"B": 0.0, "W": 0.0},
         }
 
@@ -4269,6 +4272,8 @@ class GameController:
             immediate_value_sum = 0.0
             continuation_value_sum = 0.0
             continuation_likelihood_sum = 0.0
+            win_probability_sum = 0.0
+            attackability_sum = 0.0
             for drawn_card in sample_cards:
                 simulated_state = self._simulated_draw_game_state(drawn_card)
                 simulated_result = GameController(simulated_state).run_turn(
@@ -4285,6 +4290,12 @@ class GameController:
                 continuation_likelihood_sum += float(
                     simulated_decision.get("best_continuation_likelihood", 0.0)
                 )
+                win_probability_sum += float(
+                    simulated_decision.get("best_win_probability", 0.0)
+                )
+                attackability_sum += float(
+                    simulated_decision.get("best_attackability_after_hit", 0.0)
+                )
 
             summary["expected_best_value"][color] = best_value_sum / len(sample_cards)
             summary["expected_immediate_value"][color] = (
@@ -4295,6 +4306,12 @@ class GameController:
             )
             summary["expected_continuation_likelihood"][color] = (
                 continuation_likelihood_sum / len(sample_cards)
+            )
+            summary["expected_win_probability"][color] = (
+                win_probability_sum / len(sample_cards)
+            )
+            summary["expected_attackability_after_hit"][color] = (
+                attackability_sum / len(sample_cards)
             )
 
         best_value_gap = (
@@ -4311,6 +4328,14 @@ class GameController:
         continuation_likelihood_gap = (
             summary["expected_continuation_likelihood"]["B"]
             - summary["expected_continuation_likelihood"]["W"]
+        )
+        win_probability_gap = (
+            summary["expected_win_probability"]["B"]
+            - summary["expected_win_probability"]["W"]
+        )
+        attackability_gap = (
+            summary["expected_attackability_after_hit"]["B"]
+            - summary["expected_attackability_after_hit"]["W"]
         )
         summary["value_pressure"] = {
             "B": clamp(
@@ -4351,6 +4376,22 @@ class GameController:
         summary["continuation_likelihood_pressure"] = {
             "B": clamp(continuation_likelihood_gap, -1.0, 1.0),
             "W": clamp(-continuation_likelihood_gap, -1.0, 1.0),
+        }
+        summary["win_probability_pressure"] = {
+            "B": clamp(win_probability_gap, -1.0, 1.0),
+            "W": clamp(-win_probability_gap, -1.0, 1.0),
+        }
+        summary["attackability_pressure"] = {
+            "B": clamp(
+                attackability_gap / self.DRAW_ROLLOUT_ATTACKABILITY_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-attackability_gap) / self.DRAW_ROLLOUT_ATTACKABILITY_REFERENCE,
+                -1.0,
+                1.0,
+            ),
         }
         return summary
 
@@ -4479,6 +4520,8 @@ class GameController:
                     + (0.08 * draw_rollout["immediate_value_pressure"][color])
                     + (0.10 * draw_rollout["continuation_value_pressure"][color])
                     + (0.06 * draw_rollout["continuation_likelihood_pressure"][color])
+                    + (0.08 * draw_rollout["win_probability_pressure"][color])
+                    + (0.10 * draw_rollout["attackability_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -4550,6 +4593,14 @@ class GameController:
             "draw_rollout_continuation_value_pressure_white": draw_rollout["continuation_value_pressure"]["W"],
             "draw_rollout_continuation_likelihood_pressure_black": draw_rollout["continuation_likelihood_pressure"]["B"],
             "draw_rollout_continuation_likelihood_pressure_white": draw_rollout["continuation_likelihood_pressure"]["W"],
+            "draw_rollout_expected_win_probability_black": draw_rollout["expected_win_probability"]["B"],
+            "draw_rollout_expected_win_probability_white": draw_rollout["expected_win_probability"]["W"],
+            "draw_rollout_expected_attackability_after_hit_black": draw_rollout["expected_attackability_after_hit"]["B"],
+            "draw_rollout_expected_attackability_after_hit_white": draw_rollout["expected_attackability_after_hit"]["W"],
+            "draw_rollout_win_probability_pressure_black": draw_rollout["win_probability_pressure"]["B"],
+            "draw_rollout_win_probability_pressure_white": draw_rollout["win_probability_pressure"]["W"],
+            "draw_rollout_attackability_pressure_black": draw_rollout["attackability_pressure"]["B"],
+            "draw_rollout_attackability_pressure_white": draw_rollout["attackability_pressure"]["W"],
             "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
