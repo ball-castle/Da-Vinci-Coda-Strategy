@@ -1,0 +1,23 @@
+【本轮目标】
+补齐 draw color 进攻项的白色镜像样本。
+
+【本轮改动】
+1. 在 `backend/tests/test1.py` 新增
+   `test_controller_draw_color_summary_uses_hidden_color_pressure_for_white_offense`。
+2. 样本中我方手牌黑白平衡，但对手隐藏分布明显偏白，断言：
+   - `recommended_color == "W"`
+   - `offense_pressure_white > offense_pressure_black`
+   - `dominant_factor == "offense_pressure"`
+
+【为什么这轮值得做】
+如果只验证黑色进攻压力，就还不能说明当前 draw offense 是真正的颜色对称逻辑。
+白色镜像样本是必须的，否则以后非常容易出现“黑色分支正常，白色分支悄悄失效”的问题。
+
+【结果】
+draw color 的进攻项现在具备黑白两侧的普通回归样本。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续把这条白色进攻压力也收成 fixed controller case。
