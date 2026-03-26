@@ -145,6 +145,81 @@ class ContinuationLikelihoodTests(unittest.TestCase):
         self.assertEqual(recent_continue_profile["observations"], 2.0)
         self.assertEqual(recent_stop_profile["observations"], 2.0)
 
+    def test_continuation_profile_rewards_confident_continue_streak(self):
+        model = BehavioralLikelihoodModel()
+        streak_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=True,
+                    continued_turn=True,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=True,
+                    continued_turn=True,
+                ),
+            ],
+        )
+        mixed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=streak_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=True,
+                    continued_turn=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=True,
+                    continued_turn=True,
+                ),
+            ],
+        )
+
+        streak_profile = model.continuation_profile(
+            model.build_guess_signals(streak_world),
+            "me",
+        )
+        mixed_profile = model.continuation_profile(
+            model.build_guess_signals(mixed_world),
+            "me",
+        )
+
+        self.assertGreater(streak_profile["continue_rate"], mixed_profile["continue_rate"])
+        self.assertEqual(streak_profile["observations"], 2.0)
+        self.assertEqual(mixed_profile["observations"], 2.0)
+
 
 class StopThresholdTests(unittest.TestCase):
     def test_fixed_decision_case_runner_covers_strong_continue_edge(self):

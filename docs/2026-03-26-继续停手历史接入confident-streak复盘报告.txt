@@ -1,0 +1,23 @@
+【本轮目标】
+在 continuation history 里区分“最近一次继续”和“最近两次都敢继续”。
+
+【本轮改动】
+1. 在 `backend/app/core/engine.py` 新增 `CONTINUATION_CONFIDENT_STREAK_BONUS = 0.03`。
+2. 在 `continuation_profile(...)` 中加入：
+   - 如果最近两次成功猜中后都选择继续，则额外上调 `continue_rate`
+3. 在 `backend/tests/test2.py` 新增
+   `test_continuation_profile_rewards_confident_continue_streak`。
+
+【为什么这轮值得做】
+单次 recent continue 只能说明“刚才这一次敢冲”。
+连续两次继续更像稳定的行为风格信号，说明玩家对当前局面和自己风险敞口都有更高把握。
+这个差异应该进入停手历史先验，而不是被 recent-bias 吞掉。
+
+【结果】
+现在 `continue, continue` 会比 `stop, continue` 得到更高的 `continuation_profile.continue_rate`，即便两边最近一次都是 continue。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续补固定 continue case，把“低 rollout 压力 + 高 attackability”这类稳定继续边界也钉成固定样本。

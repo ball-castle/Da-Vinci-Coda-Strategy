@@ -217,6 +217,7 @@ class BehavioralLikelihoodModel:
     CONTINUATION_MAX = 0.95
     CONTINUATION_RECENT_CONTINUE_BONUS = 0.04
     CONTINUATION_RECENT_STOP_PENALTY = 0.04
+    CONTINUATION_CONFIDENT_STREAK_BONUS = 0.03
     EPSILON = 1e-9
 
     def build_guess_signals(
@@ -290,6 +291,8 @@ class BehavioralLikelihoodModel:
             continue_rate += self.CONTINUATION_RECENT_CONTINUE_BONUS
         else:
             continue_rate -= self.CONTINUATION_RECENT_STOP_PENALTY
+        if observations >= 2 and observed[-1].continued_turn and observed[-2].continued_turn:
+            continue_rate += self.CONTINUATION_CONFIDENT_STREAK_BONUS
         continue_rate = clamp(continue_rate, self.CONTINUATION_MIN, self.CONTINUATION_MAX)
         history_blend = min(0.5, 0.18 * observations)
         return {
