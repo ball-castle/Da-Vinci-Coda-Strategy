@@ -3921,6 +3921,7 @@ class GameController:
     DRAW_ROLLOUT_EDGE_WINDOW = 0.80
     DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE = 3.0
     DRAW_ROLLOUT_ATTACKABILITY_REFERENCE = 0.40
+    DRAW_ROLLOUT_BEST_GAP_REFERENCE = 1.5
 
     def __init__(self, game_state: GameState):
         self.game_state = game_state
@@ -4261,6 +4262,8 @@ class GameController:
             "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
             "target_retention_ratio": {"B": 0.0, "W": 0.0},
             "color_alignment_ratio": {"B": 0.0, "W": 0.0},
+            "expected_best_gap": {"B": 0.0, "W": 0.0},
+            "active_opening_ratio": {"B": 0.0, "W": 0.0},
             "sample_count": {"B": 0.0, "W": 0.0},
         }
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4279,6 +4282,8 @@ class GameController:
             attackability_sum = 0.0
             target_retention_count = 0.0
             color_alignment_count = 0.0
+            best_gap_sum = 0.0
+            active_opening_count = 0.0
             for drawn_card in sample_cards:
                 simulated_state = self._simulated_draw_game_state(drawn_card)
                 simulated_result = GameController(simulated_state).run_turn(
@@ -4302,7 +4307,9 @@ class GameController:
                 attackability_sum += float(
                     simulated_decision.get("best_attackability_after_hit", 0.0)
                 )
+                best_gap_sum += float(simulated_decision.get("best_gap", 0.0))
                 if isinstance(simulated_best_move, dict):
+                    active_opening_count += 1.0
                     if (
                         target_player_id is not None
                         and simulated_best_move.get("target_player_id") == target_player_id
@@ -4338,6 +4345,10 @@ class GameController:
             summary["color_alignment_ratio"][color] = (
                 color_alignment_count / len(sample_cards)
             )
+            summary["expected_best_gap"][color] = best_gap_sum / len(sample_cards)
+            summary["active_opening_ratio"][color] = (
+                active_opening_count / len(sample_cards)
+            )
 
         best_value_gap = (
             summary["expected_best_value"]["B"] - summary["expected_best_value"]["W"]
@@ -4369,6 +4380,14 @@ class GameController:
         color_alignment_gap = (
             summary["color_alignment_ratio"]["B"]
             - summary["color_alignment_ratio"]["W"]
+        )
+        best_gap_gap = (
+            summary["expected_best_gap"]["B"]
+            - summary["expected_best_gap"]["W"]
+        )
+        active_opening_gap = (
+            summary["active_opening_ratio"]["B"]
+            - summary["active_opening_ratio"]["W"]
         )
         summary["value_pressure"] = {
             "B": clamp(
@@ -4433,6 +4452,22 @@ class GameController:
         summary["color_alignment_pressure"] = {
             "B": clamp(color_alignment_gap, -1.0, 1.0),
             "W": clamp(-color_alignment_gap, -1.0, 1.0),
+        }
+        summary["best_gap_pressure"] = {
+            "B": clamp(
+                best_gap_gap / self.DRAW_ROLLOUT_BEST_GAP_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-best_gap_gap) / self.DRAW_ROLLOUT_BEST_GAP_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["active_opening_pressure"] = {
+            "B": clamp(active_opening_gap, -1.0, 1.0),
+            "W": clamp(-active_opening_gap, -1.0, 1.0),
         }
         return summary
 
@@ -4552,10 +4587,23 @@ class GameController:
             0.0,
             1.0,
         )
+        target_lock_signal = max(
+            abs(target_boundary_pressure["B"] - target_boundary_pressure["W"]),
+            abs(target_finish_pressure["B"] - target_finish_pressure["W"]),
+            abs(target_attack_pressure["B"] - target_attack_pressure["W"]),
+        )
+        draw_rollout_target_gate = clamp(
+            1.0 - (0.75 * target_lock_signal),
+            0.0,
+            1.0,
+        )
+        draw_rollout_activation_scale = (
+            draw_rollout_edge_scale * draw_rollout_target_gate
+        )
         color_scores = {
             color: base_color_scores[color]
             + (
-                draw_rollout_edge_scale
+                draw_rollout_activation_scale
                 * (
                     (0.16 * draw_rollout["value_pressure"][color])
                     + (0.08 * draw_rollout["immediate_value_pressure"][color])
@@ -4565,6 +4613,8 @@ class GameController:
                     + (0.10 * draw_rollout["attackability_pressure"][color])
                     + (0.08 * draw_rollout["target_retention_pressure"][color])
                     + (0.06 * draw_rollout["color_alignment_pressure"][color])
+                    + (0.10 * draw_rollout["best_gap_pressure"][color])
+                    + (0.08 * draw_rollout["active_opening_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -4652,9 +4702,19 @@ class GameController:
             "draw_rollout_target_retention_pressure_white": draw_rollout["target_retention_pressure"]["W"],
             "draw_rollout_color_alignment_pressure_black": draw_rollout["color_alignment_pressure"]["B"],
             "draw_rollout_color_alignment_pressure_white": draw_rollout["color_alignment_pressure"]["W"],
+            "draw_rollout_expected_best_gap_black": draw_rollout["expected_best_gap"]["B"],
+            "draw_rollout_expected_best_gap_white": draw_rollout["expected_best_gap"]["W"],
+            "draw_rollout_active_opening_ratio_black": draw_rollout["active_opening_ratio"]["B"],
+            "draw_rollout_active_opening_ratio_white": draw_rollout["active_opening_ratio"]["W"],
+            "draw_rollout_best_gap_pressure_black": draw_rollout["best_gap_pressure"]["B"],
+            "draw_rollout_best_gap_pressure_white": draw_rollout["best_gap_pressure"]["W"],
+            "draw_rollout_active_opening_pressure_black": draw_rollout["active_opening_pressure"]["B"],
+            "draw_rollout_active_opening_pressure_white": draw_rollout["active_opening_pressure"]["W"],
             "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
+            "draw_rollout_target_gate": draw_rollout_target_gate,
+            "draw_rollout_activation_scale": draw_rollout_activation_scale,
             "offense_pressure_black": offense_pressure["B"],
             "offense_pressure_white": offense_pressure["W"],
             "entropy_pressure_black": entropy_pressure["B"],
