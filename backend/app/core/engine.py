@@ -3977,6 +3977,48 @@ class GameController:
             for color in CARD_COLORS
         }
 
+    def _self_flexibility_pressure(self) -> Dict[str, float]:
+        self_numeric_anchors = {
+            color: sorted(
+                numeric_card_value(slot.known_card())
+                for slot in self.game_state.self_player().ordered_slots()
+                if getattr(slot, "color", None) == color
+                and numeric_card_value(slot.known_card()) is not None
+            )
+            for color in CARD_COLORS
+        }
+        available_numeric_values = {
+            color: sorted(
+                numeric_card_value(card)
+                for card in self.inference_engine.available_cards
+                if card[0] == color and numeric_card_value(card) is not None
+            )
+            for color in CARD_COLORS
+        }
+        flexibility_pressure = {"B": 0.0, "W": 0.0}
+        for color in CARD_COLORS:
+            anchors = self_numeric_anchors[color]
+            values = available_numeric_values[color]
+            if not values:
+                continue
+            if not anchors:
+                flexibility_pressure[color] = 1.0
+                continue
+
+            slack_sum = 0.0
+            for value in values:
+                left_anchor = -1
+                right_anchor = MAX_CARD_VALUE + 1
+                for anchor in anchors:
+                    if anchor < value:
+                        left_anchor = anchor
+                    elif anchor > value:
+                        right_anchor = anchor
+                        break
+                slack_sum += max(0.0, (right_anchor - left_anchor - 1) / (MAX_CARD_VALUE + 1))
+            flexibility_pressure[color] = slack_sum / len(values)
+        return flexibility_pressure
+
     def _build_draw_color_summary(
         self,
         full_probability_matrix: Optional[FullProbabilityMatrix] = None,
@@ -4024,6 +4066,7 @@ class GameController:
             full_probability_matrix,
             target_player_only=True,
         )
+        self_flexibility_pressure = self._self_flexibility_pressure()
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4060,6 +4103,7 @@ class GameController:
                     + (0.24 * target_entropy_pressure[color])
                     + (0.28 * target_attack_pressure[color])
                     + (0.18 * availability_pressure[color])
+                    + (0.22 * self_flexibility_pressure[color])
                 )
             )
             for color in CARD_COLORS
@@ -4074,6 +4118,9 @@ class GameController:
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
             "target_entropy_pressure": abs(
                 target_entropy_pressure["B"] - target_entropy_pressure["W"]
+            ),
+            "self_flexibility_pressure": abs(
+                self_flexibility_pressure["B"] - self_flexibility_pressure["W"]
             ),
             "target_attack_pressure": abs(
                 target_attack_pressure["B"] - target_attack_pressure["W"]
@@ -4094,6 +4141,8 @@ class GameController:
             "entropy_pressure_white": entropy_pressure["W"],
             "target_entropy_pressure_black": target_entropy_pressure["B"],
             "target_entropy_pressure_white": target_entropy_pressure["W"],
+            "self_flexibility_pressure_black": self_flexibility_pressure["B"],
+            "self_flexibility_pressure_white": self_flexibility_pressure["W"],
             "target_attack_pressure_black": target_attack_pressure["B"],
             "target_attack_pressure_white": target_attack_pressure["W"],
             "availability_pressure_black": availability_pressure["B"],
