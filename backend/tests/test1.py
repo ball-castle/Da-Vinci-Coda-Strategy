@@ -337,6 +337,111 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(finishing_score, spread_score)
 
+    def test_target_player_selection_prefers_recently_collapsed_target(self):
+        model = BehavioralLikelihoodModel()
+
+        collapse_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="opp",
+                    target_slot_index=2,
+                    guessed_color="B",
+                    guessed_value=4,
+                    result=False,
+                    revealed_player_id="opp",
+                    revealed_slot_index=2,
+                    revealed_color="B",
+                    revealed_value=4,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+            ],
+        )
+        settled_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+            ],
+        )
+
+        collapse_signal = model.build_guess_signals(collapse_world)["me"][-1]
+        settled_signal = model.build_guess_signals(settled_world)["me"][-1]
+        hypothesis = {"opp": {1: ("W", 2)}, "side": {1: ("W", 8)}}
+
+        collapse_score = model._score_target_player_selection(
+            collapse_world,
+            hypothesis,
+            collapse_signal,
+        )
+        settled_score = model._score_target_player_selection(
+            settled_world,
+            hypothesis,
+            settled_signal,
+        )
+
+        self.assertGreater(collapse_score, settled_score)
+
     def test_target_slot_selection_prefers_tighter_slot_on_same_player(self):
         model = BehavioralLikelihoodModel()
         game_state = GameState(

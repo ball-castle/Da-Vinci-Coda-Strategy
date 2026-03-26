@@ -180,7 +180,9 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_BREAK_CONFIDENT_CHAIN_PENALTY = 0.95
     TARGET_PLAYER_SWITCH_AFTER_FAILURE_BONUS = 1.04
     TARGET_PLAYER_SWITCH_FAILURE_CONTINUITY_BONUS = 1.03
+    TARGET_PLAYER_RECENT_COLLAPSE_BONUS = 1.04
     PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
+    PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
 
     TARGET_SLOT_BEST_MATCH_BONUS = 1.08
     TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
@@ -529,6 +531,16 @@ class BehavioralLikelihoodModel:
             weight *= self.TARGET_PLAYER_CLOSE_MATCH_BONUS
         else:
             weight *= self.TARGET_PLAYER_WEAK_CHOICE_PENALTY
+
+        recent_collapse_pressure = self._recent_public_reveal_pressure(
+            game_state,
+            signal.target_player_id,
+        )
+        if recent_collapse_pressure > 0.0:
+            weight *= 1.0 + (
+                (self.TARGET_PLAYER_RECENT_COLLAPSE_BONUS - 1.0)
+                * recent_collapse_pressure
+            )
 
         previous_signal = self._previous_guess_signal(game_state, signal)
         if previous_signal is not None and previous_signal.target_player_id == signal.target_player_id:
@@ -1247,7 +1259,28 @@ class BehavioralLikelihoodModel:
             0.0,
             1.0,
         )
-        return best * (1.0 + (0.10 * finish_pressure))
+        recent_public_reveal = self._recent_public_reveal_pressure(game_state, player_id)
+        return best * (
+            1.0
+            + (0.10 * finish_pressure)
+            + (self.PLAYER_RECENT_PUBLIC_REVEAL_BONUS * recent_public_reveal)
+        )
+
+    def _recent_public_reveal_pressure(
+        self,
+        game_state: GameState,
+        player_id: str,
+    ) -> float:
+        reveal_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            revealed_player_id = getattr(action, "revealed_player_id", None)
+            if revealed_player_id == player_id and action.revealed_card() is not None:
+                reveal_score += recency_weight
+            recency_weight *= 0.6
+            if recency_weight < 0.2:
+                break
+        return clamp(reveal_score, 0.0, 1.0)
 
     def _slot_attackability(
         self,
