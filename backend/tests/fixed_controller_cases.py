@@ -104,3 +104,25 @@ def assert_slot_candidate_set(
             )
 
     return _assert
+
+
+def assert_card_absent_from_slot_candidates(
+    *,
+    player_id: str,
+    slot_index: int,
+    card: Sequence[Any],
+) -> Callable[[Dict[str, Any]], None]:
+    expected_card = list(card)
+
+    def _assert(result: Dict[str, Any]) -> None:
+        actual = serialized_position_candidates(
+            result,
+            player_id=player_id,
+            slot_index=slot_index,
+        )
+        if expected_card in actual:
+            raise AssertionError(
+                f"Did not expect card {expected_card!r} in player {player_id!r} slot {slot_index} candidates: {actual!r}."
+            )
+
+    return _assert

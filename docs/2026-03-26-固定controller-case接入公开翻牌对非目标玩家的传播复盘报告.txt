@@ -1,0 +1,22 @@
+【本轮目标】
+把“公开翻出的失败牌会传播到非目标玩家候选池”也收成固定 controller case。
+
+【本轮改动】
+1. 在 `backend/tests/fixed_controller_cases.py` 新增
+   `assert_card_absent_from_slot_candidates(...)`。
+2. 在 `backend/tests/test1.py` 新增
+   `test_fixed_controller_case_runner_propagates_public_reveal_to_non_target_players`。
+3. 样本中 `third` 公开翻出 `W5` 后，固定断言 `side.slot1` 的候选集合中不再允许出现 `W5`。
+
+【为什么这轮值得做】
+方向文档强调的是“公共信息导致全场坍缩”，而不是只影响当前 target。
+如果公开失败牌只会更新 target，不会传播到其他玩家的隐藏槽位，那整套概率矩阵就还不够像真正的 belief update。
+
+【结果】
+现在 controller 固定 case 已经明确覆盖“public reveal 对非目标玩家也会生效”的传播链。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续补一个更细的 controller 断言：公开翻牌后的非目标玩家候选数量也要收窄，而不是仅仅删除单牌。

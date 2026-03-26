@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 from tests.fixed_controller_cases import (
     FixedControllerCase,
     all_serialized_candidate_cards,
+    assert_card_absent_from_slot_candidates,
     assert_serialized_probability_mass,
     assert_slot_candidate_set,
     run_controller_case,
@@ -1343,6 +1344,73 @@ class GameControllerOutputTests(unittest.TestCase):
         )
 
         self.assertIn(["W", 3], all_serialized_candidate_cards(result))
+
+    def test_fixed_controller_case_runner_propagates_public_reveal_to_non_target_players(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+                "third": PlayerState(
+                    player_id="third",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="opp",
+                    target_player_id="third",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                    revealed_player_id="third",
+                    revealed_slot_index=1,
+                    revealed_color="W",
+                    revealed_value=5,
+                )
+            ],
+        )
+
+        result = run_controller_case(
+            FixedControllerCase(
+                name="public_reveal_propagates_to_non_target",
+                game_state=game_state,
+                checks=(
+                    assert_serialized_probability_mass,
+                    assert_card_absent_from_slot_candidates(
+                        player_id="side",
+                        slot_index=1,
+                        card=("W", 5),
+                    ),
+                ),
+            )
+        )
+
+        self.assertNotIn(["W", 5], all_serialized_candidate_cards(result))
 
     def test_controller_returns_decision_summary_and_reasoning(self):
         game_state = GameState(
