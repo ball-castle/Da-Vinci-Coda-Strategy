@@ -4034,6 +4034,43 @@ class GameController:
             "W": (hidden_counts["B"] - hidden_counts["W"]) / total_hidden,
         }
 
+    def _target_boundary_pressure(
+        self,
+        full_probability_matrix: Optional[FullProbabilityMatrix],
+    ) -> Dict[str, float]:
+        if not full_probability_matrix:
+            return {"B": 0.0, "W": 0.0}
+        target_player_id = getattr(self.game_state, "target_player_id", None)
+        if target_player_id is None:
+            return {"B": 0.0, "W": 0.0}
+        target_probability_matrix = full_probability_matrix.get(target_player_id, {})
+        boundary_pressure = {"B": 0.0, "W": 0.0}
+        observation_counts = {"B": 0.0, "W": 0.0}
+        for slot_distribution in target_probability_matrix.values():
+            for color in CARD_COLORS:
+                color_candidates = [
+                    card
+                    for card, probability in slot_distribution.items()
+                    if card[0] == color and probability > 0.0
+                ]
+                if not color_candidates:
+                    continue
+                color_mass = sum(
+                    float(probability)
+                    for card, probability in slot_distribution.items()
+                    if card[0] == color and probability > 0.0
+                )
+                boundary_pressure[color] += color_mass / len(color_candidates)
+                observation_counts[color] += 1.0
+        return {
+            color: (
+                boundary_pressure[color] / observation_counts[color]
+                if observation_counts[color] > 0.0
+                else 0.0
+            )
+            for color in CARD_COLORS
+        }
+
     def _build_draw_color_summary(
         self,
         full_probability_matrix: Optional[FullProbabilityMatrix] = None,
@@ -4083,6 +4120,7 @@ class GameController:
         )
         self_flexibility_pressure = self._self_flexibility_pressure()
         hidden_defense_pressure = self._hidden_defense_pressure()
+        target_boundary_pressure = self._target_boundary_pressure(full_probability_matrix)
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4118,6 +4156,7 @@ class GameController:
                     (0.35 * offense_pressure[color])
                     + (0.24 * entropy_pressure[color])
                     + (0.24 * target_entropy_pressure[color])
+                    + (0.34 * target_boundary_pressure[color])
                     + (0.28 * target_attack_pressure[color])
                     + (0.18 * availability_pressure[color])
                     + (0.22 * self_flexibility_pressure[color])
@@ -4138,6 +4177,9 @@ class GameController:
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
             "target_entropy_pressure": abs(
                 target_entropy_pressure["B"] - target_entropy_pressure["W"]
+            ),
+            "target_boundary_pressure": abs(
+                target_boundary_pressure["B"] - target_boundary_pressure["W"]
             ),
             "self_flexibility_pressure": abs(
                 self_flexibility_pressure["B"] - self_flexibility_pressure["W"]
@@ -4163,6 +4205,8 @@ class GameController:
             "entropy_pressure_white": entropy_pressure["W"],
             "target_entropy_pressure_black": target_entropy_pressure["B"],
             "target_entropy_pressure_white": target_entropy_pressure["W"],
+            "target_boundary_pressure_black": target_boundary_pressure["B"],
+            "target_boundary_pressure_white": target_boundary_pressure["W"],
             "self_flexibility_pressure_black": self_flexibility_pressure["B"],
             "self_flexibility_pressure_white": self_flexibility_pressure["W"],
             "target_attack_pressure_black": target_attack_pressure["B"],
