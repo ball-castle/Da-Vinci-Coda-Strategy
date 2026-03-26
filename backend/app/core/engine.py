@@ -395,7 +395,7 @@ class BehavioralLikelihoodModel:
         acting_player_id: Optional[str] = None,
         exclude_slot: Optional[SlotKey] = None,
     ) -> float:
-        slot_certainties: List[float] = []
+        player_slot_certainties: Dict[str, List[float]] = defaultdict(list)
         for player_id, probability_matrix in full_probability_matrix.items():
             if acting_player_id is not None and player_id == acting_player_id:
                 continue
@@ -411,14 +411,20 @@ class BehavioralLikelihoodModel:
                 certainty = max_probability / max(1.0, effective_support ** 0.5)
                 if len(slot_distribution) <= 2:
                     certainty *= 1.05
-                slot_certainties.append(certainty)
-        if not slot_certainties:
+                player_slot_certainties[player_id].append(certainty)
+        if not player_slot_certainties:
             return 0.0
-        slot_certainties.sort(reverse=True)
-        best = slot_certainties[0]
-        if len(slot_certainties) >= 2:
-            best += self.MATRIX_SECONDARY_ATTACKABILITY_BLEND * slot_certainties[1]
-        return clamp(best, 0.0, 1.0)
+
+        best_player_pressure = 0.0
+        for slot_certainties in player_slot_certainties.values():
+            slot_certainties.sort(reverse=True)
+            player_pressure = slot_certainties[0]
+            if len(slot_certainties) >= 2:
+                player_pressure += (
+                    self.MATRIX_SECONDARY_ATTACKABILITY_BLEND * slot_certainties[1]
+                )
+            best_player_pressure = max(best_player_pressure, player_pressure)
+        return clamp(best_player_pressure, 0.0, 1.0)
 
     def _score_signal(
         self,
