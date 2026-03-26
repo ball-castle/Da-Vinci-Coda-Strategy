@@ -225,6 +225,7 @@ class BehavioralLikelihoodModel:
     ATTACKABILITY_TIGHT_THRESHOLD = 0.34
     CONTINUATION_PRIOR_BASE = 0.52
     CONTINUATION_ATTACKABILITY_GAIN = 1.35
+    CONTINUATION_TARGET_FOLLOWUP_BLEND = 0.32
     CONTINUATION_MIN = 0.08
     CONTINUATION_MAX = 0.95
     CONTINUATION_RECENT_CONTINUE_BONUS = 0.04
@@ -331,6 +332,25 @@ class BehavioralLikelihoodModel:
             self.CONTINUATION_MIN,
             self.CONTINUATION_MAX,
         )
+        target_followup_attackability = 0.0
+        if exclude_slot is not None:
+            target_player_id = exclude_slot[0]
+            target_followup_attackability = self._estimate_player_matrix_attackability(
+                target_player_id,
+                full_probability_matrix.get(target_player_id, {}),
+                exclude_slot=exclude_slot,
+            )
+            target_followup_prior = clamp(
+                0.5 + self.CONTINUATION_ATTACKABILITY_GAIN * (
+                    target_followup_attackability - self.ATTACKABILITY_TIGHT_THRESHOLD
+                ),
+                self.CONTINUATION_MIN,
+                self.CONTINUATION_MAX,
+            )
+            attackability_prior = (
+                ((1.0 - self.CONTINUATION_TARGET_FOLLOWUP_BLEND) * attackability_prior)
+                + (self.CONTINUATION_TARGET_FOLLOWUP_BLEND * target_followup_prior)
+            )
 
         profile = self.continuation_profile(guess_signals_by_player, acting_player_id)
         history_blend = profile["history_blend"]
@@ -345,6 +365,7 @@ class BehavioralLikelihoodModel:
         return {
             "continue_likelihood": continue_likelihood,
             "attackability": attackability,
+            "target_followup_attackability": target_followup_attackability,
             "history_continue_rate": profile["continue_rate"],
             "history_observations": profile["observations"],
         }
@@ -395,36 +416,47 @@ class BehavioralLikelihoodModel:
         acting_player_id: Optional[str] = None,
         exclude_slot: Optional[SlotKey] = None,
     ) -> float:
-        player_slot_certainties: Dict[str, List[float]] = defaultdict(list)
+        best_player_pressure = 0.0
         for player_id, probability_matrix in full_probability_matrix.items():
             if acting_player_id is not None and player_id == acting_player_id:
                 continue
-            for slot_index, slot_distribution in probability_matrix.items():
-                key = slot_key(player_id, slot_index)
-                if exclude_slot is not None and key == exclude_slot:
-                    continue
-                if not slot_distribution:
-                    continue
-                max_probability = max(slot_distribution.values())
-                concentration = sum(probability * probability for probability in slot_distribution.values())
-                effective_support = 1.0 / max(self.EPSILON, concentration)
-                certainty = max_probability / max(1.0, effective_support ** 0.5)
-                if len(slot_distribution) <= 2:
-                    certainty *= 1.05
-                player_slot_certainties[player_id].append(certainty)
-        if not player_slot_certainties:
-            return 0.0
-
-        best_player_pressure = 0.0
-        for slot_certainties in player_slot_certainties.values():
-            slot_certainties.sort(reverse=True)
-            player_pressure = slot_certainties[0]
-            if len(slot_certainties) >= 2:
-                player_pressure += (
-                    self.MATRIX_SECONDARY_ATTACKABILITY_BLEND * slot_certainties[1]
-                )
+            player_pressure = self._estimate_player_matrix_attackability(
+                player_id,
+                probability_matrix,
+                exclude_slot=exclude_slot,
+            )
             best_player_pressure = max(best_player_pressure, player_pressure)
         return clamp(best_player_pressure, 0.0, 1.0)
+
+    def _estimate_player_matrix_attackability(
+        self,
+        player_id: str,
+        probability_matrix: ProbabilityMatrix,
+        *,
+        exclude_slot: Optional[SlotKey] = None,
+    ) -> float:
+        slot_certainties: List[float] = []
+        for slot_index, slot_distribution in probability_matrix.items():
+            key = slot_key(player_id, slot_index)
+            if exclude_slot is not None and key == exclude_slot:
+                continue
+            if not slot_distribution:
+                continue
+            max_probability = max(slot_distribution.values())
+            concentration = sum(probability * probability for probability in slot_distribution.values())
+            effective_support = 1.0 / max(self.EPSILON, concentration)
+            certainty = max_probability / max(1.0, effective_support ** 0.5)
+            if len(slot_distribution) <= 2:
+                certainty *= 1.05
+            slot_certainties.append(certainty)
+
+        if not slot_certainties:
+            return 0.0
+        slot_certainties.sort(reverse=True)
+        player_pressure = slot_certainties[0]
+        if len(slot_certainties) >= 2:
+            player_pressure += self.MATRIX_SECONDARY_ATTACKABILITY_BLEND * slot_certainties[1]
+        return clamp(player_pressure, 0.0, 1.0)
 
     def _score_signal(
         self,

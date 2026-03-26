@@ -184,6 +184,88 @@ class ContinuationLikelihoodTests(unittest.TestCase):
         self.assertGreater(same_target["continue_likelihood"], split_targets["continue_likelihood"])
         self.assertGreater(same_target["attackability"], split_targets["attackability"])
 
+    def test_continue_likelihood_rewards_target_followup_on_current_victim(self):
+        model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=7,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+        signals = model.build_guess_signals(game_state)
+
+        target_followup_matrix = {
+            "opp": {
+                0: {("W", 3): 1.0},
+                1: {("B", 6): 0.72, ("B", 7): 0.28},
+            },
+            "side": {
+                0: {("W", 9): 0.70, ("W", 10): 0.30},
+                1: {("B", 2): 0.69, ("B", 3): 0.31},
+            },
+        }
+        off_target_cluster_matrix = {
+            "opp": {
+                0: {("W", 3): 1.0},
+                1: {("B", 5): 0.26, ("B", 7): 0.24, ("B", 9): 0.25, ("B", 11): 0.25},
+            },
+            "side": {
+                0: {("W", 9): 0.70, ("W", 10): 0.30},
+                1: {("B", 2): 0.69, ("B", 3): 0.31},
+            },
+        }
+
+        target_followup = model.estimate_continue_likelihood(
+            target_followup_matrix,
+            signals,
+            "me",
+            exclude_slot=("opp", 0),
+        )
+        off_target_cluster = model.estimate_continue_likelihood(
+            off_target_cluster_matrix,
+            signals,
+            "me",
+            exclude_slot=("opp", 0),
+        )
+
+        self.assertGreater(
+            target_followup["target_followup_attackability"],
+            off_target_cluster["target_followup_attackability"],
+        )
+        self.assertGreater(
+            target_followup["continue_likelihood"],
+            off_target_cluster["continue_likelihood"],
+        )
+
     def test_continuation_profile_prefers_recent_continue_signal(self):
         model = BehavioralLikelihoodModel()
         recent_continue_world = GameState(
