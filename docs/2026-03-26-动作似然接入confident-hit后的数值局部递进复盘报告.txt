@@ -1,0 +1,27 @@
+【本轮目标】
+在 value selection 里补“成功继续后的局部数值递进”。
+
+【本轮改动】
+1. 在 `backend/app/core/engine.py` 新增：
+   - `TARGET_VALUE_CONFIDENT_CHAIN_LOCAL_STEP_BONUS = 1.04`
+   - `TARGET_VALUE_CONFIDENT_CHAIN_JUMP_PENALTY = 0.95`
+2. 新增 `_previous_confident_success_numeric_guess(...)`，提取上一手同玩家、同色、猜对且继续的数值。
+3. 扩展 `_progressive_value_component(...)`：
+   - 如果没有失败历史，但存在上一手 confident hit
+   - 则对局部一步推进给 bonus
+   - 对大跨度跳跃给 penalty
+4. 在 `backend/tests/test1.py` 新增
+   `test_target_value_selection_prefers_local_step_after_confident_hit`。
+
+【为什么这轮值得做】
+之前 progressive 只覆盖“失败后的递进”，还没有覆盖“猜对继续后的递进”。
+但真实推理里，命中后继续往往更依赖刚刚确认出的局部值域，不会无缘无故从 `W2` 跳到 `W8`。
+
+【结果】
+在新测试里，`W2 hit+continue -> W3` 的假设得分会高于 `W2 hit+continue -> W8`。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续补 controller collapse 断言，把公开失败牌对非目标玩家候选池的去重也单独固定下来。

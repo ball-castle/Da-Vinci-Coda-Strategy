@@ -198,6 +198,8 @@ class BehavioralLikelihoodModel:
     TARGET_VALUE_DIRECTIONAL_BONUS = 1.03
     TARGET_VALUE_STALLED_PENALTY = 0.90
     TARGET_VALUE_WRONG_DIRECTION_PENALTY = 0.92
+    TARGET_VALUE_CONFIDENT_CHAIN_LOCAL_STEP_BONUS = 1.04
+    TARGET_VALUE_CONFIDENT_CHAIN_JUMP_PENALTY = 0.95
     TARGET_VALUE_SANDWICH_EXACT_BONUS = 1.12
     TARGET_VALUE_SANDWICH_FILL_BONUS = 1.06
     TARGET_VALUE_WIDE_GAP_CENTER_BONUS = 1.05
@@ -740,6 +742,7 @@ class BehavioralLikelihoodModel:
             guessed_numeric,
             target_numeric,
             self._prior_failed_numeric_guesses_on_slot(game_state, signal),
+            self._previous_confident_success_numeric_guess(game_state, signal),
         )
         anchor = self._same_color_anchor_value_component(
             guessed_numeric,
@@ -776,6 +779,7 @@ class BehavioralLikelihoodModel:
         guessed_numeric: int,
         target_numeric: int,
         prior_failed_values: Sequence[int],
+        previous_confident_value: Optional[int],
     ) -> Dict[str, Any]:
         component: Dict[str, Any] = {
             "weight": 1.0,
@@ -783,8 +787,18 @@ class BehavioralLikelihoodModel:
             "latest_failed_value": None,
             "expected_progress": None,
             "direction": 0,
+            "previous_confident_value": previous_confident_value,
         }
         if not prior_failed_values:
+            if previous_confident_value is None:
+                return component
+            delta_from_confident = abs(guessed_numeric - previous_confident_value)
+            if delta_from_confident == 1:
+                component["weight"] = self.TARGET_VALUE_CONFIDENT_CHAIN_LOCAL_STEP_BONUS
+                component["reason"] = "confident_chain_local_step"
+            elif delta_from_confident >= 4:
+                component["weight"] = self.TARGET_VALUE_CONFIDENT_CHAIN_JUMP_PENALTY
+                component["reason"] = "confident_chain_jump"
             return component
 
         latest_failed = prior_failed_values[-1]
@@ -815,6 +829,22 @@ class BehavioralLikelihoodModel:
             component["weight"] = self.TARGET_VALUE_WRONG_DIRECTION_PENALTY
             component["reason"] = "wrong_direction"
         return component
+
+    def _previous_confident_success_numeric_guess(
+        self,
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> Optional[int]:
+        previous_signal = self._previous_guess_signal(game_state, signal)
+        if previous_signal is None:
+            return None
+        if not previous_signal.result or not previous_signal.continued_turn:
+            return None
+        if previous_signal.target_player_id != signal.target_player_id:
+            return None
+        if previous_signal.guessed_card[0] != signal.guessed_card[0]:
+            return None
+        return numeric_card_value(previous_signal.guessed_card)
 
     def explain_guess_signals(
         self,
