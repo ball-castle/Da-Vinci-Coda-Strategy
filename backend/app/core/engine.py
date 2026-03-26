@@ -4016,8 +4016,23 @@ class GameController:
                         right_anchor = anchor
                         break
                 slack_sum += max(0.0, (right_anchor - left_anchor - 1) / (MAX_CARD_VALUE + 1))
-            flexibility_pressure[color] = slack_sum / len(values)
+                flexibility_pressure[color] = slack_sum / len(values)
         return flexibility_pressure
+
+    def _hidden_defense_pressure(self) -> Dict[str, float]:
+        hidden_counts = {
+            color: sum(
+                1
+                for slot in self.game_state.resolved_ordered_slots(self.game_state.self_player_id)
+                if not slot.is_revealed and getattr(slot, "color", None) == color
+            )
+            for color in CARD_COLORS
+        }
+        total_hidden = max(1, sum(hidden_counts.values()))
+        return {
+            "B": (hidden_counts["W"] - hidden_counts["B"]) / total_hidden,
+            "W": (hidden_counts["B"] - hidden_counts["W"]) / total_hidden,
+        }
 
     def _build_draw_color_summary(
         self,
@@ -4067,6 +4082,7 @@ class GameController:
             target_player_only=True,
         )
         self_flexibility_pressure = self._self_flexibility_pressure()
+        hidden_defense_pressure = self._hidden_defense_pressure()
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4095,6 +4111,7 @@ class GameController:
         }
         color_scores = {
             color: defense_balance[color]
+            + (0.28 * hidden_defense_pressure[color])
             + (
                 defense_guard_factor
                 * (
@@ -4114,6 +4131,9 @@ class GameController:
         )
         dominant_factor_margins = {
             "defense_balance": abs(defense_balance["B"] - defense_balance["W"]),
+            "hidden_defense_pressure": abs(
+                hidden_defense_pressure["B"] - hidden_defense_pressure["W"]
+            ),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
             "target_entropy_pressure": abs(
@@ -4135,6 +4155,8 @@ class GameController:
             "white_score": color_scores["W"],
             "defense_balance_black": defense_balance["B"],
             "defense_balance_white": defense_balance["W"],
+            "hidden_defense_pressure_black": hidden_defense_pressure["B"],
+            "hidden_defense_pressure_white": hidden_defense_pressure["W"],
             "offense_pressure_black": offense_pressure["B"],
             "offense_pressure_white": offense_pressure["W"],
             "entropy_pressure_black": entropy_pressure["B"],
