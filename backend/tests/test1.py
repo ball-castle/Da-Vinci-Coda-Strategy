@@ -632,6 +632,89 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(retry_weight, fresh_weight)
 
+    def test_target_slot_selection_prefers_adjacent_follow_after_confident_hit(self):
+        model = BehavioralLikelihoodModel()
+        adjacent_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=4, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=True,
+                    continued_turn=True,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=2,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+            ],
+        )
+        far_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=adjacent_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=True,
+                    continued_turn=True,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=3,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=False,
+                ),
+            ],
+        )
+
+        hypothesis = {"opp": {1: ("W", 2), 2: ("W", 5), 3: ("W", 8)}}
+        adjacent_signal = model.build_guess_signals(adjacent_world)["me"][-1]
+        far_signal = model.build_guess_signals(far_world)["me"][-1]
+
+        adjacent_weight = model._score_target_slot_selection(
+            adjacent_world,
+            hypothesis,
+            adjacent_signal,
+        )
+        far_weight = model._score_target_slot_selection(
+            far_world,
+            hypothesis,
+            far_signal,
+        )
+
+        self.assertGreater(adjacent_weight, far_weight)
+
     def test_target_value_selection_prefers_progressive_step_after_failed_guess(self):
         model = BehavioralLikelihoodModel()
         game_state = GameState(

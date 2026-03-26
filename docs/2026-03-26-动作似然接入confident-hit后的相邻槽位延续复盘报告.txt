@@ -1,0 +1,27 @@
+【本轮目标】
+在动作似然里补“猜对并继续后，优先沿相邻槽位推进”的局部连续性。
+
+【本轮改动】
+1. 在 `backend/app/core/engine.py` 新增 `TARGET_SLOT_CONFIDENT_ADJACENT_FOLLOW_BONUS = 1.04`。
+2. 新增 `_is_adjacent_slot_follow_after_confident_hit(...)`：
+   - 上一手必须猜对
+   - 上一手必须选择继续
+   - 当前仍攻击同一玩家
+   - 当前槽位与上一手槽位相邻
+3. 在 `_score_target_slot_selection(...)` 中接入该 bonus。
+4. 在 `backend/tests/test1.py` 新增
+   `test_target_slot_selection_prefers_adjacent_follow_after_confident_hit`。
+
+【为什么这轮值得做】
+`VinCi` 的主线要求我们把行为看成对隐藏状态的观测。
+猜对继续后，很多真实推理都沿着刚确认过的局部边界继续推进，而不是随意跳到远槽位。
+这轮把这种“局部边界延续”正式编码进 slot 选择。
+
+【结果】
+在新测试里，`slot1 hit+continue -> slot2` 会比 `slot1 hit+continue -> slot3` 获得更高的 target-slot selection 权重。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续把 stop/continue 的另一类压力项收成固定 decision case：低 attackability 导致停手。
