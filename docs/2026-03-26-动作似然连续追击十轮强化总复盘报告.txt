@@ -1,0 +1,102 @@
+2026-03-26 动作似然连续追击十轮强化总复盘报告
+
+一、这十轮的主目标
+
+这批十轮的目标，是把动作似然里的 attackability 从“看到一个高置信点就算强”推进成“是否存在可连续追击链”的结构化压力。
+
+每一轮开始前都先重读了 direction/VinCi.txt，方向上刻意避开了解释链和 summary 打磨，优先补的是：
+
+1. 打中了以后，是否还有第二手、第三手可追
+2. 当前被打的这个目标，是否已经进入 finish / collapse / pinned 的脆弱区
+3. continue / stop 的判断，是否真正依赖“同一目标上的剩余追击价值”
+
+
+二、十轮核心推进
+
+第 1 轮 `d42c01b reward finishing weakened targets in action likelihood`
+- 给 target player selection / player attackability 补 finish pressure
+- 让“只剩最后一两张暗牌的目标”在行为模型里更像自然追击对象
+
+第 2 轮 `9b49add prefer recently collapsed targets in action likelihood`
+- 把 recent public reveal 接进 target player pressure
+- 让刚被公开信息打穿的目标得到额外追击权重
+
+第 3 轮 `d6c2e4a prefer edge-pinned slots in action likelihood`
+- 把 edge-pinned slot 识别进 slot attackability
+- 让靠近全局边界、可取值空间被压缩的槽位更容易被优先攻击
+
+第 4 轮 `2e8526a reward slots next to recent public reveals`
+- 给 recent public reveal 的相邻 slot 增加 slot-level attackability
+- 让“明牌旁边的下一张”更像真实玩家会追的 probing / finishing 点
+
+第 5 轮 `1281ce9 blend secondary slot pressure into player attackability`
+- player attackability 不再只看最强单槽位
+- 开始把同一玩家身上的第二个活跃槽位混入总 pressure
+
+第 6 轮 `eb4dcf0 blend secondary certainty into continuation attackability`
+- continuation attackability 不再只看 success world 里的单点 certainty
+- 把第二个可追槽位纳入 post-hit continuation pressure
+
+第 7 轮 `b676c71 reward pressing finishable targets after a hit`
+- continue / stop 行为评分接入“打中后该目标还剩几张暗牌”
+- 当目标已经接近收尾时，继续追击更合理，停手更不合理
+
+第 8 轮 `e370b94 cluster continuation pressure by player`
+- continuation attackability 从“全场前两个高点”改成“按玩家聚合后取最大”
+- 让 continue 更像“锁定一个人连续追”，而不是把两个分散机会误判成强续压
+
+第 9 轮 `33e3445 blend target followup into continuation likelihood`
+- 在 post-hit continue likelihood 里显式区分全场 attackability 和当前目标 followup attackability
+- 让“当前打中的这个人还能不能继续追”真正影响继续概率
+
+第 10 轮 `c969d9a score same-target followup in continue decisions`
+- 把 same-target followup 直接接入 continue / stop 的行为似然评分
+- 现在行为模型会惩罚“目标明明还很好追却停手”，奖励“命中后顺势继续压同一目标”
+
+
+三、这一批完成后的能力变化
+
+做完这十轮后，动作似然里的连续追击逻辑已经从单点启发式推进成了一个更像真实策略链的结构：
+
+1. target player pressure 会看 finish、recent collapse、secondary live slot
+2. target slot pressure 会看 edge pin 和 recent reveal neighbor
+3. continuation attackability 会优先识别同一玩家身上的 followup cluster
+4. continue likelihood 会额外考虑“当前这个受害者还能不能继续追”
+5. continue / stop 行为评分已经开始把 same-target chain 当成显式信号
+
+这意味着现在模型在“猜对后继续还是停”上，已经不只是看一个泛化 attackability 数，而是开始真的回答：
+
+- 是不是同一个目标已经被打穿到可以连追
+- 场上是有一个成型连续链，还是只是零散有几个机会点
+- 停手到底是在规避风险，还是在放掉明显该继续的收尾窗口
+
+
+四、验证结果
+
+验证命令：
+python -m unittest discover -s backend/tests -p "test*.py"
+
+最终结果：
+101 / 101 通过
+
+
+五、本批价值判断
+
+这批十轮属于逻辑主线推进，不是解释层打磨。
+
+它真正增强的是模型在以下核心问题上的判断力：
+
+1. 猜中了以后，是不是应该追同一个目标
+2. 哪种 target / slot 更像真实最优化玩家会继续打
+3. continue / stop 到底有没有读到连续追击链本身
+
+和之前那几轮 post-hit debug / summary 相比，这一批更直接提高了模型本身的决策强度。
+
+
+六、下一步建议
+
+这一批把“连续追击链”的主骨架补出来了，下一步更值得继续做的是：
+
+1. 把 continue / stop 从单次命中后的判断，推进到更明确的 hit / miss 多分支 rollout
+2. 继续加强 P(action | state)，尤其是失败后换目标、停手、再开新目标之间的联合行为模式
+3. 把这些更强的 continuation 逻辑继续反哺主决策层，而不只停留在行为似然局部
