@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tests.fixed_decision_cases import FixedDecisionCase, assert_continue_summary, run_decision_case
 from app.core.engine import BehavioralLikelihoodModel, DaVinciDecisionEngine
 from app.core.state import CardSlot, GameState, GuessAction, PlayerState
 
@@ -140,6 +141,46 @@ class ContinuationLikelihoodTests(unittest.TestCase):
 
 
 class StopThresholdTests(unittest.TestCase):
+    def test_fixed_decision_case_runner_covers_strong_continue_edge(self):
+        case = FixedDecisionCase(
+            name="strong_continue_edge",
+            my_hidden_count=2,
+            all_moves=[
+                {
+                    "expected_value": 1.45,
+                    "win_probability": 0.58,
+                    "continuation_value": 0.72,
+                    "continuation_likelihood": 0.76,
+                    "attackability_after_hit": 0.68,
+                    "post_hit_continue_score": 0.92,
+                    "post_hit_stop_score": 0.54,
+                    "post_hit_continue_margin": 0.38,
+                    "post_hit_best_gap": 0.31,
+                    "post_hit_top_k_continue_margin": 0.29,
+                    "post_hit_top_k_support_ratio": 1.0,
+                },
+                {
+                    "expected_value": 0.71,
+                    "win_probability": 0.49,
+                    "continuation_value": 0.22,
+                    "continuation_likelihood": 0.55,
+                    "attackability_after_hit": 0.42,
+                    "post_hit_continue_score": 0.28,
+                    "post_hit_stop_score": 0.24,
+                    "post_hit_continue_margin": 0.04,
+                    "post_hit_best_gap": 0.09,
+                    "post_hit_top_k_continue_margin": 0.02,
+                    "post_hit_top_k_support_ratio": 0.67,
+                },
+            ],
+            checks=(assert_continue_summary,),
+        )
+
+        best_move, summary = run_decision_case(case)
+
+        self.assertIsNotNone(best_move)
+        self.assertGreater(summary["best_continuation_likelihood"], 0.70)
+
     def test_evaluate_all_moves_applies_behavior_guidance_to_continuation(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()

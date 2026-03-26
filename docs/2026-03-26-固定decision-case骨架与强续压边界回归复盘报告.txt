@@ -1,0 +1,117 @@
+2026-03-26 固定 decision case 骨架与强续压边界回归复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+本轮开始前，先重新读取了 `direction/VinCi.txt`。
+
+上一轮已经把固定 case 骨架补到了 controller 层，
+这一轮继续把验证体系往 decision 层推进。
+
+原因很直接：
+
+- `choose_best_move(...)` 里已经有很多窄边界逻辑
+- 但这些边界目前多数还是散落在普通单测里
+- 还没有形成“可以持续堆场景”的固定 decision case 骨架
+
+所以这一轮的目标是：
+
+- 为 decision 层建立固定 case runner
+- 先把“强续压正边界”这类关键 continue case 锁住
+
+二、本轮核心改动
+1. 新增固定 decision case helper
+位置：
+- `backend/tests/fixed_decision_cases.py`
+
+本轮新增：
+
+- `FixedDecisionCase`
+- `run_decision_case(...)`
+- `assert_continue_summary(...)`
+- `assert_stop_summary(...)`
+
+这套 helper 的作用是：
+
+- 让后续继续 / 停止关键场景可以直接沉淀成标准 case
+- 减少每轮都手写 choose_best_move 调用和重复断言
+
+2. 首条固定 decision case 锁定“强续压边界”
+位置：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_fixed_decision_case_runner_covers_strong_continue_edge`
+
+场景内容：
+
+- best move 有明显正 continuation edge
+- post-hit margin 和 top-k follow-up 也都支持继续
+- second move 明显弱于 first move
+
+验证内容：
+
+- fixed decision case runner 能直接跑通
+- `recommend_stop` 为假
+- `continue_margin > 0`
+- `best_continuation_likelihood > 0.70`
+
+三、本轮收益
+这一轮最大的收益，是把 decision 层验证也开始从“散测试函数”推进到“可沉淀 case 的结构化骨架”。
+
+这件事的重要性在于：
+
+- 继续 / 停止的逻辑，后面还会继续增强
+- 如果没有固定 decision case
+- 每加一条新边界，就更容易出现旧边界悄悄漂移
+
+所以这一轮虽然没有新增模型打分公式，
+但它直接提高了后续 decision 主链迭代的可控性。
+
+四、测试补充
+文件：
+- `backend/tests/fixed_decision_cases.py`
+- `backend/tests/test2.py`
+
+新增内容：
+
+- decision case dataclass 和 runner
+- continue / stop 通用断言 helper
+- 强续压固定 case
+
+并回归旧测试：
+- `test_choose_best_move_continues_on_strong_continuation_edge`
+
+确保新 case 骨架和旧测试结论一致。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 46 个测试全部通过
+
+六、当前阶段判断
+这轮仍然属于方向文档里要求的“固定 case / 基础验证体系”补强，而不是解释层推进。
+
+现在固定 case 骨架已经有两层：
+
+1. controller case
+2. decision case
+
+后面无论补动作似然，还是补 continue / stop 边界，
+都可以更稳定地把关键场景沉淀下来。
+
+七、下一步建议
+下一轮可以继续沿两个方向之一推进：
+
+1. 再补一条固定 decision case，锁定 stop 边界
+目标：
+- 让 continue / stop 两边都有标准回归场景
+
+2. 回到动作似然主线，补“失败后换目标”的历史逻辑
+目标：
+- 继续把 target player selection 从局部启发式推进到更结果条件化的行为建模
+
+八、一句话总结
+本轮推进的核心成果，是把固定 case / 验证体系继续从 controller 层推进到了 decision 层：先建立通用的 fixed decision case runner，再用一条强续压边界场景把 continue 主链锁成标准回归。
