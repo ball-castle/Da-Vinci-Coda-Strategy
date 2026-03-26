@@ -365,6 +365,96 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(focused_weight, switched_weight)
 
+    def test_target_player_selection_prefers_staying_on_same_player_after_confident_hit(self):
+        model = BehavioralLikelihoodModel()
+
+        focused_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=True,
+                    continued_turn=True,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        )
+        switched_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=focused_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=True,
+                    continued_turn=True,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=8,
+                    result=False,
+                ),
+            ],
+        )
+
+        hypothesis = {"opp": {1: ("W", 3)}, "side": {1: ("W", 8)}}
+        focused_signal = model.build_guess_signals(focused_world)["me"][-1]
+        switched_signal = model.build_guess_signals(switched_world)["me"][-1]
+
+        focused_weight = model._score_target_player_selection(
+            focused_world,
+            hypothesis,
+            focused_signal,
+        )
+        switched_weight = model._score_target_player_selection(
+            switched_world,
+            hypothesis,
+            switched_signal,
+        )
+
+        self.assertGreater(focused_weight, switched_weight)
+
     def test_target_slot_selection_rewards_retry_after_failed_same_slot(self):
         model = BehavioralLikelihoodModel()
         retry_world = GameState(

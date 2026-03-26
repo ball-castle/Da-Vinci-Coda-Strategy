@@ -176,6 +176,8 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_CLOSE_MATCH_BONUS = 1.03
     TARGET_PLAYER_WEAK_CHOICE_PENALTY = 0.94
     TARGET_PLAYER_REPEAT_FOCUS_BONUS = 1.04
+    TARGET_PLAYER_CONFIDENT_CHAIN_BONUS = 1.05
+    TARGET_PLAYER_BREAK_CONFIDENT_CHAIN_PENALTY = 0.95
 
     TARGET_SLOT_BEST_MATCH_BONUS = 1.08
     TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
@@ -513,6 +515,14 @@ class BehavioralLikelihoodModel:
         previous_signal = self._previous_guess_signal(game_state, signal)
         if previous_signal is not None and previous_signal.target_player_id == signal.target_player_id:
             weight *= self.TARGET_PLAYER_REPEAT_FOCUS_BONUS
+            if previous_signal.result and previous_signal.continued_turn:
+                weight *= self.TARGET_PLAYER_CONFIDENT_CHAIN_BONUS
+        elif (
+            previous_signal is not None
+            and previous_signal.result
+            and previous_signal.continued_turn
+        ):
+            weight *= self.TARGET_PLAYER_BREAK_CONFIDENT_CHAIN_PENALTY
         return weight
 
     def _score_target_slot_selection(
