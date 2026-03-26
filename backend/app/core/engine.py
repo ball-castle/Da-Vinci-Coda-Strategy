@@ -192,6 +192,8 @@ class BehavioralLikelihoodModel:
     TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS = 1.03
     SLOT_EDGE_PRESSURE_BONUS = 1.05
     SLOT_RECENT_REVEAL_NEIGHBOR_BONUS = 1.06
+    PLAYER_SECONDARY_ATTACKABILITY_BLEND = 0.20
+    PLAYER_FINISH_PRESSURE_BONUS = 0.26
 
     TARGET_IN_INTERVAL_BONUS = 1.15
     TARGET_NARROW_INTERVAL_BONUS = 1.10
@@ -1233,39 +1235,58 @@ class BehavioralLikelihoodModel:
         *,
         exclude_slot: Optional[SlotKey] = None,
     ) -> float:
-        best = 0.0
+        slot_pressures: List[float] = []
         for slot in game_state.resolved_ordered_slots(player_id):
             if slot.known_card() is not None:
                 continue
             key = slot_key(player_id, slot.slot_index)
             if exclude_slot is not None and key == exclude_slot:
                 continue
-            best = max(
-                best,
+            slot_pressures.append(
                 self._slot_attackability(
                     game_state,
                     hypothesis_by_player,
                     player_id,
                     slot.slot_index,
-                ),
+                )
             )
+        if not slot_pressures:
+            return 0.0
+        slot_pressures.sort(reverse=True)
+        best = slot_pressures[0]
+        if len(slot_pressures) >= 2:
+            best += self.PLAYER_SECONDARY_ATTACKABILITY_BLEND * slot_pressures[1]
+            best = clamp(best, 0.0, 1.0)
+        finish_pressure = self._player_finish_pressure(
+            game_state,
+            player_id,
+            exclude_slot=exclude_slot,
+        )
+        recent_public_reveal = self._recent_public_reveal_pressure(game_state, player_id)
+        return best * (
+            1.0
+            + (self.PLAYER_FINISH_PRESSURE_BONUS * finish_pressure)
+            + (self.PLAYER_RECENT_PUBLIC_REVEAL_BONUS * recent_public_reveal)
+        )
+
+    def _player_finish_pressure(
+        self,
+        game_state: GameState,
+        player_id: str,
+        *,
+        exclude_slot: Optional[SlotKey] = None,
+    ) -> float:
         hidden_count = sum(
             1
             for slot in game_state.resolved_ordered_slots(player_id)
             if slot.known_card() is None
             and (exclude_slot is None or slot_key(player_id, slot.slot_index) != exclude_slot)
         )
-        finish_pressure = clamp(
+        return clamp(
             (self.PLAYER_FINISH_PRESSURE_REFERENCE - float(hidden_count))
             / self.PLAYER_FINISH_PRESSURE_REFERENCE,
             0.0,
             1.0,
-        )
-        recent_public_reveal = self._recent_public_reveal_pressure(game_state, player_id)
-        return best * (
-            1.0
-            + (0.10 * finish_pressure)
-            + (self.PLAYER_RECENT_PUBLIC_REVEAL_BONUS * recent_public_reveal)
         )
 
     def _recent_public_reveal_pressure(

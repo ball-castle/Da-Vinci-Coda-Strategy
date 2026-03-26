@@ -294,7 +294,7 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
                         CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
                         CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
                         CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
-                        CardSlot(slot_index=3, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color=None, value=None, is_revealed=False),
                         CardSlot(slot_index=4, color="B", value=11, is_revealed=True),
                     ],
                 ),
@@ -319,20 +319,13 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
             ],
         )
 
-        finishing_signal = model.build_guess_signals(finishing_world)["me"][-1]
-        spread_signal = model.build_guess_signals(spread_world)["me"][-1]
-        finishing_hypothesis = {"opp": {1: ("W", 2)}, "side": {1: ("W", 8)}}
-        spread_hypothesis = {"opp": {1: ("W", 2), 3: ("W", 8)}, "side": {1: ("W", 8)}}
-
-        finishing_score = model._score_target_player_selection(
+        finishing_score = model._player_finish_pressure(
             finishing_world,
-            finishing_hypothesis,
-            finishing_signal,
+            "opp",
         )
-        spread_score = model._score_target_player_selection(
+        spread_score = model._player_finish_pressure(
             spread_world,
-            spread_hypothesis,
-            spread_signal,
+            "opp",
         )
 
         self.assertGreater(finishing_score, spread_score)
@@ -644,6 +637,62 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
         )
 
         self.assertGreater(reveal_neighbor_score, settled_neighbor_score)
+
+    def test_player_attackability_rewards_secondary_live_slot(self):
+        model = BehavioralLikelihoodModel()
+
+        clustered_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=4, color="B", value=7, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+        isolated_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": clustered_world.players["me"],
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=4, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        clustered_pressure = model._player_attackability(
+            clustered_world,
+            {"opp": {1: ("W", 2), 3: ("W", 5)}},
+            "opp",
+        )
+        isolated_pressure = model._player_attackability(
+            isolated_world,
+            {"opp": {1: ("W", 2), 3: ("W", 8)}},
+            "opp",
+        )
+
+        self.assertGreater(clustered_pressure, isolated_pressure)
 
     def test_target_player_selection_rewards_switch_after_failed_target_when_new_target_is_tighter(self):
         model = BehavioralLikelihoodModel()
