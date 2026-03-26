@@ -2787,6 +2787,60 @@ class GameControllerOutputTests(unittest.TestCase):
             draw_summary["draw_rollout_expected_win_probability_black"],
         )
 
+    def test_controller_draw_color_summary_uses_post_draw_target_retention_rollout(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=10, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=4, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=6, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=5, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=0, is_revealed=True),
+                        CardSlot(slot_index=4, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=5, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=11, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=2, is_revealed=True),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        result = GameController(game_state).run_turn()
+        draw_summary = result["draw_color_summary"]
+
+        self.assertGreater(
+            draw_summary["draw_rollout_target_retention_ratio_black"],
+            draw_summary["draw_rollout_target_retention_ratio_white"],
+        )
+        self.assertGreater(
+            draw_summary["draw_rollout_target_retention_pressure_black"],
+            draw_summary["draw_rollout_target_retention_pressure_white"],
+        )
+        self.assertGreaterEqual(
+            draw_summary["draw_rollout_color_alignment_ratio_black"],
+            draw_summary["draw_rollout_color_alignment_ratio_white"],
+        )
+
     def test_controller_returns_behavior_debug_for_guess_actions(self):
         game_state = GameState(
             self_player_id="me",

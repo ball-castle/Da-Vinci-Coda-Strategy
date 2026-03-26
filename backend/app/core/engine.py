@@ -4259,8 +4259,11 @@ class GameController:
             "expected_continuation_likelihood": {"B": 0.0, "W": 0.0},
             "expected_win_probability": {"B": 0.0, "W": 0.0},
             "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
+            "target_retention_ratio": {"B": 0.0, "W": 0.0},
+            "color_alignment_ratio": {"B": 0.0, "W": 0.0},
             "sample_count": {"B": 0.0, "W": 0.0},
         }
+        target_player_id = getattr(self.game_state, "target_player_id", None)
 
         for color in CARD_COLORS:
             sample_cards = self._representative_draw_cards(color)
@@ -4274,12 +4277,15 @@ class GameController:
             continuation_likelihood_sum = 0.0
             win_probability_sum = 0.0
             attackability_sum = 0.0
+            target_retention_count = 0.0
+            color_alignment_count = 0.0
             for drawn_card in sample_cards:
                 simulated_state = self._simulated_draw_game_state(drawn_card)
                 simulated_result = GameController(simulated_state).run_turn(
                     include_draw_color_summary=False,
                 )
                 simulated_decision = simulated_result.get("decision_summary", {})
+                simulated_best_move = simulated_result.get("best_move")
                 best_value_sum += float(simulated_decision.get("best_expected_value", 0.0))
                 immediate_value_sum += float(
                     simulated_decision.get("best_immediate_value", 0.0)
@@ -4296,6 +4302,19 @@ class GameController:
                 attackability_sum += float(
                     simulated_decision.get("best_attackability_after_hit", 0.0)
                 )
+                if isinstance(simulated_best_move, dict):
+                    if (
+                        target_player_id is not None
+                        and simulated_best_move.get("target_player_id") == target_player_id
+                    ):
+                        target_retention_count += 1.0
+                    guessed_card = simulated_best_move.get("guess_card")
+                    if (
+                        isinstance(guessed_card, tuple)
+                        and len(guessed_card) == 2
+                        and guessed_card[0] == color
+                    ):
+                        color_alignment_count += 1.0
 
             summary["expected_best_value"][color] = best_value_sum / len(sample_cards)
             summary["expected_immediate_value"][color] = (
@@ -4312,6 +4331,12 @@ class GameController:
             )
             summary["expected_attackability_after_hit"][color] = (
                 attackability_sum / len(sample_cards)
+            )
+            summary["target_retention_ratio"][color] = (
+                target_retention_count / len(sample_cards)
+            )
+            summary["color_alignment_ratio"][color] = (
+                color_alignment_count / len(sample_cards)
             )
 
         best_value_gap = (
@@ -4336,6 +4361,14 @@ class GameController:
         attackability_gap = (
             summary["expected_attackability_after_hit"]["B"]
             - summary["expected_attackability_after_hit"]["W"]
+        )
+        target_retention_gap = (
+            summary["target_retention_ratio"]["B"]
+            - summary["target_retention_ratio"]["W"]
+        )
+        color_alignment_gap = (
+            summary["color_alignment_ratio"]["B"]
+            - summary["color_alignment_ratio"]["W"]
         )
         summary["value_pressure"] = {
             "B": clamp(
@@ -4392,6 +4425,14 @@ class GameController:
                 -1.0,
                 1.0,
             ),
+        }
+        summary["target_retention_pressure"] = {
+            "B": clamp(target_retention_gap, -1.0, 1.0),
+            "W": clamp(-target_retention_gap, -1.0, 1.0),
+        }
+        summary["color_alignment_pressure"] = {
+            "B": clamp(color_alignment_gap, -1.0, 1.0),
+            "W": clamp(-color_alignment_gap, -1.0, 1.0),
         }
         return summary
 
@@ -4522,6 +4563,8 @@ class GameController:
                     + (0.06 * draw_rollout["continuation_likelihood_pressure"][color])
                     + (0.08 * draw_rollout["win_probability_pressure"][color])
                     + (0.10 * draw_rollout["attackability_pressure"][color])
+                    + (0.08 * draw_rollout["target_retention_pressure"][color])
+                    + (0.06 * draw_rollout["color_alignment_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -4601,6 +4644,14 @@ class GameController:
             "draw_rollout_win_probability_pressure_white": draw_rollout["win_probability_pressure"]["W"],
             "draw_rollout_attackability_pressure_black": draw_rollout["attackability_pressure"]["B"],
             "draw_rollout_attackability_pressure_white": draw_rollout["attackability_pressure"]["W"],
+            "draw_rollout_target_retention_ratio_black": draw_rollout["target_retention_ratio"]["B"],
+            "draw_rollout_target_retention_ratio_white": draw_rollout["target_retention_ratio"]["W"],
+            "draw_rollout_color_alignment_ratio_black": draw_rollout["color_alignment_ratio"]["B"],
+            "draw_rollout_color_alignment_ratio_white": draw_rollout["color_alignment_ratio"]["W"],
+            "draw_rollout_target_retention_pressure_black": draw_rollout["target_retention_pressure"]["B"],
+            "draw_rollout_target_retention_pressure_white": draw_rollout["target_retention_pressure"]["W"],
+            "draw_rollout_color_alignment_pressure_black": draw_rollout["color_alignment_pressure"]["B"],
+            "draw_rollout_color_alignment_pressure_white": draw_rollout["color_alignment_pressure"]["W"],
             "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
             "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
             "draw_rollout_edge_scale": draw_rollout_edge_scale,
