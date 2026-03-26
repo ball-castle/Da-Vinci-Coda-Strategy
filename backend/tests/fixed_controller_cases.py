@@ -126,3 +126,23 @@ def assert_card_absent_from_slot_candidates(
             )
 
     return _assert
+
+
+def assert_slot_candidate_count(
+    *,
+    player_id: str,
+    slot_index: int,
+    expected_count: int,
+) -> Callable[[Dict[str, Any]], None]:
+    def _assert(result: Dict[str, Any]) -> None:
+        actual = serialized_position_candidates(
+            result,
+            player_id=player_id,
+            slot_index=slot_index,
+        )
+        if len(actual) != expected_count:
+            raise AssertionError(
+                f"Expected {expected_count} candidates for player {player_id!r} slot {slot_index}, got {len(actual)}: {actual!r}."
+            )
+
+    return _assert

@@ -1,0 +1,25 @@
+【本轮目标】
+把“公开翻牌传播到非目标玩家后，候选宽度也会收窄”收成固定 controller case。
+
+【本轮改动】
+1. 在 `backend/tests/fixed_controller_cases.py` 新增
+   `assert_slot_candidate_count(...)`。
+2. 在 `backend/tests/test1.py` 新增
+   `test_fixed_controller_case_runner_shrinks_non_target_candidate_width_after_public_reveal`。
+3. 固定断言 `side.slot1` 在 `third` 公开翻出 `W5` 后，只剩 `3` 个候选。
+
+【为什么这轮值得做】
+上一轮只证明了非目标玩家不会再保留 `W5`。
+但更重要的是，传播后的候选空间确实变窄了，而不是“删掉一个值但整体还是散的”。
+这轮把“传播带来候选收窄”也固定下来。
+
+【结果】
+非目标玩家传播样本现在同时覆盖：
+1. 单牌去重
+2. 候选宽度收窄
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+第 21 轮开始切入抽黑/抽白，先落一个很小的 draw color 评估入口，不影响现有主决策流。
