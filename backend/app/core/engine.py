@@ -3916,6 +3916,9 @@ class GameController:
     """Coordinate hard inference, soft weighting, posterior blending, and move scoring."""
 
     BEHAVIOR_DEBUG_TOP_K = 3
+    DRAW_ROLLOUT_SAMPLE_LIMIT = 4
+    DRAW_ROLLOUT_VALUE_REFERENCE = 8.0
+    DRAW_ROLLOUT_EDGE_WINDOW = 0.80
 
     def __init__(self, game_state: GameState):
         self.game_state = game_state
@@ -4203,6 +4206,113 @@ class GameController:
         safety_gap = clamp((my_hidden_count - target_hidden_count) * 0.08, -0.18, 0.24)
         return clamp(1.0 + finish_bonus + safety_gap, 0.78, 1.55)
 
+    def _representative_draw_cards(self, color: str) -> List[Card]:
+        cards = sorted(
+            (card for card in self.inference_engine.available_cards if card[0] == color),
+            key=card_sort_key,
+        )
+        if len(cards) <= self.DRAW_ROLLOUT_SAMPLE_LIMIT:
+            return cards
+
+        sampled_indices = {
+            0,
+            len(cards) // 3,
+            (2 * len(cards)) // 3,
+            len(cards) - 1,
+        }
+        return [cards[index] for index in sorted(sampled_indices)]
+
+    def _simulated_draw_game_state(self, drawn_card: Card) -> GameState:
+        self_player = self.game_state.self_player()
+        next_slot_index = (
+            max((slot.slot_index for slot in self_player.slots), default=-1) + 1
+        )
+        simulated_self_slots = list(self_player.slots)
+        simulated_self_slots.append(
+            CardSlot(
+                slot_index=next_slot_index,
+                color=drawn_card[0],
+                value=drawn_card[1],
+                is_revealed=False,
+                is_newly_drawn=True,
+            )
+        )
+        simulated_players = dict(self.game_state.players)
+        simulated_players[self.game_state.self_player_id] = PlayerState(
+            player_id=self.game_state.self_player_id,
+            slots=simulated_self_slots,
+        )
+        return GameState(
+            self_player_id=self.game_state.self_player_id,
+            target_player_id=self.game_state.target_player_id,
+            players=simulated_players,
+            actions=list(self.game_state.actions),
+        )
+
+    def _draw_rollout_summary(self) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "expected_best_value": {"B": 0.0, "W": 0.0},
+            "expected_immediate_value": {"B": 0.0, "W": 0.0},
+            "sample_count": {"B": 0.0, "W": 0.0},
+        }
+
+        for color in CARD_COLORS:
+            sample_cards = self._representative_draw_cards(color)
+            summary["sample_count"][color] = float(len(sample_cards))
+            if not sample_cards:
+                continue
+
+            best_value_sum = 0.0
+            immediate_value_sum = 0.0
+            for drawn_card in sample_cards:
+                simulated_state = self._simulated_draw_game_state(drawn_card)
+                simulated_result = GameController(simulated_state).run_turn(
+                    include_draw_color_summary=False,
+                )
+                simulated_decision = simulated_result.get("decision_summary", {})
+                best_value_sum += float(simulated_decision.get("best_expected_value", 0.0))
+                immediate_value_sum += float(
+                    simulated_decision.get("best_immediate_value", 0.0)
+                )
+
+            summary["expected_best_value"][color] = best_value_sum / len(sample_cards)
+            summary["expected_immediate_value"][color] = (
+                immediate_value_sum / len(sample_cards)
+            )
+
+        best_value_gap = (
+            summary["expected_best_value"]["B"] - summary["expected_best_value"]["W"]
+        )
+        immediate_value_gap = (
+            summary["expected_immediate_value"]["B"]
+            - summary["expected_immediate_value"]["W"]
+        )
+        summary["value_pressure"] = {
+            "B": clamp(
+                best_value_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-best_value_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["immediate_value_pressure"] = {
+            "B": clamp(
+                immediate_value_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-immediate_value_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        return summary
+
     def _build_draw_color_summary(
         self,
         full_probability_matrix: Optional[FullProbabilityMatrix] = None,
@@ -4258,6 +4368,7 @@ class GameController:
         target_recent_momentum_pressure = self._target_recent_momentum_pressure()
         recent_self_exposure_pressure = self._recent_self_exposure_pressure()
         target_attack_window_factor = self._target_attack_window_factor()
+        draw_rollout = self._draw_rollout_summary()
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4284,7 +4395,7 @@ class GameController:
             / total_available
             for color in CARD_COLORS
         }
-        color_scores = {
+        base_color_scores = {
             color: defense_balance[color]
             + (0.28 * hidden_defense_pressure[color])
             + (0.26 * recent_self_exposure_pressure[color])
@@ -4306,6 +4417,25 @@ class GameController:
                             + (0.28 * target_attack_pressure[color])
                         )
                     )
+                )
+            )
+            for color in CARD_COLORS
+        }
+        pre_rollout_margin = abs(
+            base_color_scores["B"] - base_color_scores["W"]
+        )
+        draw_rollout_edge_scale = clamp(
+            1.0 - (pre_rollout_margin / self.DRAW_ROLLOUT_EDGE_WINDOW),
+            0.0,
+            1.0,
+        )
+        color_scores = {
+            color: base_color_scores[color]
+            + (
+                draw_rollout_edge_scale
+                * (
+                    (0.16 * draw_rollout["value_pressure"][color])
+                    + (0.08 * draw_rollout["immediate_value_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -4361,6 +4491,17 @@ class GameController:
             "hidden_defense_pressure_white": hidden_defense_pressure["W"],
             "recent_self_exposure_pressure_black": recent_self_exposure_pressure["B"],
             "recent_self_exposure_pressure_white": recent_self_exposure_pressure["W"],
+            "draw_rollout_expected_best_value_black": draw_rollout["expected_best_value"]["B"],
+            "draw_rollout_expected_best_value_white": draw_rollout["expected_best_value"]["W"],
+            "draw_rollout_expected_immediate_value_black": draw_rollout["expected_immediate_value"]["B"],
+            "draw_rollout_expected_immediate_value_white": draw_rollout["expected_immediate_value"]["W"],
+            "draw_rollout_value_pressure_black": draw_rollout["value_pressure"]["B"],
+            "draw_rollout_value_pressure_white": draw_rollout["value_pressure"]["W"],
+            "draw_rollout_immediate_value_pressure_black": draw_rollout["immediate_value_pressure"]["B"],
+            "draw_rollout_immediate_value_pressure_white": draw_rollout["immediate_value_pressure"]["W"],
+            "draw_rollout_sample_count_black": draw_rollout["sample_count"]["B"],
+            "draw_rollout_sample_count_white": draw_rollout["sample_count"]["W"],
+            "draw_rollout_edge_scale": draw_rollout_edge_scale,
             "offense_pressure_black": offense_pressure["B"],
             "offense_pressure_white": offense_pressure["W"],
             "entropy_pressure_black": entropy_pressure["B"],
@@ -4393,7 +4534,11 @@ class GameController:
             ),
         }
 
-    def run_turn(self) -> Dict[str, Any]:
+    def run_turn(
+        self,
+        *,
+        include_draw_color_summary: bool = True,
+    ) -> Dict[str, Any]:
         has_any_hidden_slots = bool(self.inference_engine.search_positions) or any(
             self.inference_engine.preassigned_hidden.values()
         )
@@ -4401,7 +4546,11 @@ class GameController:
         blocked_target_slots = {key for key in self.inference_engine.publicly_collapsed_slots if key[0] == getattr(self.game_state, "target_player_id", None)}
         my_hidden_count = self.game_state.my_hidden_count()
         default_risk = self.decision_engine.calculate_risk_factor(my_hidden_count)
-        draw_color_summary = self._build_draw_color_summary()
+        draw_color_summary = (
+            self._build_draw_color_summary()
+            if include_draw_color_summary
+            else {}
+        )
 
         if not has_any_hidden_slots:
             return {
@@ -4452,7 +4601,11 @@ class GameController:
             behavior_debug_signals=behavior_debug["signals"],
             acting_player_id=self.game_state.self_player_id,
         )
-        draw_color_summary = self._build_draw_color_summary(full_probability_matrix)
+        draw_color_summary = (
+            self._build_draw_color_summary(full_probability_matrix)
+            if include_draw_color_summary
+            else {}
+        )
 
         hidden_index_by_player = {
             player_id: self.game_state.hidden_index_by_slot(player_id)
