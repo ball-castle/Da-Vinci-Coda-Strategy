@@ -1,0 +1,27 @@
+2026-03-26 抽牌颜色建议接入可用牌压力固定样本复盘报告
+
+一、这轮改了什么
+
+这轮没有继续扩展 draw color 的新公式，而是把上一轮新增的 availability_pressure 做成固定 controller case。
+
+固定样本条件：
+1. 自己手牌黑白数量完全平衡，防守项不偏。
+2. 场上不存在隐藏位，进攻项不偏。
+3. 场上已经公开了更多白牌，导致黑牌剩余池更充足。
+
+预期输出：
+1. draw_color_summary.recommended_color = B
+2. draw_color_summary.dominant_factor = availability_pressure
+
+二、为什么要补这个样本
+
+目标 1 已经开始从“补一个抽牌建议字段”转向“真的做黑白决策”。只靠普通测试还不够，因为后面继续往 draw 逻辑里叠别的压力项时，很容易把 availability 的边界影响冲掉。
+
+把它钉成 fixed controller case 之后，后续如果出现以下回退，会第一时间暴露：
+1. availability 又退回到几乎无效的平手项。
+2. dominant_factor 判断顺序被别的因子抢走。
+3. 抽牌颜色在无防守偏差、无进攻偏差时退化成默认颜色。
+
+三、结果
+
+现在 draw color 逻辑已经不是只靠“单条普通样本”维持，而是拥有了固定边界保护。后面继续增强目标 1 时，可以更放心地往进攻/目标定向这类更强逻辑上叠加。
