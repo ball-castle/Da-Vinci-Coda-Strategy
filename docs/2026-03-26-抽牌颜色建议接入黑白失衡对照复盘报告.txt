@@ -1,0 +1,22 @@
+【本轮目标】
+把 draw color 的另一侧对照样本补齐，并让它进入 fixed controller case。
+
+【本轮改动】
+1. 在 `backend/tests/fixed_controller_cases.py` 新增
+   `assert_draw_color_recommendation(expected_color)`。
+2. 在 `backend/tests/test1.py` 新增
+   `test_fixed_controller_case_runner_prefers_black_when_self_hand_is_white_heavy`。
+3. 样本中我方手牌明显偏白，固定断言 `draw_color_summary.recommended_color == "B"`。
+
+【为什么这轮值得做】
+上一轮只验证了“偏黑时推荐摸白”。
+如果没有另一侧对照，就还不能证明当前 draw color 真的是在做颜色平衡，而不是偶然偏向白。
+
+【结果】
+draw color 的基础防守平衡现在有了黑白两侧对照，而且已经进入 fixed controller case。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+开始给 draw color 增加进攻项，不再只看我方颜色失衡，还要看对手隐藏分布里哪种颜色的不确定性更高。

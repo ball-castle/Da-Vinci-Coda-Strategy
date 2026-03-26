@@ -146,3 +146,15 @@ def assert_slot_candidate_count(
             )
 
     return _assert
+
+
+def assert_draw_color_recommendation(expected_color: str) -> Callable[[Dict[str, Any]], None]:
+    def _assert(result: Dict[str, Any]) -> None:
+        draw_summary = result.get("draw_color_summary", {})
+        actual = draw_summary.get("recommended_color")
+        if actual != expected_color:
+            raise AssertionError(
+                f"Expected draw_color_summary.recommended_color={expected_color!r}, got {actual!r}."
+            )
+
+    return _assert
