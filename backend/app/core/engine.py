@@ -4168,6 +4168,34 @@ class GameController:
             for color in CARD_COLORS
         }
 
+    def _recent_self_exposure_pressure(self) -> Dict[str, float]:
+        self_player_id = getattr(self.game_state, "self_player_id", None)
+        if self_player_id is None:
+            return {"B": 0.0, "W": 0.0}
+
+        exposure = {"B": 0.0, "W": 0.0}
+        total_recency = 0.0
+        relevant_actions = [
+            action
+            for action in getattr(self.game_state, "actions", ())
+            if getattr(action, "revealed_player_id", None) == self_player_id
+            and getattr(action, "revealed_color", None) in CARD_COLORS
+        ]
+        for reverse_index, action in enumerate(reversed(relevant_actions)):
+            color = getattr(action, "revealed_color", None)
+            if color not in CARD_COLORS:
+                continue
+            recency_weight = 1.0 / (reverse_index + 1.0)
+            exposure[color] += recency_weight
+            total_recency += recency_weight
+
+        if total_recency <= 0.0:
+            return {"B": 0.0, "W": 0.0}
+        return {
+            "B": (exposure["W"] - exposure["B"]) / total_recency,
+            "W": (exposure["B"] - exposure["W"]) / total_recency,
+        }
+
     def _build_draw_color_summary(
         self,
         full_probability_matrix: Optional[FullProbabilityMatrix] = None,
@@ -4221,6 +4249,7 @@ class GameController:
         target_finish_pressure = self._target_finish_pressure(full_probability_matrix)
         target_focus_pressure = self._target_focus_pressure(full_probability_matrix)
         target_recent_momentum_pressure = self._target_recent_momentum_pressure()
+        recent_self_exposure_pressure = self._recent_self_exposure_pressure()
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4250,6 +4279,7 @@ class GameController:
         color_scores = {
             color: defense_balance[color]
             + (0.28 * hidden_defense_pressure[color])
+            + (0.26 * recent_self_exposure_pressure[color])
             + (
                 defense_guard_factor
                 * (
@@ -4275,6 +4305,10 @@ class GameController:
             "defense_balance": abs(defense_balance["B"] - defense_balance["W"]),
             "hidden_defense_pressure": abs(
                 hidden_defense_pressure["B"] - hidden_defense_pressure["W"]
+            ),
+            "recent_self_exposure_pressure": abs(
+                recent_self_exposure_pressure["B"]
+                - recent_self_exposure_pressure["W"]
             ),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
@@ -4312,6 +4346,8 @@ class GameController:
             "defense_balance_white": defense_balance["W"],
             "hidden_defense_pressure_black": hidden_defense_pressure["B"],
             "hidden_defense_pressure_white": hidden_defense_pressure["W"],
+            "recent_self_exposure_pressure_black": recent_self_exposure_pressure["B"],
+            "recent_self_exposure_pressure_white": recent_self_exposure_pressure["W"],
             "offense_pressure_black": offense_pressure["B"],
             "offense_pressure_white": offense_pressure["W"],
             "entropy_pressure_black": entropy_pressure["B"],
@@ -4339,7 +4375,7 @@ class GameController:
             "defense_guard_factor": defense_guard_factor,
             "dominant_factor": max(
                 dominant_factor_margins,
-                key=dominant_factor_margins.get,
+                key=lambda factor: round(dominant_factor_margins[factor], 8),
             ),
         }
 

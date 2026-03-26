@@ -2433,6 +2433,80 @@ class GameControllerOutputTests(unittest.TestCase):
             "target_recent_momentum_pressure",
         )
 
+    def test_controller_draw_color_summary_uses_recent_self_exposure_pressure(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=2, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=4, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=6, is_revealed=False),
+                        CardSlot(slot_index=4, color="W", value=8, is_revealed=False),
+                        CardSlot(slot_index=5, color="W", value=10, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=5, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=9, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=1, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="B",
+                    guessed_value=7,
+                    result=False,
+                    revealed_player_id="me",
+                    revealed_slot_index=2,
+                    revealed_color="W",
+                    revealed_value=4,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="B",
+                    guessed_value=8,
+                    result=False,
+                    revealed_player_id="me",
+                    revealed_slot_index=4,
+                    revealed_color="W",
+                    revealed_value=8,
+                ),
+            ],
+        )
+
+        result = GameController(game_state).run_turn()
+        draw_summary = result["draw_color_summary"]
+
+        self.assertEqual(draw_summary["recommended_color"], "B")
+        self.assertGreater(
+            draw_summary["recent_self_exposure_pressure_black"],
+            draw_summary["recent_self_exposure_pressure_white"],
+        )
+        self.assertEqual(
+            draw_summary["dominant_factor"],
+            "recent_self_exposure_pressure",
+        )
+
     def test_controller_returns_behavior_debug_for_guess_actions(self):
         game_state = GameState(
             self_player_id="me",
