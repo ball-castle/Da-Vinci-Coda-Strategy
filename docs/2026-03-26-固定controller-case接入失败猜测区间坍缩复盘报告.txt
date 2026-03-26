@@ -1,0 +1,28 @@
+【本轮目标】
+把“失败猜测 + 公开惩罚牌”带来的区间坍缩，正式收成固定 controller case，不只验证概率质量，还验证目标槽位的候选集合是否真的被压缩。
+
+【本轮改动】
+1. 在 `backend/tests/fixed_controller_cases.py` 新增：
+   - `serialized_position_candidates(...)`
+   - `assert_slot_candidate_set(...)`
+2. 在 `backend/tests/test1.py` 新增 `test_fixed_controller_case_runner_covers_failed_guess_interval_collapse`。
+3. 固定 case 直接断言 `opp` 的目标暗槽候选集合坍缩为：
+   - `W-`
+   - `W1`
+   - `W2`
+   - `W3`
+
+【为什么这轮值得做】
+`VinCi` 的主线不是只排掉一张明牌，而是公共信息进入后，全场候选空间要真实坍缩。
+之前的 controller case 只验证了 `W5` 被移除，还不够说明“失败猜测 + 明牌公开”真的缩紧了目标区间。
+这轮把“坍缩后的候选集合”直接钉住，能更早发现全局约束传播被改坏。
+
+【结果】
+1. controller 固定 case 从“单牌移除”升级到了“槽位级候选集合坍缩”。
+2. 当前样本证明：`guess miss on W6 + reveal W5` 后，目标槽位不会再漂回高位区间。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续回到动作似然主干，补一类“失败后转移目标时，颜色/数值连续性也要参与权衡”的小逻辑点。

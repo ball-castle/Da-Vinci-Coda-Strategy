@@ -54,3 +54,53 @@ def all_serialized_candidate_cards(result: Dict[str, Any]) -> List[List[Any]]:
             for candidate in position.get("candidates", []):
                 cards.append(list(candidate.get("card", [])))
     return cards
+
+
+def serialized_position_candidates(
+    result: Dict[str, Any],
+    *,
+    player_id: str,
+    slot_index: int,
+) -> List[List[Any]]:
+    for player in result.get("full_probability_matrix", []):
+        if player.get("player_id") != player_id:
+            continue
+        for position in player.get("positions", []):
+            if int(position.get("target_slot_index", -1)) == slot_index:
+                return [
+                    list(candidate.get("card", []))
+                    for candidate in position.get("candidates", [])
+                ]
+    raise AssertionError(
+        f"Could not find serialized candidates for player {player_id!r} slot {slot_index}."
+    )
+
+
+def assert_slot_candidate_set(
+    *,
+    player_id: str,
+    slot_index: int,
+    expected_cards: Sequence[Sequence[Any]],
+) -> Callable[[Dict[str, Any]], None]:
+    def _normalize(cards: Sequence[Sequence[Any]]) -> List[List[Any]]:
+        return sorted(
+            [list(card) for card in cards],
+            key=lambda card: (str(card[0]), str(card[1])),
+        )
+
+    expected = _normalize(expected_cards)
+
+    def _assert(result: Dict[str, Any]) -> None:
+        actual = _normalize(
+            serialized_position_candidates(
+                result,
+                player_id=player_id,
+                slot_index=slot_index,
+            )
+        )
+        if actual != expected:
+            raise AssertionError(
+                f"Expected candidate set {expected!r} for player {player_id!r} slot {slot_index}, got {actual!r}."
+            )
+
+    return _assert
