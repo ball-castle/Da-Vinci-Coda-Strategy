@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 from tests.fixed_decision_cases import (
     FixedDecisionCase,
     assert_continue_summary,
+    assert_positive_breakdown,
     assert_stop_summary,
     run_decision_case,
 )
@@ -1766,6 +1767,36 @@ class StopThresholdTests(unittest.TestCase):
 
         self.assertIsNone(best_move)
         self.assertGreater(summary["decision_score_breakdown"]["rollout_pressure"], 0.0)
+
+    def test_fixed_decision_case_runner_covers_fragile_positive_stop_edge(self):
+        case = FixedDecisionCase(
+            name="fragile_positive_stop_edge",
+            my_hidden_count=2,
+            all_moves=[
+                {
+                    "expected_value": 0.81,
+                    "win_probability": 0.57,
+                    "continuation_value": 0.16,
+                    "continuation_likelihood": 0.61,
+                    "attackability_after_hit": 0.74,
+                    "post_hit_continue_score": 0.35,
+                    "post_hit_stop_score": 0.24,
+                    "post_hit_continue_margin": 0.11,
+                    "post_hit_best_gap": 0.02,
+                    "post_hit_top_k_continue_margin": 0.05,
+                    "post_hit_top_k_support_ratio": 0.33,
+                },
+            ],
+            checks=(
+                assert_stop_summary,
+                assert_positive_breakdown("fragile_rollout_pressure"),
+            ),
+        )
+
+        best_move, summary = run_decision_case(case)
+
+        self.assertIsNone(best_move)
+        self.assertEqual(summary["decision_score_breakdown"]["rollout_pressure"], 0.0)
 
     def test_choose_best_move_penalizes_fragile_positive_post_hit_gap(self):
         engine = DaVinciDecisionEngine()

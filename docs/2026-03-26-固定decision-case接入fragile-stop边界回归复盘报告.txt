@@ -1,0 +1,23 @@
+【本轮目标】
+把已经存在于 stop/continue 单测里的 fragile post-hit stop 场景，沉淀成固定 decision case，作为后续决策边界调参时的稳定回归样本。
+
+【本轮改动】
+1. 在 `backend/tests/fixed_decision_cases.py` 新增 `assert_positive_breakdown(component)`，允许固定 case 直接约束某个决策压力项必须为正。
+2. 在 `backend/tests/test2.py` 新增 `test_fixed_decision_case_runner_covers_fragile_positive_stop_edge`。
+3. 用固定 case 复现“post-hit 表面仍为正，但 best gap 很窄且 top-k 支撑弱，最终应停手”的边界。
+
+【为什么这轮值得做】
+最近 stop/continue 逻辑已经叠加了 rollout、fragility、top-k support 多个压力项。
+如果 fragile 正边界只留在普通单测里，后续继续调 decision breakdown 时，容易保留最终 stop 结果，却悄悄改坏压力来源。
+固定 case 可以把“为什么停”也一起钉住。
+
+【结果】
+1. fragile positive stop edge 现在进入固定回归骨架。
+2. case 不仅要求 `recommend_stop=True`，还要求 `fragile_rollout_pressure > 0`。
+3. rollout 主压力保持为 0，说明当前命中的确是 fragile 分支，而不是被别的 stop 项误伤。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续把 weak top-k follow-up support 也收进固定 decision case，补齐另一类 stop 边界基准。

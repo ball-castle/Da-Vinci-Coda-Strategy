@@ -52,3 +52,14 @@ def assert_stop_summary(best_move: Optional[Dict[str, Any]], summary: Dict[str, 
         raise AssertionError("Expected recommend_stop to be True for stop case.")
     if float(summary.get("continue_margin", 0.0)) >= 0.0:
         raise AssertionError("Expected continue_margin to be negative for stop case.")
+
+
+def assert_positive_breakdown(component: str) -> Callable[[Optional[Dict[str, Any]], Dict[str, Any]], None]:
+    def _assert(best_move: Optional[Dict[str, Any]], summary: Dict[str, Any]) -> None:
+        breakdown = summary.get("decision_score_breakdown", {})
+        if float(breakdown.get(component, 0.0)) <= 0.0:
+            raise AssertionError(
+                f"Expected decision_score_breakdown[{component!r}] to be positive."
+            )
+
+    return _assert
