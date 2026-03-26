@@ -2256,6 +2256,51 @@ class GameControllerOutputTests(unittest.TestCase):
         )
         self.assertEqual(draw_summary["dominant_factor"], "target_boundary_pressure")
 
+    def test_controller_draw_color_summary_uses_target_finish_pressure(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=10, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=4, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=6, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=5, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=0, is_revealed=True),
+                        CardSlot(slot_index=4, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value="-", is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value="-", is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        result = GameController(game_state).run_turn()
+        draw_summary = result["draw_color_summary"]
+
+        self.assertEqual(draw_summary["recommended_color"], "B")
+        self.assertGreater(
+            draw_summary["target_finish_pressure_black"],
+            draw_summary["target_finish_pressure_white"],
+        )
+        self.assertEqual(draw_summary["dominant_factor"], "target_finish_pressure")
+
     def test_controller_returns_behavior_debug_for_guess_actions(self):
         game_state = GameState(
             self_player_id="me",
