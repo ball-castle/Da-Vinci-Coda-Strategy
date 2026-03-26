@@ -1,0 +1,105 @@
+2026-03-26 固定 decision case 接入 stop 边界回归复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+本轮开始前，先重新读取了 `direction/VinCi.txt`。
+
+上一轮已经把固定 decision case 骨架接到了 continue 边界，
+这一轮把对应的 stop 边界也沉成标准 case。
+
+原因很简单：
+
+- continue case 只锁住了一半决策空间
+- 如果没有对应的 stop case
+- 后面继续调 continue / stop 边界时，仍然容易只守住“敢继续”的一侧，守不住“该停手”的一侧
+
+所以这一轮的目标是：
+
+- 继续复用 fixed decision case 骨架
+- 把 rollout 负边界 stop case 正式加入标准回归
+
+二、本轮核心改动
+1. fixed decision case runner 开始覆盖 stop 场景
+位置：
+- `backend/tests/test2.py`
+
+新增测试：
+- `test_fixed_decision_case_runner_covers_rollout_stop_edge`
+
+场景内容：
+
+- `post_hit_continue_margin` 为明显负值
+- `post_hit_top_k_continue_margin` 也为 0
+- 当前续压后继支撑不足
+
+预期：
+
+- fixed case runner 应输出 stop
+- `rollout_pressure > 0`
+
+2. continue / stop 两侧都开始进入统一 case 体系
+到这一轮为止，固定 decision case 骨架已经至少覆盖：
+
+- 强 continue 边界
+- 明显 stop 边界
+
+这意味着后续再做 stop / continue 主链增强时，
+不再只是靠零散单测验证，
+而开始有成对的关键边界回归。
+
+三、本轮收益
+这一轮最大的收益，是让固定 decision case 从“只覆盖 continue 正边界”，推进成了“continue / stop 两侧都有代表性场景”。
+
+这对后续 continue / stop 主链改动非常重要，因为：
+
+- 很多改动不会把 continue case 打坏
+- 但会悄悄把 stop case 推歪
+
+现在至少有一条明显的 rollout stop edge 被锁住了。
+
+四、测试补充
+文件：
+- `backend/tests/test2.py`
+
+新增内容：
+
+- stop 边界 fixed decision case
+
+并回归旧测试：
+- `test_choose_best_move_uses_negative_post_hit_margin_as_rollout_pressure`
+
+确保新固定 case 与旧边界测试结论一致。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 47 个测试全部通过
+
+六、当前阶段判断
+这轮仍然是验证体系主线推进，不是解释推进。
+
+现在固定 decision case 骨架已经开始同时覆盖：
+
+- 应继续
+- 应停手
+
+后续无论是继续补动作似然，还是继续补 continue / stop 的逻辑边界，
+这套骨架都会更有价值。
+
+七、下一步建议
+下一轮可以继续沿两个方向之一推进：
+
+1. 再补一条固定 case，锁定 post-hit support fragility stop 边界
+目标：
+- 让 stop case 不只覆盖负 rollout margin
+- 也覆盖 fragile follow-up 这类更细边界
+
+2. 回到动作似然主线，正式补“失败后换目标”的历史逻辑
+目标：
+- 让 target player selection 继续吸收失败后的结果条件化信息
+
+八、一句话总结
+本轮推进的核心成果，是把固定 decision case 骨架正式接进了 stop 边界回归，让 continue / stop 主链第一次都拥有了结构化的标准边界 case，而不再只靠零散单测守住一侧。

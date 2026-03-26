@@ -5,7 +5,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tests.fixed_decision_cases import FixedDecisionCase, assert_continue_summary, run_decision_case
+from tests.fixed_decision_cases import (
+    FixedDecisionCase,
+    assert_continue_summary,
+    assert_stop_summary,
+    run_decision_case,
+)
 from app.core.engine import BehavioralLikelihoodModel, DaVinciDecisionEngine
 from app.core.state import CardSlot, GameState, GuessAction, PlayerState
 
@@ -1734,6 +1739,33 @@ class StopThresholdTests(unittest.TestCase):
         self.assertGreater(summary["decision_score_breakdown"]["rollout_pressure"], 0.0)
         self.assertEqual(summary["decision_score_breakdown"]["attackability_pressure"], 0.0)
         self.assertLess(summary["continue_margin"], 0.0)
+
+    def test_fixed_decision_case_runner_covers_rollout_stop_edge(self):
+        case = FixedDecisionCase(
+            name="rollout_stop_edge",
+            my_hidden_count=2,
+            all_moves=[
+                {
+                    "expected_value": 0.84,
+                    "win_probability": 0.56,
+                    "continuation_value": 0.19,
+                    "continuation_likelihood": 0.63,
+                    "attackability_after_hit": 0.72,
+                    "post_hit_continue_score": 0.22,
+                    "post_hit_stop_score": 0.58,
+                    "post_hit_continue_margin": -0.36,
+                    "post_hit_best_gap": 0.02,
+                    "post_hit_top_k_continue_margin": 0.0,
+                    "post_hit_top_k_support_ratio": 0.0,
+                },
+            ],
+            checks=(assert_stop_summary,),
+        )
+
+        best_move, summary = run_decision_case(case)
+
+        self.assertIsNone(best_move)
+        self.assertGreater(summary["decision_score_breakdown"]["rollout_pressure"], 0.0)
 
     def test_choose_best_move_penalizes_fragile_positive_post_hit_gap(self):
         engine = DaVinciDecisionEngine()
