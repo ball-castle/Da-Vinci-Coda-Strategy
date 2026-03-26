@@ -3960,20 +3960,31 @@ class GameController:
             }
         else:
             offense_pressure = {"B": 0.0, "W": 0.0}
-        availability_tiebreak = {
-            color: available_counts[color] / total_available
+        availability_pressure = {
+            color: (
+                available_counts[color]
+                - available_counts["W" if color == "B" else "B"]
+            )
+            / total_available
             for color in CARD_COLORS
         }
         color_scores = {
             color: defense_balance[color]
             + (0.35 * offense_pressure[color])
-            + (0.01 * availability_tiebreak[color])
+            + (0.18 * availability_pressure[color])
             for color in CARD_COLORS
         }
         recommended_color = max(
             CARD_COLORS,
             key=lambda color: (color_scores[color], available_counts[color], color),
         )
+        dominant_factor_margins = {
+            "defense_balance": abs(defense_balance["B"] - defense_balance["W"]),
+            "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
+            "availability_pressure": abs(
+                availability_pressure["B"] - availability_pressure["W"]
+            ),
+        }
         return {
             "recommended_color": recommended_color,
             "black_score": color_scores["B"],
@@ -3982,15 +3993,15 @@ class GameController:
             "defense_balance_white": defense_balance["W"],
             "offense_pressure_black": offense_pressure["B"],
             "offense_pressure_white": offense_pressure["W"],
+            "availability_pressure_black": availability_pressure["B"],
+            "availability_pressure_white": availability_pressure["W"],
             "available_black_count": available_counts["B"],
             "available_white_count": available_counts["W"],
             "self_black_count": self_counts["B"],
             "self_white_count": self_counts["W"],
-            "dominant_factor": (
-                "offense_pressure"
-                if abs(offense_pressure["B"] - offense_pressure["W"])
-                > abs(defense_balance["B"] - defense_balance["W"])
-                else "defense_balance"
+            "dominant_factor": max(
+                dominant_factor_margins,
+                key=dominant_factor_margins.get,
             ),
         }
 

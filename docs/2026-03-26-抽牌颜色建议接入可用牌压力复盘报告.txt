@@ -1,0 +1,37 @@
+2026-03-26 抽牌颜色建议接入可用牌压力复盘报告
+
+一、这轮改了什么
+
+这轮把 draw color 建议里的 availability 从几乎不起作用的 0.01 平手项，升级成了真正参与决策的 availability_pressure。
+
+具体做法：
+1. 不再只看某种颜色在未知池里的绝对占比，而是直接比较黑白两色的剩余可用数量差。
+2. 当黑牌明显比白牌更充足时，black 的 availability_pressure 为正，white 为负；反过来同理。
+3. 把这项压力正式并入 draw score，而不是继续让它只做微弱 tie-break。
+4. summary 里新增 availability_pressure_black / availability_pressure_white，dominant_factor 也改成在 defense / offense / availability 三者里选真正主导项。
+
+二、为什么要这样改
+
+根据 direction 里的目标 1，抽黑还是抽白本质上是一个局势决策，而不是只在同分时随手偏一下。
+
+如果某个颜色剩余池明显更大，摸这一色通常意味着：
+1. 后续可获得的数值覆盖更宽。
+2. 牌池没有那么快被抽干，策略连续性更强。
+3. 当防守平衡和进攻压力都不明显时，这个量应该能单独推动决策。
+
+所以这轮的核心不是补解释，而是把“剩余可用牌差异”真正升格为目标 1 的一个逻辑量。
+
+三、回归样本
+
+新增了一个平衡手牌样本：
+1. 自己黑白数量完全平衡，防守项不偏。
+2. 场上没有隐藏进攻压力，offense 也不偏。
+3. 但白牌已经公开得更多，黑牌剩余明显更充足。
+
+预期结果：
+1. recommended_color 应该偏向黑牌。
+2. dominant_factor 应该是 availability_pressure。
+
+四、结果
+
+这轮完成后，draw color 建议在“防守平衡接近持平、隐藏进攻压力也不强”的局面里，已经能根据剩余牌池结构自己做出更像样的黑白选择，而不是退化成默认偏序。
