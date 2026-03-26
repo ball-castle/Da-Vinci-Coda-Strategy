@@ -2507,6 +2507,88 @@ class GameControllerOutputTests(unittest.TestCase):
             "recent_self_exposure_pressure",
         )
 
+    def test_controller_draw_color_summary_scales_target_window_by_phase(self):
+        aggressive_game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=10, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=4, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=6, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=5, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=0, is_revealed=True),
+                        CardSlot(slot_index=4, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value="-", is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value="-", is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+        conservative_game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=10, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=4, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=6, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=5, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=0, is_revealed=True),
+                        CardSlot(slot_index=4, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value="-", is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value="-", is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        aggressive_result = GameController(aggressive_game_state).run_turn()
+        conservative_result = GameController(conservative_game_state).run_turn()
+        aggressive_summary = aggressive_result["draw_color_summary"]
+        conservative_summary = conservative_result["draw_color_summary"]
+
+        self.assertGreater(
+            aggressive_summary["target_attack_window_factor"],
+            conservative_summary["target_attack_window_factor"],
+        )
+        self.assertGreater(
+            aggressive_summary["black_score"] - aggressive_summary["white_score"],
+            conservative_summary["black_score"] - conservative_summary["white_score"],
+        )
+
     def test_controller_returns_behavior_debug_for_guess_actions(self):
         game_state = GameState(
             self_player_id="me",

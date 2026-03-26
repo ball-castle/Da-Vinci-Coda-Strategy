@@ -4196,6 +4196,13 @@ class GameController:
             "W": (exposure["B"] - exposure["W"]) / total_recency,
         }
 
+    def _target_attack_window_factor(self) -> float:
+        target_hidden_count = len(self.game_state.target_hidden_slots())
+        my_hidden_count = self.game_state.my_hidden_count()
+        finish_bonus = clamp((2 - target_hidden_count) * 0.18, 0.0, 0.36)
+        safety_gap = clamp((my_hidden_count - target_hidden_count) * 0.08, -0.18, 0.24)
+        return clamp(1.0 + finish_bonus + safety_gap, 0.78, 1.55)
+
     def _build_draw_color_summary(
         self,
         full_probability_matrix: Optional[FullProbabilityMatrix] = None,
@@ -4250,6 +4257,7 @@ class GameController:
         target_focus_pressure = self._target_focus_pressure(full_probability_matrix)
         target_recent_momentum_pressure = self._target_recent_momentum_pressure()
         recent_self_exposure_pressure = self._recent_self_exposure_pressure()
+        target_attack_window_factor = self._target_attack_window_factor()
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4285,14 +4293,19 @@ class GameController:
                 * (
                     (0.35 * offense_pressure[color])
                     + (0.24 * entropy_pressure[color])
-                    + (0.24 * target_entropy_pressure[color])
-                    + (0.34 * target_boundary_pressure[color])
-                    + (0.26 * target_finish_pressure[color])
-                    + (0.26 * target_focus_pressure[color])
-                    + (0.24 * target_recent_momentum_pressure[color])
-                    + (0.28 * target_attack_pressure[color])
                     + (0.18 * availability_pressure[color])
                     + (0.22 * self_flexibility_pressure[color])
+                    + (
+                        target_attack_window_factor
+                        * (
+                            (0.24 * target_entropy_pressure[color])
+                            + (0.34 * target_boundary_pressure[color])
+                            + (0.26 * target_finish_pressure[color])
+                            + (0.26 * target_focus_pressure[color])
+                            + (0.24 * target_recent_momentum_pressure[color])
+                            + (0.28 * target_attack_pressure[color])
+                        )
+                    )
                 )
             )
             for color in CARD_COLORS
@@ -4373,6 +4386,7 @@ class GameController:
             "self_black_count": self_counts["B"],
             "self_white_count": self_counts["W"],
             "defense_guard_factor": defense_guard_factor,
+            "target_attack_window_factor": target_attack_window_factor,
             "dominant_factor": max(
                 dominant_factor_margins,
                 key=lambda factor: round(dominant_factor_margins[factor], 8),

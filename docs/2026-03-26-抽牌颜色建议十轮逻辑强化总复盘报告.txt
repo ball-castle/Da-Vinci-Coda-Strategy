@@ -1,0 +1,117 @@
+2026-03-26 抽牌颜色建议十轮逻辑强化总复盘报告
+
+一、本批目标
+
+这一批的目标不是继续补解释字段，而是沿着 direction/VinCi.txt 的主线，把“摸黑还是摸白”的决策从基础防守/进攻启发式，推进成一个同时吸收：
+
+1. 全场概率矩阵
+2. 当前目标局部结构
+3. 最近动作历史
+4. 当前攻防阶段
+
+的综合逻辑模块。
+
+执行规则也在这批内固定下来：
+
+1. 每轮开始先读 VinCi.txt
+2. 每轮必须包含一项真实逻辑增强
+3. 每轮跑全量测试
+4. 每轮自动 git commit
+5. 不再一轮一份复盘，改为十轮汇总一份
+
+二、本批 10 轮改动
+
+第 1 轮：add global entropy pressure to draw color advice
+
+把全场隐藏位按颜色的分布熵接入 draw_color_summary。原先抽色更多看“数量”和“目标局部”，这轮开始显式区分“哪种颜色在全场更混沌、更值得抽来继续获取信息”。
+
+第 2 轮：add target entropy pressure to draw color advice
+
+把熵从全场下沉到当前目标。这样 draw 建议不只看全局乱不乱，也看“当前要打的人”在黑/白两边哪个颜色更难定、更值得继续追。
+
+第 3 轮：add self flexibility pressure to draw color advice
+
+把我方同色锚点与可用数字缝隙接进抽色。某种颜色如果更容易在我方形成宽松插入空间，就提高其 draw 倾向，避免只看外部进攻信号。
+
+第 4 轮：add hidden defense pressure to draw color advice
+
+把我方仍未暴露的黑白隐藏量作为动态防守信号。它和总牌色平衡不同，专门回答“当前哪种颜色的安全存量更薄、更需要补”。
+
+第 5 轮：add target boundary pressure to draw color advice
+
+把当前目标各颜色隐藏位的候选边界宽度接进 draw 建议。某个颜色如果在目标侧呈现出更窄、更容易打穿的候选边界，就向该颜色偏移。
+
+第 6 轮：add target finish pressure to draw color advice
+
+把“目标剩余隐藏位很少时的收口压力”补进来。目标隐藏位越少、某种颜色在这些位上的峰值越高，就越应该把 draw 向这个颜色倾斜，服务收尾。
+
+第 7 轮：add target focus pressure to draw color advice
+
+补了“当前目标聚焦度”。之前 target_attack 只看目标自己，现在新增判断“某种颜色的不确定性是否主要集中在当前目标身上，而不是散在别的玩家那里”。
+
+第 8 轮：add target recent momentum pressure to draw color advice
+
+把最近几手对当前目标的进攻走势接入。若近期针对当前目标的某种颜色出现连续命中且愿意继续连击，就把这种颜色视为有 momentum，进一步提高 draw 倾向。
+
+第 9 轮：add recent self exposure pressure to draw color advice
+
+把最近因猜错导致的自曝历史接入抽色。最近如果我方更多暴露了某种颜色，就提高另一种颜色的 draw 压力，避免继续沿着已被看穿的一边增长。这个迭代还顺手修掉了 dominant_factor 在浮点近似平局下被尾差带偏的问题。
+
+第 10 轮：add target attack window factor to draw color advice
+
+最后没有再补一个孤立颜色特征，而是加了阶段性总开关 target_attack_window_factor。目标越接近被打穿、我方隐藏位越多，就越放大所有面向当前目标的抽色信号；局势不适合强攻时就自动收缩。
+
+三、本批后的抽色逻辑结构
+
+现在 draw_color_summary 不再是简单计数，而是一个“防守 + 进攻 + 历史 + 阶段”的混合打分器。
+
+当前主要组成已经包括：
+
+1. defense_balance
+2. hidden_defense_pressure
+3. recent_self_exposure_pressure
+4. offense_pressure
+5. entropy_pressure
+6. target_entropy_pressure
+7. target_boundary_pressure
+8. target_finish_pressure
+9. target_focus_pressure
+10. target_recent_momentum_pressure
+11. target_attack_pressure
+12. availability_pressure
+13. self_flexibility_pressure
+14. defense_guard_factor
+15. target_attack_window_factor
+
+这意味着“摸黑还是摸白”已经从单层 heuristic，推进成了围绕当前目标、全场信息态、我方防守态和最近回合节奏共同作用的结构化决策。
+
+四、本批效果判断
+
+这一批的正向效果主要有三点：
+
+1. 抽色建议和当前目标的联系更强了，不再像独立模块
+2. 抽色建议第一次系统性吃进了动作历史，而不是只看静态牌面
+3. 抽色建议开始有明显阶段意识，知道什么时候该强压、什么时候该收
+
+但也带来一个明显事实：
+
+draw_color_summary 这一块现在已经相当密。如果继续在这里无限叠局部压力项，边际收益会下降，后续需要更警惕“越改越细，但主模型没明显变强”的风险。
+
+五、验证
+
+验证命令：
+
+python -m unittest discover -s backend/tests -p "test*.py"
+
+结果：
+
+81 / 81 全部通过
+
+六、下一批建议
+
+下一批不建议再长时间停留在 draw_color_summary 的细粒度扩张上，建议优先二选一：
+
+1. 把抽色建议与 guess/continue 主决策的联动再做实，而不是只优化抽色本身
+2. 从 draw 模块切回更完整的动作似然 / belief 主线，避免局部打磨过深
+
+如果继续留在抽色模块，优先级也应该从“继续加新压力项”切到“压缩、整合、验证哪些项真的有稳定增益”。
