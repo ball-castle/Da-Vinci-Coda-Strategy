@@ -1,0 +1,33 @@
+2026-03-26 抽牌颜色建议接入目标颜色压力固定样本复盘报告
+
+一、这轮改了什么
+
+这轮把上一轮的 target_attack_pressure 固化成 fixed controller case。
+
+固定样本特征：
+1. 自己手牌黑白平衡。
+2. available counts 黑白平衡。
+3. 全场 hidden 总体黑白相互抵消。
+4. 当前 target 的隐藏位偏黑，side 的隐藏位偏白。
+
+预期输出：
+1. draw_color_summary.recommended_color = B
+2. draw_color_summary.dominant_factor = target_attack_pressure
+
+二、为什么这轮必要
+
+如果没有固定 case，后续再往 draw color 里叠更多局势量时，很容易出现一种隐性回退：
+1. 全场平均项重新压过 target 定向项。
+2. draw 建议又回到“只看整体，不看当前主攻对象”。
+
+而这会削弱目标 1 对目标 2 的支撑，让“摸什么颜色”和“准备打谁”重新脱钩。
+
+三、结果
+
+现在抽牌颜色建议这条线上，已经同时有了：
+1. defense_balance 边界
+2. offense_pressure 边界
+3. availability_pressure 边界
+4. target_attack_pressure 边界
+
+这让目标 1 的主干从“基础提示”提升到了“带固定回归保护的局势决策模块”。
