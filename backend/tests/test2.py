@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 from tests.fixed_decision_cases import (
     FixedDecisionCase,
     assert_continue_summary,
+    assert_negative_breakdown,
     assert_positive_breakdown,
     assert_stop_summary,
     run_decision_case,
@@ -1779,6 +1780,43 @@ class StopThresholdTests(unittest.TestCase):
 
         self.assertIsNotNone(best_move)
         self.assertEqual(summary["decision_score_breakdown"]["post_hit_behavior_fragility_drag"], 0.0)
+
+    def test_fixed_decision_case_runner_covers_post_hit_behavior_fragility_stop_edge(self):
+        case = FixedDecisionCase(
+            name="post_hit_behavior_fragility_stop_edge",
+            my_hidden_count=2,
+            all_moves=[
+                {
+                    "expected_value": 0.676,
+                    "win_probability": 0.56,
+                    "continuation_value": 0.18,
+                    "continuation_likelihood": 0.60,
+                    "attackability_after_hit": 0.74,
+                    "post_hit_continue_score": 0.36,
+                    "post_hit_stop_score": 0.24,
+                    "post_hit_continue_margin": 0.10,
+                    "post_hit_best_gap": 0.24,
+                    "post_hit_guidance_multiplier": 0.96,
+                    "post_hit_guidance_support": 0.18,
+                    "post_hit_guidance_stable_ratio": 0.0,
+                    "post_hit_guidance_signal_count": 1.0,
+                    "post_hit_top_k_expected_continue_margin": 0.06,
+                    "post_hit_top_k_continue_margin": 0.02,
+                    "post_hit_top_k_expected_support_ratio": 0.67,
+                    "post_hit_top_k_support_ratio": 0.33,
+                },
+            ],
+            checks=(
+                assert_stop_summary,
+                assert_negative_breakdown("post_hit_behavior_support_adjustment"),
+                assert_positive_breakdown("post_hit_behavior_fragility_drag"),
+            ),
+        )
+
+        best_move, summary = run_decision_case(case)
+
+        self.assertIsNone(best_move)
+        self.assertEqual(summary["decision_score_breakdown"]["post_hit_behavior_support_gain"], 0.0)
 
     def test_choose_best_move_continues_on_strong_continuation_edge(self):
         engine = DaVinciDecisionEngine()

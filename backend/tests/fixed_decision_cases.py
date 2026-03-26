@@ -63,3 +63,14 @@ def assert_positive_breakdown(component: str) -> Callable[[Optional[Dict[str, An
             )
 
     return _assert
+
+
+def assert_negative_breakdown(component: str) -> Callable[[Optional[Dict[str, Any]], Dict[str, Any]], None]:
+    def _assert(best_move: Optional[Dict[str, Any]], summary: Dict[str, Any]) -> None:
+        breakdown = summary.get("decision_score_breakdown", {})
+        if float(breakdown.get(component, 0.0)) >= 0.0:
+            raise AssertionError(
+                f"Expected decision_score_breakdown[{component!r}] to be negative."
+            )
+
+    return _assert

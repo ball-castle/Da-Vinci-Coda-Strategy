@@ -1,0 +1,26 @@
+【本轮目标】
+把 `post_hit_behavior_fragility_drag` 主导停手的负向窄边界收成固定 decision case。
+
+【本轮改动】
+1. 在 `backend/tests/fixed_decision_cases.py` 新增 `assert_negative_breakdown(component)`。
+2. 在 `backend/tests/test2.py` 新增
+   `test_fixed_decision_case_runner_covers_post_hit_behavior_fragility_stop_edge`。
+3. 固定 case 直接约束：
+   - `post_hit_behavior_support_adjustment < 0`
+   - `post_hit_behavior_fragility_drag > 0`
+   - 最终应停手
+
+【为什么这轮值得做】
+上一轮钉住了“behavior support 把 continue 顶过去”的样本。
+如果不把负向镜像也钉住，后面调 guidance/top-k support 时，很容易只保住 continue 样本，而把 fragility stop 悄悄推歪。
+
+【结果】
+`post-hit behavior support` 这条支路现在有了正负两侧的固定基准：
+1. support 主导继续
+2. fragility 主导停手
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续回到动作似然 value 选择，补“成功继续后的数值递进”权重。
