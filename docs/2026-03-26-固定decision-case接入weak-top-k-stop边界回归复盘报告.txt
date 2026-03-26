@@ -1,0 +1,21 @@
+【本轮目标】
+把 weak top-k follow-up support 导致停手的场景，也沉淀成固定 decision case，和上一轮的 fragile stop 形成并列回归样本。
+
+【本轮改动】
+1. 在 `backend/tests/test2.py` 新增 `test_fixed_decision_case_runner_covers_weak_top_k_support_stop_edge`。
+2. 用固定 case 复现“best move 自身 post-hit margin 仍为正，但 top-k 后续支撑明显不足，最终应停手”的边界。
+3. case 直接要求 `top_k_rollout_pressure > 0`，同时约束 `fragile_rollout_pressure = 0`，避免两个 stop 分支互相混淆。
+
+【为什么这轮值得做】
+`继续还是停手` 现在已经不是单一阈值，而是多个 post-hit 压力项共同决定。
+如果 top-k support 这一路没有固定样本，后面继续调 ranking / rollout 时，很容易出现“best move 看起来能冲，但整体后续面太薄”这种退化回归。
+
+【结果】
+1. fixed decision case 现在覆盖了 rollout negative、fragile positive、weak top-k support 三类 stop 边界。
+2. top-k support stop 分支被单独钉住，不再依赖普通单测解释当前停手原因。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续把 fixed case 从 decision 层往 controller 层扩，补一类“公开失败牌后全局候选坍缩”的回归样本。

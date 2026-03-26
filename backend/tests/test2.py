@@ -1798,6 +1798,36 @@ class StopThresholdTests(unittest.TestCase):
         self.assertIsNone(best_move)
         self.assertEqual(summary["decision_score_breakdown"]["rollout_pressure"], 0.0)
 
+    def test_fixed_decision_case_runner_covers_weak_top_k_support_stop_edge(self):
+        case = FixedDecisionCase(
+            name="weak_top_k_support_stop_edge",
+            my_hidden_count=2,
+            all_moves=[
+                {
+                    "expected_value": 0.80,
+                    "win_probability": 0.57,
+                    "continuation_value": 0.18,
+                    "continuation_likelihood": 0.64,
+                    "attackability_after_hit": 0.76,
+                    "post_hit_continue_score": 0.41,
+                    "post_hit_stop_score": 0.24,
+                    "post_hit_continue_margin": 0.17,
+                    "post_hit_best_gap": 0.30,
+                    "post_hit_top_k_continue_margin": 0.03,
+                    "post_hit_top_k_support_ratio": 0.33,
+                },
+            ],
+            checks=(
+                assert_stop_summary,
+                assert_positive_breakdown("top_k_rollout_pressure"),
+            ),
+        )
+
+        best_move, summary = run_decision_case(case)
+
+        self.assertIsNone(best_move)
+        self.assertEqual(summary["decision_score_breakdown"]["fragile_rollout_pressure"], 0.0)
+
     def test_choose_best_move_penalizes_fragile_positive_post_hit_gap(self):
         engine = DaVinciDecisionEngine()
         all_moves = [
