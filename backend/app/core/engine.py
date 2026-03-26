@@ -4000,6 +4000,11 @@ class GameController:
             "B": (self_counts["W"] - self_counts["B"]) / total_self_cards,
             "W": (self_counts["B"] - self_counts["W"]) / total_self_cards,
         }
+        defense_guard_factor = clamp(
+            1.0 - (0.75 * abs(defense_balance["B"] - defense_balance["W"])),
+            0.25,
+            1.0,
+        )
         hidden_color_mass = {"B": 0.0, "W": 0.0}
         total_hidden_positions = 0.0
         for probability_matrix in (full_probability_matrix or {}).values():
@@ -4015,6 +4020,10 @@ class GameController:
         else:
             offense_pressure = {"B": 0.0, "W": 0.0}
         entropy_pressure = self._color_entropy_pressure(full_probability_matrix)
+        target_entropy_pressure = self._color_entropy_pressure(
+            full_probability_matrix,
+            target_player_only=True,
+        )
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -4043,10 +4052,16 @@ class GameController:
         }
         color_scores = {
             color: defense_balance[color]
-            + (0.35 * offense_pressure[color])
-            + (0.24 * entropy_pressure[color])
-            + (0.28 * target_attack_pressure[color])
-            + (0.18 * availability_pressure[color])
+            + (
+                defense_guard_factor
+                * (
+                    (0.35 * offense_pressure[color])
+                    + (0.24 * entropy_pressure[color])
+                    + (0.24 * target_entropy_pressure[color])
+                    + (0.28 * target_attack_pressure[color])
+                    + (0.18 * availability_pressure[color])
+                )
+            )
             for color in CARD_COLORS
         }
         recommended_color = max(
@@ -4057,6 +4072,9 @@ class GameController:
             "defense_balance": abs(defense_balance["B"] - defense_balance["W"]),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
+            "target_entropy_pressure": abs(
+                target_entropy_pressure["B"] - target_entropy_pressure["W"]
+            ),
             "target_attack_pressure": abs(
                 target_attack_pressure["B"] - target_attack_pressure["W"]
             ),
@@ -4074,6 +4092,8 @@ class GameController:
             "offense_pressure_white": offense_pressure["W"],
             "entropy_pressure_black": entropy_pressure["B"],
             "entropy_pressure_white": entropy_pressure["W"],
+            "target_entropy_pressure_black": target_entropy_pressure["B"],
+            "target_entropy_pressure_white": target_entropy_pressure["W"],
             "target_attack_pressure_black": target_attack_pressure["B"],
             "target_attack_pressure_white": target_attack_pressure["W"],
             "availability_pressure_black": availability_pressure["B"],
@@ -4082,6 +4102,7 @@ class GameController:
             "available_white_count": available_counts["W"],
             "self_black_count": self_counts["B"],
             "self_white_count": self_counts["W"],
+            "defense_guard_factor": defense_guard_factor,
             "dominant_factor": max(
                 dominant_factor_margins,
                 key=dominant_factor_margins.get,
