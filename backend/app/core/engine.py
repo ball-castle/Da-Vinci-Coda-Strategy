@@ -3923,6 +3923,60 @@ class GameController:
         self.behavior_model = BehavioralLikelihoodModel()
         self.decision_engine = DaVinciDecisionEngine()
 
+    def _normalized_entropy(self, probabilities: Sequence[float]) -> float:
+        positive = [float(probability) for probability in probabilities if probability > 0.0]
+        if len(positive) <= 1:
+            return 0.0
+        entropy = 0.0
+        for probability in positive:
+            entropy -= probability * log2(probability)
+        return entropy / max(1e-9, log2(len(positive)))
+
+    def _color_entropy_pressure(
+        self,
+        full_probability_matrix: Optional[FullProbabilityMatrix],
+        *,
+        target_player_only: bool = False,
+    ) -> Dict[str, float]:
+        if not full_probability_matrix:
+            return {"B": 0.0, "W": 0.0}
+
+        entropy_pressure = {"B": 0.0, "W": 0.0}
+        relevant_matrices: Sequence[ProbabilityMatrix]
+        if target_player_only:
+            target_player_id = getattr(self.game_state, "target_player_id", None)
+            relevant_matrices = [full_probability_matrix.get(target_player_id, {})]
+        else:
+            relevant_matrices = list(full_probability_matrix.values())
+
+        total_positions = 0.0
+        for probability_matrix in relevant_matrices:
+            for slot_distribution in probability_matrix.values():
+                total_positions += 1.0
+                for color in CARD_COLORS:
+                    color_probabilities = [
+                        float(probability)
+                        for card, probability in slot_distribution.items()
+                        if card[0] == color and probability > 0.0
+                    ]
+                    color_mass = sum(color_probabilities)
+                    if color_mass <= 0.0:
+                        continue
+                    normalized_color_probabilities = [
+                        probability / color_mass
+                        for probability in color_probabilities
+                    ]
+                    entropy_pressure[color] += (
+                        color_mass * self._normalized_entropy(normalized_color_probabilities)
+                    )
+
+        if total_positions <= 0.0:
+            return {"B": 0.0, "W": 0.0}
+        return {
+            color: entropy_pressure[color] / total_positions
+            for color in CARD_COLORS
+        }
+
     def _build_draw_color_summary(
         self,
         full_probability_matrix: Optional[FullProbabilityMatrix] = None,
@@ -3960,6 +4014,7 @@ class GameController:
             }
         else:
             offense_pressure = {"B": 0.0, "W": 0.0}
+        entropy_pressure = self._color_entropy_pressure(full_probability_matrix)
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -3989,6 +4044,7 @@ class GameController:
         color_scores = {
             color: defense_balance[color]
             + (0.35 * offense_pressure[color])
+            + (0.24 * entropy_pressure[color])
             + (0.28 * target_attack_pressure[color])
             + (0.18 * availability_pressure[color])
             for color in CARD_COLORS
@@ -4000,6 +4056,7 @@ class GameController:
         dominant_factor_margins = {
             "defense_balance": abs(defense_balance["B"] - defense_balance["W"]),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
+            "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
             "target_attack_pressure": abs(
                 target_attack_pressure["B"] - target_attack_pressure["W"]
             ),
@@ -4015,6 +4072,8 @@ class GameController:
             "defense_balance_white": defense_balance["W"],
             "offense_pressure_black": offense_pressure["B"],
             "offense_pressure_white": offense_pressure["W"],
+            "entropy_pressure_black": entropy_pressure["B"],
+            "entropy_pressure_white": entropy_pressure["W"],
             "target_attack_pressure_black": target_attack_pressure["B"],
             "target_attack_pressure_white": target_attack_pressure["W"],
             "availability_pressure_black": availability_pressure["B"],
