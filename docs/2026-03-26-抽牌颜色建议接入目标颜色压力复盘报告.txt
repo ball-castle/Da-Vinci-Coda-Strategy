@@ -1,0 +1,37 @@
+2026-03-26 抽牌颜色建议接入目标颜色压力复盘报告
+
+一、这轮改了什么
+
+这轮继续推进目标 1，但不是继续堆“全场平均颜色压力”，而是把当前 target player 的隐藏颜色压力单独提取出来，形成 target_attack_pressure。
+
+具体变化：
+1. 只看当前 target_player_id 对应隐藏槽位的概率分布。
+2. 单独计算 target_attack_pressure_black / target_attack_pressure_white。
+3. draw color score 正式接入这项 target 定向压力。
+4. dominant_factor 的候选项也扩展到 target_attack_pressure。
+
+二、为什么要这样改
+
+前几轮的 offense_pressure 更像“全场未知颜色总体走势”，它对目标 1 是有帮助的，但不够贴近“这回合我正准备打谁”。
+
+而达芬奇这类局面决策里，抽牌颜色不应该只服务全场平均不确定性，还应该服务当前主攻目标：
+1. 如果当前 target 的暗牌更偏黑，抽黑更可能延续这一轮的攻击方向。
+2. 即使 side player 上也有很多白色未知位，全场平均后被抵消了，target 本身的颜色结构仍然值得单独发声。
+
+所以这轮的核心是让目标 1 和目标 2 的连接更强，而不是继续停留在全局平均层。
+
+三、验证样本
+
+新增样本构造为：
+1. 自己手牌黑白平衡，防守项不偏。
+2. available counts 也做成黑白平衡。
+3. 全场 hidden positions 黑白总量接近对称，offense_pressure 不显著。
+4. 但 target player 的隐藏位集中在黑色，side player 的隐藏位集中在白色。
+
+预期结果：
+1. recommended_color = B
+2. dominant_factor = target_attack_pressure
+
+四、结果
+
+现在 draw color 建议已经从“全场平均黑白判断”进一步进化成“围绕当前攻击目标做黑白准备”。这比单纯的全局颜色压力更接近实际对局里的主动决策。

@@ -3960,6 +3960,24 @@ class GameController:
             }
         else:
             offense_pressure = {"B": 0.0, "W": 0.0}
+        target_hidden_color_mass = {"B": 0.0, "W": 0.0}
+        target_hidden_positions = 0.0
+        target_player_id = getattr(self.game_state, "target_player_id", None)
+        if target_player_id is not None:
+            for slot_distribution in (full_probability_matrix or {}).get(
+                target_player_id,
+                {},
+            ).values():
+                target_hidden_positions += 1.0
+                for card, probability in slot_distribution.items():
+                    target_hidden_color_mass[card[0]] += float(probability)
+        if target_hidden_positions > 0.0:
+            target_attack_pressure = {
+                color: target_hidden_color_mass[color] / target_hidden_positions
+                for color in CARD_COLORS
+            }
+        else:
+            target_attack_pressure = {"B": 0.0, "W": 0.0}
         availability_pressure = {
             color: (
                 available_counts[color]
@@ -3971,6 +3989,7 @@ class GameController:
         color_scores = {
             color: defense_balance[color]
             + (0.35 * offense_pressure[color])
+            + (0.28 * target_attack_pressure[color])
             + (0.18 * availability_pressure[color])
             for color in CARD_COLORS
         }
@@ -3981,6 +4000,9 @@ class GameController:
         dominant_factor_margins = {
             "defense_balance": abs(defense_balance["B"] - defense_balance["W"]),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
+            "target_attack_pressure": abs(
+                target_attack_pressure["B"] - target_attack_pressure["W"]
+            ),
             "availability_pressure": abs(
                 availability_pressure["B"] - availability_pressure["W"]
             ),
@@ -3993,6 +4015,8 @@ class GameController:
             "defense_balance_white": defense_balance["W"],
             "offense_pressure_black": offense_pressure["B"],
             "offense_pressure_white": offense_pressure["W"],
+            "target_attack_pressure_black": target_attack_pressure["B"],
+            "target_attack_pressure_white": target_attack_pressure["W"],
             "availability_pressure_black": availability_pressure["B"],
             "availability_pressure_white": availability_pressure["W"],
             "available_black_count": available_counts["B"],
