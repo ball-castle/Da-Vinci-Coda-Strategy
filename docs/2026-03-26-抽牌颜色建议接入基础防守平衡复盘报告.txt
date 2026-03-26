@@ -1,0 +1,29 @@
+【本轮目标】
+先给 controller 接入一个最小可用的抽牌颜色建议入口，第一版只处理防守型颜色平衡。
+
+【本轮改动】
+1. 在 `backend/app/core/engine.py` 的 `GameController` 中新增 `_build_draw_color_summary()`。
+2. 第一版 summary 输出：
+   - `recommended_color`
+   - `black_score` / `white_score`
+   - `defense_balance_black` / `defense_balance_white`
+   - `available_black_count` / `available_white_count`
+   - `self_black_count` / `self_white_count`
+   - `dominant_factor`
+3. `run_turn()` 的默认输出和正常输出都接入 `draw_color_summary`。
+4. 在 `backend/tests/test1.py` 新增
+   `test_controller_draw_color_summary_prefers_balancing_color`。
+
+【为什么这轮值得做】
+direction 文档里，抽黑/抽白是明确缺口。
+但完整抽牌系统跨度太大，这轮先给出一个不会影响现有猜牌/停手主流程的最小入口。
+第一版只考虑“我手牌颜色是否失衡”，属于很稳的防守启发式。
+
+【结果】
+当我方手牌明显偏黑时，controller 现在会在 `draw_color_summary` 里先推荐摸白。
+
+【验证】
+`python -m unittest discover -s backend/tests -p "test*.py"`
+
+【下一步】
+继续给 draw color 增加另一侧对照样本：当我方明显偏白时，应推荐摸黑。

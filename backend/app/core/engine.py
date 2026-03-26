@@ -3923,6 +3923,51 @@ class GameController:
         self.behavior_model = BehavioralLikelihoodModel()
         self.decision_engine = DaVinciDecisionEngine()
 
+    def _build_draw_color_summary(self) -> Dict[str, Any]:
+        available_counts = {
+            color: sum(1 for card in self.inference_engine.available_cards if card[0] == color)
+            for color in CARD_COLORS
+        }
+        self_counts = {
+            color: sum(
+                1
+                for slot in self.game_state.self_player().ordered_slots()
+                if getattr(slot, "color", None) == color
+            )
+            for color in CARD_COLORS
+        }
+        total_self_cards = max(1, sum(self_counts.values()))
+        total_available = max(1, sum(available_counts.values()))
+
+        defense_balance = {
+            "B": (self_counts["W"] - self_counts["B"]) / total_self_cards,
+            "W": (self_counts["B"] - self_counts["W"]) / total_self_cards,
+        }
+        availability_tiebreak = {
+            color: available_counts[color] / total_available
+            for color in CARD_COLORS
+        }
+        color_scores = {
+            color: defense_balance[color] + (0.01 * availability_tiebreak[color])
+            for color in CARD_COLORS
+        }
+        recommended_color = max(
+            CARD_COLORS,
+            key=lambda color: (color_scores[color], available_counts[color], color),
+        )
+        return {
+            "recommended_color": recommended_color,
+            "black_score": color_scores["B"],
+            "white_score": color_scores["W"],
+            "defense_balance_black": defense_balance["B"],
+            "defense_balance_white": defense_balance["W"],
+            "available_black_count": available_counts["B"],
+            "available_white_count": available_counts["W"],
+            "self_black_count": self_counts["B"],
+            "self_white_count": self_counts["W"],
+            "dominant_factor": "defense_balance",
+        }
+
     def run_turn(self) -> Dict[str, Any]:
         has_any_hidden_slots = bool(self.inference_engine.search_positions) or any(
             self.inference_engine.preassigned_hidden.values()
@@ -3931,6 +3976,7 @@ class GameController:
         blocked_target_slots = {key for key in self.inference_engine.publicly_collapsed_slots if key[0] == getattr(self.game_state, "target_player_id", None)}
         my_hidden_count = self.game_state.my_hidden_count()
         default_risk = self.decision_engine.calculate_risk_factor(my_hidden_count)
+        draw_color_summary = self._build_draw_color_summary()
 
         if not has_any_hidden_slots:
             return {
@@ -3962,6 +4008,7 @@ class GameController:
                     "source_support_same_color_anchor": 0.0,
                     "source_support_local_boundary": 0.0,
                 },
+                "draw_color_summary": draw_color_summary,
                 "should_stop": True,
             }
 
@@ -4034,6 +4081,7 @@ class GameController:
             "behavior_blend": SOFT_BEHAVIOR_BLEND,
             "behavior_debug": behavior_debug,
             "behavior_guidance_profile": behavior_guidance_profile,
+            "draw_color_summary": draw_color_summary,
             "decision_summary": decision_summary,
             "should_stop": best_move is None,
         }
