@@ -1,0 +1,134 @@
+2026-03-26 动作似然接入失败后强目标切换复盘报告
+
+记录时间：2026-03-26 00:00:00 +08:00
+
+一、本轮推进目标
+本轮开始前，先重新读取了 `direction/VinCi.txt`。
+
+在上一轮把“命中且继续后的 confident chain 延续”接进 target player selection 之后，这一轮继续沿同一条动作似然主线推进另一半：
+
+- 如果上一手失败了
+- 当前又切换到了一个明显更强的目标玩家
+- 这种切换应当被视为更合理的动作证据
+
+此前 target player selection 的历史逻辑更像：
+
+- 成功链路有条件化
+- 失败链路基本没有显式建模
+
+这会导致一个问题：
+
+- “失败后切到更强目标”
+- 和“失败后继续压原目标”
+- 在玩家级动作似然里区分不够清楚
+
+二、本轮核心改动
+1. 新增 switch-after-failure target bonus
+位置：
+- `backend/app/core/engine.py`
+
+本轮新增常量：
+
+- `TARGET_PLAYER_SWITCH_AFTER_FAILURE_BONUS`
+
+并把 `_score_target_player_selection(...)` 的失败历史逻辑细化成：
+
+- 如果上一手失败
+- 且当前换到了另一个目标玩家
+- 并且这个新目标玩家的 attackability 明显高于刚失败的旧目标
+- 那么给 switch-after-failure bonus
+
+这里不是“只要换目标就奖励”，
+而是：
+
+- 只有换到了更强目标
+- 才认为这个切换本身是更合理的行为
+
+2. 失败后不再无条件奖励 player-level repeat focus
+本轮同时把 player-level repeat focus 的适用条件收紧成：
+
+- 普通成功后重复压同一玩家
+- 或 confident chain 场景
+
+而不是像之前那样，
+即使上一手失败，也继续默认对同一玩家重复 focus 给奖励。
+
+这使得 target player selection 的历史逻辑第一次开始比较明确地区分：
+
+- 成功后的延续压制
+- 失败后的目标转移
+
+三、本轮收益
+这一轮最大的收益，是把“失败后的 target-switch 合理性”正式接进了动作似然。
+
+这很符合方向文档里强调的：
+
+- 猜牌动作不是孤立点
+- 而是连续行为链里的观测
+
+现在模型开始能够表达：
+
+- 刚刚失败后，立刻切到一个更强目标
+- 比继续压旧目标更像一个理性玩家会做的选择
+
+这让 target player selection 不再只是“当前谁更好打”，
+也开始吸收：
+
+- 上一步打了谁
+- 上一步是成是败
+- 失败后切换是否顺着更强目标发生
+
+四、测试补充
+文件：
+- `backend/tests/test1.py`
+
+本轮把原来的 player focus 测试更新成更符合当前逻辑主线的版本：
+
+- `test_target_player_selection_rewards_switch_after_failed_target_when_new_target_is_tighter`
+
+验证内容：
+
+- 上一手先失败在 `opp`
+- 当前一个版本继续压 `opp`
+- 另一个版本切到明显更紧的 `side`
+
+预期：
+
+- 切到更强目标的权重更高
+
+同时回归：
+- `test_target_player_selection_prefers_staying_on_same_player_after_confident_hit`
+
+确保这轮没有把上一轮刚接入的 confident chain 逻辑打歪。
+
+五、验证结果
+本轮验证命令：
+- `python -m unittest discover -s backend/tests -p 'test*.py'`
+
+验证结果：
+- 47 个测试全部通过
+
+六、当前阶段判断
+本轮是标准的动作似然主线推进，而不是解释层推进。
+
+现在 target player selection 的结果条件化逻辑已经开始两侧都补：
+
+1. 成功后的 confident chain 延续
+2. 失败后的更强目标切换
+
+这让玩家级动作似然比之前更接近一条真正的行为链，而不是只看当前局部攻击性。
+
+七、下一步建议
+下一轮可以继续沿两个方向之一推进：
+
+1. 把“失败后换更强目标”的逻辑继续下沉到 slot 级
+目标：
+- 不只在 player 级建模结果条件化
+- 也让 slot 选择开始显式吸收失败历史
+
+2. 继续补固定 case，锁定 fragile follow-up stop 边界
+目标：
+- 让 continue / stop 验证体系再多一条更细的负边界 case
+
+八、一句话总结
+本轮推进的核心成果，是把“失败后切向更强目标”的行为合理性正式接进了 target player selection，让动作似然在玩家级第一次开始同时显式区分成功延续链和失败转移链。

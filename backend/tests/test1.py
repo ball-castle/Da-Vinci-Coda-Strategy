@@ -283,10 +283,10 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(tight_slot_score, loose_slot_score)
 
-    def test_target_player_selection_rewards_same_player_focus(self):
+    def test_target_player_selection_rewards_switch_after_failed_target_when_new_target_is_tighter(self):
         model = BehavioralLikelihoodModel()
 
-        focused_world = GameState(
+        stuck_world = GameState(
             self_player_id="me",
             target_player_id="opp",
             players={
@@ -299,15 +299,16 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
                     slots=[
                         CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
                         CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
-                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="B", value=10, is_revealed=True),
                     ],
                 ),
                 "side": PlayerState(
                     player_id="side",
                     slots=[
-                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
                         CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
-                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
                     ],
                 ),
             },
@@ -323,9 +324,9 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
                 GuessAction(
                     guesser_id="me",
                     target_player_id="opp",
-                    target_slot_index=1,
+                    target_slot_index=2,
                     guessed_color="W",
-                    guessed_value=3,
+                    guessed_value=8,
                     result=False,
                 ),
             ],
@@ -333,8 +334,16 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
         switched_world = GameState(
             self_player_id="me",
             target_player_id="opp",
-            players=focused_world.players,
+            players=stuck_world.players,
             actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
                 GuessAction(
                     guesser_id="me",
                     target_player_id="side",
@@ -343,25 +352,17 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
                     guessed_value=8,
                     result=False,
                 ),
-                GuessAction(
-                    guesser_id="me",
-                    target_player_id="opp",
-                    target_slot_index=1,
-                    guessed_color="W",
-                    guessed_value=3,
-                    result=False,
-                ),
             ],
         )
 
-        hypothesis = {"opp": {1: ("W", 3)}, "side": {1: ("W", 10)}}
-        focused_signal = model.build_guess_signals(focused_world)["me"][-1]
+        hypothesis = {"opp": {1: ("W", 2), 2: ("W", 8)}, "side": {1: ("W", 8)}}
+        stuck_signal = model.build_guess_signals(stuck_world)["me"][-1]
         switched_signal = model.build_guess_signals(switched_world)["me"][-1]
 
-        focused_weight = model._score_target_player_selection(
-            focused_world,
+        stuck_weight = model._score_target_player_selection(
+            stuck_world,
             hypothesis,
-            focused_signal,
+            stuck_signal,
         )
         switched_weight = model._score_target_player_selection(
             switched_world,
@@ -369,7 +370,7 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
             switched_signal,
         )
 
-        self.assertGreater(focused_weight, switched_weight)
+        self.assertGreater(switched_weight, stuck_weight)
 
     def test_target_player_selection_prefers_staying_on_same_player_after_confident_hit(self):
         model = BehavioralLikelihoodModel()
