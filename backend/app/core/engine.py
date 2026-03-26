@@ -191,6 +191,7 @@ class BehavioralLikelihoodModel:
     TARGET_SLOT_CONFIDENT_ADJACENT_FOLLOW_BONUS = 1.04
     TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS = 1.03
     SLOT_EDGE_PRESSURE_BONUS = 1.05
+    SLOT_RECENT_REVEAL_NEIGHBOR_BONUS = 1.06
 
     TARGET_IN_INTERVAL_BONUS = 1.15
     TARGET_NARROW_INTERVAL_BONUS = 1.10
@@ -1319,7 +1320,40 @@ class BehavioralLikelihoodModel:
             )
         ):
             confidence *= self.SLOT_EDGE_PRESSURE_BONUS
+        reveal_neighbor_pressure = self._recent_reveal_neighbor_pressure(
+            game_state,
+            player_id,
+            slot_index,
+        )
+        if reveal_neighbor_pressure > 0.0:
+            confidence *= 1.0 + (
+                (self.SLOT_RECENT_REVEAL_NEIGHBOR_BONUS - 1.0)
+                * reveal_neighbor_pressure
+            )
         return confidence
+
+    def _recent_reveal_neighbor_pressure(
+        self,
+        game_state: GameState,
+        player_id: str,
+        slot_index: int,
+    ) -> float:
+        reveal_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            revealed_player_id = getattr(action, "revealed_player_id", None)
+            revealed_slot_index = getattr(action, "revealed_slot_index", None)
+            if (
+                revealed_player_id == player_id
+                and isinstance(revealed_slot_index, int)
+                and abs(revealed_slot_index - slot_index) == 1
+                and action.revealed_card() is not None
+            ):
+                reveal_score += recency_weight
+            recency_weight *= 0.6
+            if recency_weight < 0.2:
+                break
+        return clamp(reveal_score, 0.0, 1.0)
 
     def _previous_guess_signal(
         self,

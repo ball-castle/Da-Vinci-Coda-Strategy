@@ -554,6 +554,97 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(edge_score, middle_score)
 
+    def test_target_slot_selection_prefers_slot_next_to_recent_public_reveal(self):
+        model = BehavioralLikelihoodModel()
+
+        reveal_neighbor_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="opp",
+                    target_slot_index=2,
+                    guessed_color="B",
+                    guessed_value=4,
+                    result=False,
+                    revealed_player_id="opp",
+                    revealed_slot_index=2,
+                    revealed_color="B",
+                    revealed_value=4,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+            ],
+        )
+        settled_neighbor_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+            ],
+        )
+
+        hypothesis = {"opp": {1: ("W", 2)}}
+
+        reveal_neighbor_score = model._slot_attackability(
+            reveal_neighbor_world,
+            hypothesis,
+            "opp",
+            1,
+        )
+        settled_neighbor_score = model._slot_attackability(
+            settled_neighbor_world,
+            hypothesis,
+            "opp",
+            1,
+        )
+
+        self.assertGreater(reveal_neighbor_score, settled_neighbor_score)
+
     def test_target_player_selection_rewards_switch_after_failed_target_when_new_target_is_tighter(self):
         model = BehavioralLikelihoodModel()
 
