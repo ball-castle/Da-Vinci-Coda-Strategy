@@ -258,6 +258,7 @@ class BehavioralLikelihoodModel:
     CONTINUATION_RECENT_CONTINUE_BONUS = 0.04
     CONTINUATION_RECENT_STOP_PENALTY = 0.04
     CONTINUATION_CONFIDENT_STREAK_BONUS = 0.03
+    CONTINUATION_TARGET_FINISH_CHAIN_BONUS = 1.08
     EPSILON = 1e-9
 
     def build_guess_signals(
@@ -360,6 +361,7 @@ class BehavioralLikelihoodModel:
             self.CONTINUATION_MAX,
         )
         target_followup_attackability = 0.0
+        target_finish_chain_signal = 0.0
         if exclude_slot is not None:
             target_player_id = exclude_slot[0]
             target_followup_attackability = self._estimate_player_matrix_attackability(
@@ -378,6 +380,11 @@ class BehavioralLikelihoodModel:
                 ((1.0 - self.CONTINUATION_TARGET_FOLLOWUP_BLEND) * attackability_prior)
                 + (self.CONTINUATION_TARGET_FOLLOWUP_BLEND * target_followup_prior)
             )
+            target_finish_chain_signal = self._matrix_target_finish_chain_signal(
+                target_player_id,
+                full_probability_matrix.get(target_player_id, {}),
+                exclude_slot=exclude_slot,
+            )
 
         profile = self.continuation_profile(guess_signals_by_player, acting_player_id)
         history_blend = profile["history_blend"]
@@ -387,15 +394,43 @@ class BehavioralLikelihoodModel:
             continue_likelihood *= 1.03
         elif attackability < self.ATTACKABILITY_TIGHT_THRESHOLD and profile["continue_rate"] <= 0.45:
             continue_likelihood *= 0.98
+        if target_finish_chain_signal > 0.0:
+            continue_likelihood *= 1.0 + (
+                (self.CONTINUATION_TARGET_FINISH_CHAIN_BONUS - 1.0)
+                * target_finish_chain_signal
+            )
 
         continue_likelihood = clamp(continue_likelihood, self.CONTINUATION_MIN, self.CONTINUATION_MAX)
         return {
             "continue_likelihood": continue_likelihood,
             "attackability": attackability,
             "target_followup_attackability": target_followup_attackability,
+            "target_finish_chain_signal": target_finish_chain_signal,
             "history_continue_rate": profile["continue_rate"],
             "history_observations": profile["observations"],
         }
+
+    def _matrix_target_finish_chain_signal(
+        self,
+        player_id: str,
+        probability_matrix: ProbabilityMatrix,
+        *,
+        exclude_slot: Optional[SlotKey] = None,
+    ) -> float:
+        remaining_hidden_slots = 0
+        for slot_index, slot_distribution in probability_matrix.items():
+            if not slot_distribution:
+                continue
+            key = slot_key(player_id, slot_index)
+            if exclude_slot is not None and key == exclude_slot:
+                continue
+            remaining_hidden_slots += 1
+        return clamp(
+            (self.PLAYER_FINISH_PRESSURE_REFERENCE - float(remaining_hidden_slots))
+            / self.PLAYER_FINISH_PRESSURE_REFERENCE,
+            0.0,
+            1.0,
+        )
 
     def score_hypothesis(
         self,

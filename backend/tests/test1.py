@@ -251,6 +251,50 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(finishable_score, spread_score)
 
+    def test_estimate_continue_likelihood_rewards_matrix_finish_chain_target(self):
+        model = BehavioralLikelihoodModel()
+        finish_matrix = {
+            "opp": {
+                0: {("W", 5): 1.0},
+            },
+            "side": {
+                0: {("W", 7): 0.55, ("W", 8): 0.45},
+            },
+        }
+        spread_matrix = {
+            "opp": {
+                0: {("W", 5): 1.0},
+                1: {("B", 6): 0.55, ("B", 7): 0.45},
+            },
+            "side": {
+                0: {("W", 7): 0.55, ("W", 8): 0.45},
+            },
+        }
+        model.estimate_matrix_attackability = lambda *args, **kwargs: 0.46
+        model._estimate_player_matrix_attackability = lambda *args, **kwargs: 0.42
+
+        finish_assessment = model.estimate_continue_likelihood(
+            finish_matrix,
+            {},
+            "me",
+            exclude_slot=("opp", 0),
+        )
+        spread_assessment = model.estimate_continue_likelihood(
+            spread_matrix,
+            {},
+            "me",
+            exclude_slot=("opp", 0),
+        )
+
+        self.assertGreater(
+            finish_assessment["target_finish_chain_signal"],
+            spread_assessment["target_finish_chain_signal"],
+        )
+        self.assertGreater(
+            finish_assessment["continue_likelihood"],
+            spread_assessment["continue_likelihood"],
+        )
+
     def test_continue_decision_rewards_same_target_followup_cluster(self):
         model = BehavioralLikelihoodModel()
 
