@@ -182,6 +182,7 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_SWITCH_FAILURE_CONTINUITY_BONUS = 1.03
     TARGET_PLAYER_RECENT_COLLAPSE_BONUS = 1.04
     TARGET_PLAYER_COLLAPSE_STREAK_BONUS = 1.05
+    TARGET_PLAYER_PUBLIC_BRIDGE_BONUS = 1.04
     PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
     PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
     PLAYER_RECENT_FAILED_GUESS_BONUS = 0.10
@@ -621,6 +622,15 @@ class BehavioralLikelihoodModel:
             weight *= 1.0 + (
                 (self.TARGET_PLAYER_COLLAPSE_STREAK_BONUS - 1.0)
                 * collapse_streak_pressure
+            )
+        public_bridge_signal = self._recent_public_bridge_signal_for_guess(
+            game_state,
+            signal,
+        )
+        if public_bridge_signal > 0.0:
+            weight *= 1.0 + (
+                (self.TARGET_PLAYER_PUBLIC_BRIDGE_BONUS - 1.0)
+                * public_bridge_signal
             )
 
         previous_signal = self._previous_guess_signal(game_state, signal)
@@ -1754,6 +1764,44 @@ class BehavioralLikelihoodModel:
             if streak_score > 0.0:
                 break
         return clamp(streak_score, 0.0, 1.0)
+
+    def _recent_public_bridge_signal_for_guess(
+        self,
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> float:
+        guessed_value = numeric_card_value(signal.guessed_card)
+        if guessed_value is None:
+            return 0.0
+
+        bridge_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            revealed_card = action.revealed_card()
+            revealed_player_id = getattr(action, "revealed_player_id", None)
+            if (
+                revealed_card is None
+                or revealed_player_id is None
+                or revealed_player_id == signal.target_player_id
+                or revealed_card[0] != signal.guessed_card[0]
+            ):
+                recency_weight *= 0.7
+                if recency_weight < 0.2:
+                    break
+                continue
+            revealed_value = numeric_card_value(revealed_card)
+            if revealed_value is None:
+                recency_weight *= 0.7
+                if recency_weight < 0.2:
+                    break
+                continue
+            distance = abs(guessed_value - revealed_value)
+            if distance <= 2:
+                bridge_score += recency_weight * ((3.0 - distance) / 3.0)
+            recency_weight *= 0.7
+            if recency_weight < 0.2:
+                break
+        return clamp(bridge_score, 0.0, 1.0)
 
     def _recent_failed_guess_pressure(
         self,
