@@ -223,6 +223,12 @@ class BehavioralLikelihoodModel:
     STOP_TARGET_FOLLOWUP_PENALTY = 0.94
     CONTINUE_TARGET_FINISH_BONUS = 1.05
     STOP_TARGET_FINISH_PENALTY = 0.96
+    CONTINUE_SELF_EXPOSURE_PENALTY = 0.93
+    CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY = 0.91
+    STOP_SELF_EXPOSURE_BONUS = 1.05
+    STOP_NEW_DRAWN_EXPOSURE_BONUS = 1.07
+    PUBLIC_SELF_EXPOSURE_SECONDARY_BLEND = 0.35
+    PUBLIC_SELF_EXPOSURE_FINISH_REFERENCE = 3.0
 
     ATTACKABILITY_TIGHT_THRESHOLD = 0.34
     CONTINUATION_PRIOR_BASE = 0.52
@@ -1273,11 +1279,23 @@ class BehavioralLikelihoodModel:
             signal.target_player_id,
             exclude_slot=slot_key(signal.target_player_id, signal.target_slot_index),
         )
+        self_exposure_profile = self._public_hand_exposure_profile(
+            game_state,
+            signal.guesser_id,
+        )
         if signal.continued_turn:
             weight = (
                 self.CONTINUE_HIGH_ATTACKABILITY_BONUS
                 if attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD
                 else self.CONTINUE_LOW_ATTACKABILITY_PENALTY
+            )
+            weight *= 1.0 - (
+                (1.0 - self.CONTINUE_SELF_EXPOSURE_PENALTY)
+                * self_exposure_profile["total_exposure"]
+            )
+            weight *= 1.0 - (
+                (1.0 - self.CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY)
+                * self_exposure_profile["newly_drawn_exposure"]
             )
             if target_followup_attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD:
                 weight *= self.CONTINUE_TARGET_FOLLOWUP_BONUS
@@ -1290,11 +1308,140 @@ class BehavioralLikelihoodModel:
             if attackability < self.ATTACKABILITY_TIGHT_THRESHOLD
             else self.STOP_HIGH_ATTACKABILITY_PENALTY
         )
+        weight *= 1.0 + (
+            (self.STOP_SELF_EXPOSURE_BONUS - 1.0)
+            * self_exposure_profile["total_exposure"]
+        )
+        weight *= 1.0 + (
+            (self.STOP_NEW_DRAWN_EXPOSURE_BONUS - 1.0)
+            * self_exposure_profile["newly_drawn_exposure"]
+        )
         if target_followup_attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD:
             weight *= self.STOP_TARGET_FOLLOWUP_PENALTY
         if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
             weight *= self.STOP_TARGET_FINISH_PENALTY
         return weight
+
+    def _public_hand_exposure_profile(
+        self,
+        game_state: GameState,
+        player_id: str,
+    ) -> Dict[str, float]:
+        try:
+            public_slots = game_state.get_player(player_id).ordered_slots()
+        except ValueError:
+            return {
+                "total_exposure": 0.0,
+                "newly_drawn_exposure": 0.0,
+                "finish_fragility": 0.0,
+            }
+
+        slot_exposures: List[float] = []
+        newly_drawn_exposure = 0.0
+        for slot in public_slots:
+            if slot.is_revealed:
+                continue
+            slot_exposure = self._public_slot_exposure(public_slots, slot.slot_index)
+            slot_exposures.append(slot_exposure)
+            if slot.is_newly_drawn:
+                newly_drawn_exposure = max(newly_drawn_exposure, slot_exposure)
+
+        if not slot_exposures:
+            return {
+                "total_exposure": 0.0,
+                "newly_drawn_exposure": 0.0,
+                "finish_fragility": 0.0,
+            }
+
+        slot_exposures.sort(reverse=True)
+        total_exposure = slot_exposures[0]
+        if len(slot_exposures) >= 2:
+            total_exposure += (
+                self.PUBLIC_SELF_EXPOSURE_SECONDARY_BLEND * slot_exposures[1]
+            )
+        finish_fragility = clamp(
+            (
+                (self.PUBLIC_SELF_EXPOSURE_FINISH_REFERENCE - float(len(slot_exposures)))
+                / self.PUBLIC_SELF_EXPOSURE_FINISH_REFERENCE
+            ) * slot_exposures[0],
+            0.0,
+            1.0,
+        )
+        return {
+            "total_exposure": clamp(total_exposure, 0.0, 1.0),
+            "newly_drawn_exposure": clamp(newly_drawn_exposure, 0.0, 1.0),
+            "finish_fragility": finish_fragility,
+        }
+
+    def _public_slot_exposure(
+        self,
+        public_slots: Sequence[CardSlot],
+        slot_index: int,
+    ) -> float:
+        slot_by_index = {slot.slot_index: slot for slot in public_slots}
+        slot = slot_by_index.get(slot_index)
+        if slot is None or slot.is_revealed:
+            return 0.0
+
+        low, high, width = self._public_slot_interval(public_slots, slot_index)
+        exposure = (1.12 if getattr(slot, "color", None) is not None else 1.0) / max(
+            1.0,
+            float(width + 1),
+        )
+        if low is not None and high is not None and width <= 2:
+            exposure *= 1.06
+        if (
+            getattr(slot, "color", None) is not None
+            and (
+                (low is None and high is not None and high <= 4)
+                or (high is None and low is not None and low >= (MAX_CARD_VALUE - 4))
+            )
+        ):
+            exposure *= 1.08
+        if slot.is_newly_drawn:
+            exposure *= 1.18
+        return exposure
+
+    def _public_slot_interval(
+        self,
+        public_slots: Sequence[CardSlot],
+        slot_index: int,
+    ) -> Tuple[Optional[int], Optional[int], int]:
+        ordered_slots = sorted(public_slots, key=lambda slot: slot.slot_index)
+        index_by_slot = {slot.slot_index: idx for idx, slot in enumerate(ordered_slots)}
+        order_index = index_by_slot.get(slot_index)
+        if order_index is None:
+            return None, None, MAX_CARD_VALUE
+
+        lower: Optional[int] = None
+        upper: Optional[int] = None
+
+        cursor = order_index - 1
+        while cursor >= 0:
+            left_slot = ordered_slots[cursor]
+            if left_slot.is_revealed:
+                left_value = numeric_card_value(left_slot.known_card())
+                if left_value is not None:
+                    lower = left_value
+                    break
+            cursor -= 1
+
+        cursor = order_index + 1
+        while cursor < len(ordered_slots):
+            right_slot = ordered_slots[cursor]
+            if right_slot.is_revealed:
+                right_value = numeric_card_value(right_slot.known_card())
+                if right_value is not None:
+                    upper = right_value
+                    break
+            cursor += 1
+
+        effective_low = 0 if lower is None else lower
+        effective_high = MAX_CARD_VALUE if upper is None else upper
+        if effective_high < effective_low:
+            effective_high = effective_low
+        width = max(0, effective_high - effective_low)
+        return lower, upper, width
 
     def _remaining_hidden_on_target_after_hit(
         self,

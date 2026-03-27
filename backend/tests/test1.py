@@ -418,6 +418,172 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertLess(focused_weight, dispersed_weight)
 
+    def test_continue_decision_penalizes_public_self_exposure(self):
+        model = BehavioralLikelihoodModel()
+
+        exposed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=1, is_revealed=False, is_newly_drawn=True),
+                        CardSlot(slot_index=2, color="B", value=2, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+        protected_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False, is_newly_drawn=True),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                )
+            ],
+        )
+
+        exposed_signal = model.build_guess_signals(exposed_world)["me"][0]
+        protected_signal = model.build_guess_signals(protected_world)["me"][0]
+        exposed_weight = model._score_continue_decision(
+            exposed_world,
+            {"opp": {0: ("W", 5), 1: ("B", 6)}},
+            exposed_signal,
+        )
+        protected_weight = model._score_continue_decision(
+            protected_world,
+            {"opp": {0: ("W", 5), 1: ("B", 6)}},
+            protected_signal,
+        )
+
+        self.assertLess(exposed_weight, protected_weight)
+
+    def test_stop_decision_rewards_public_self_exposure(self):
+        model = BehavioralLikelihoodModel()
+
+        exposed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=1, is_revealed=False, is_newly_drawn=True),
+                        CardSlot(slot_index=2, color="B", value=2, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                )
+            ],
+        )
+        protected_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False, is_newly_drawn=True),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                )
+            ],
+        )
+
+        exposed_signal = model.build_guess_signals(exposed_world)["me"][0]
+        protected_signal = model.build_guess_signals(protected_world)["me"][0]
+        exposed_weight = model._score_continue_decision(
+            exposed_world,
+            {"opp": {0: ("W", 5), 1: ("B", 6)}},
+            exposed_signal,
+        )
+        protected_weight = model._score_continue_decision(
+            protected_world,
+            {"opp": {0: ("W", 5), 1: ("B", 6)}},
+            protected_signal,
+        )
+
+        self.assertGreater(exposed_weight, protected_weight)
+
     def test_target_player_selection_prefers_more_attackable_target(self):
         model = BehavioralLikelihoodModel()
 
