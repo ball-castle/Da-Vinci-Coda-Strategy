@@ -2131,6 +2131,7 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_SELF_EXPOSURE = 0.18
     STOP_MARGIN_NEW_DRAWN_EXPOSURE = 0.22
     STOP_MARGIN_FINISH_FRAGILITY = 0.18
+    STOP_MARGIN_EDGE_SELF_EXPOSURE_BOOST = 0.45
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     POST_HIT_GAP_REFERENCE = 0.22
@@ -3718,11 +3719,18 @@ class DaVinciDecisionEngine:
             best_move=best_move,
             candidate_confidence=behavior_match_candidate_confidence,
         )
+        self_exposure_level = max(
+            best_move.get("self_public_exposure", 0.0),
+            best_move.get("self_newly_drawn_exposure", 0.0),
+        )
 
         edge_pressure = 0.0
         if second_move is not None and best_gap < self.STOP_EDGE_REFERENCE:
             edge_pressure = self.STOP_MARGIN_WEAK_EDGE * (
                 (self.STOP_EDGE_REFERENCE - max(0.0, best_gap)) / self.STOP_EDGE_REFERENCE
+            )
+            edge_pressure *= 1.0 + (
+                self.STOP_MARGIN_EDGE_SELF_EXPOSURE_BOOST * self_exposure_level
             )
 
         post_hit_continue_margin = best_move.get("post_hit_continue_margin", 0.0)
@@ -3802,10 +3810,6 @@ class DaVinciDecisionEngine:
         )
         continue_score += behavior_match_decision_structure_adjustment
         continue_margin = continue_score - stop_score
-        self_exposure_level = max(
-            best_move.get("self_public_exposure", 0.0),
-            best_move.get("self_newly_drawn_exposure", 0.0),
-        )
         low_confidence_guard_margin = (
             self.LOW_CONFIDENCE_GUARD_MARGIN
             + (self.LOW_CONFIDENCE_SELF_EXPOSURE_BOOST * self_exposure_level)

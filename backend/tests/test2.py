@@ -987,6 +987,99 @@ class StopThresholdTests(unittest.TestCase):
             stable_summary["decision_score_breakdown"]["low_confidence_guard_margin"],
         )
 
+    def test_choose_best_move_boosts_edge_pressure_under_self_exposure(self):
+        engine = DaVinciDecisionEngine()
+        fragile_moves = [
+            {
+                "expected_value": 1.03,
+                "immediate_expected_value": 1.03,
+                "win_probability": 0.56,
+                "continuation_value": 0.16,
+                "continuation_likelihood": 0.60,
+                "attackability_after_hit": 0.70,
+                "post_hit_continue_score": 0.0,
+                "post_hit_stop_score": 0.0,
+                "post_hit_continue_margin": 0.0,
+                "post_hit_best_gap": 0.26,
+                "post_hit_top_k_continue_margin": 0.0,
+                "post_hit_top_k_support_ratio": 0.0,
+                "self_public_exposure": 0.54,
+                "self_newly_drawn_exposure": 0.46,
+                "self_finish_fragility": 0.12,
+            },
+            {
+                "expected_value": 0.95,
+                "immediate_expected_value": 0.95,
+                "win_probability": 0.54,
+                "continuation_value": 0.14,
+                "continuation_likelihood": 0.58,
+                "attackability_after_hit": 0.68,
+                "post_hit_continue_score": 0.0,
+                "post_hit_stop_score": 0.0,
+                "post_hit_continue_margin": 0.0,
+                "post_hit_best_gap": 0.22,
+                "post_hit_top_k_continue_margin": 0.0,
+                "post_hit_top_k_support_ratio": 0.0,
+                "self_public_exposure": 0.54,
+                "self_newly_drawn_exposure": 0.46,
+                "self_finish_fragility": 0.12,
+            },
+        ]
+        stable_moves = [
+            {
+                "expected_value": 1.03,
+                "immediate_expected_value": 1.03,
+                "win_probability": 0.56,
+                "continuation_value": 0.16,
+                "continuation_likelihood": 0.60,
+                "attackability_after_hit": 0.70,
+                "post_hit_continue_score": 0.0,
+                "post_hit_stop_score": 0.0,
+                "post_hit_continue_margin": 0.0,
+                "post_hit_best_gap": 0.26,
+                "post_hit_top_k_continue_margin": 0.0,
+                "post_hit_top_k_support_ratio": 0.0,
+                "self_public_exposure": 0.05,
+                "self_newly_drawn_exposure": 0.02,
+                "self_finish_fragility": 0.02,
+            },
+            {
+                "expected_value": 0.95,
+                "immediate_expected_value": 0.95,
+                "win_probability": 0.54,
+                "continuation_value": 0.14,
+                "continuation_likelihood": 0.58,
+                "attackability_after_hit": 0.68,
+                "post_hit_continue_score": 0.0,
+                "post_hit_stop_score": 0.0,
+                "post_hit_continue_margin": 0.0,
+                "post_hit_best_gap": 0.22,
+                "post_hit_top_k_continue_margin": 0.0,
+                "post_hit_top_k_support_ratio": 0.0,
+                "self_public_exposure": 0.05,
+                "self_newly_drawn_exposure": 0.02,
+                "self_finish_fragility": 0.02,
+            },
+        ]
+
+        fragile_best, fragile_summary = engine.choose_best_move(
+            fragile_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        stable_best, stable_summary = engine.choose_best_move(
+            stable_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNone(fragile_best)
+        self.assertIsNotNone(stable_best)
+        self.assertGreater(
+            fragile_summary["decision_score_breakdown"]["edge_pressure"],
+            stable_summary["decision_score_breakdown"]["edge_pressure"],
+        )
+
     def test_evaluate_all_moves_uses_behavior_match_bonus_in_ranking(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()
