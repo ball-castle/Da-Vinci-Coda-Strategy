@@ -1400,6 +1400,171 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertLess(collapse_weight, stable_weight)
 
+    def test_global_public_propagation_pressure_rewards_multi_player_collapse(self):
+        model = BehavioralLikelihoodModel()
+
+        propagation_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=6, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=8, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=4,
+                    result=True,
+                    revealed_player_id="side",
+                    revealed_slot_index=1,
+                    revealed_color="W",
+                    revealed_value=4,
+                ),
+            ],
+        )
+        quiet_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=propagation_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                ),
+            ],
+        )
+
+        self.assertGreater(
+            model._global_public_propagation_pressure(propagation_world),
+            model._global_public_propagation_pressure(quiet_world),
+        )
+
+    def test_joint_action_fit_rewards_aligned_target_value_and_continue(self):
+        model = BehavioralLikelihoodModel()
+
+        world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=3, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color="B", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+        aligned_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("W", 5),
+            result=True,
+            continued_turn=True,
+        )
+        weak_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="side",
+            target_slot_index=0,
+            guessed_card=("B", 8),
+            result=True,
+            continued_turn=False,
+        )
+        hypothesis = {"opp": {0: ("W", 5)}, "side": {0: ("B", 8)}}
+
+        model._player_attackability = (
+            lambda _game_state, _hypothesis, player_id, exclude_slot=None: 0.84
+            if player_id == "opp"
+            else 0.18
+        )
+        model._slot_attackability = (
+            lambda _game_state, _hypothesis, player_id, slot_index: 0.78
+            if player_id == "opp"
+            else 0.16
+        )
+        model._slot_attack_window_pressure = (
+            lambda _game_state, player_id, slot_index: 0.86 if player_id == "opp" else 0.0
+        )
+        model._continue_joint_collapse_signal = (
+            lambda _game_state, signal: 0.68 if signal.target_player_id == "opp" else 0.0
+        )
+        model._global_public_propagation_pressure = lambda *_args, **_kwargs: 0.72
+        model._recent_public_bridge_signal_for_guess = (
+            lambda _game_state, signal: 0.44 if signal.target_player_id == "opp" else 0.0
+        )
+        model._recent_target_chain_pressure = (
+            lambda _game_state, *, guesser_id, target_player_id: 1.0
+            if target_player_id == "opp"
+            else 0.0
+        )
+        model._slot_finish_chain_pressure_after_hit = (
+            lambda _game_state, player_id, slot_index: 1.0 if player_id == "opp" else 0.0
+        )
+
+        aligned = model._joint_action_fit_breakdown(
+            world,
+            hypothesis,
+            aligned_signal,
+            target_player_weight=1.12,
+            target_slot_selection_weight=1.08,
+            value_selection={"total_weight": 1.14},
+            continue_weight=1.10,
+        )
+        weak = model._joint_action_fit_breakdown(
+            world,
+            hypothesis,
+            weak_signal,
+            target_player_weight=0.94,
+            target_slot_selection_weight=0.93,
+            value_selection={"total_weight": 0.92},
+            continue_weight=0.95,
+        )
+
+        self.assertGreater(aligned["weight"], weak["weight"])
+        self.assertGreater(aligned["signal"], weak["signal"])
+
     def test_target_player_selection_prefers_more_attackable_target(self):
         model = BehavioralLikelihoodModel()
 

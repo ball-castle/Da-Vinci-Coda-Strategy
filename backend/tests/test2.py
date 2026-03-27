@@ -1870,6 +1870,63 @@ class StopThresholdTests(unittest.TestCase):
             stable_summary["continue_margin"],
         )
 
+    def test_choose_best_move_uses_global_propagation_support(self):
+        engine = DaVinciDecisionEngine()
+        propagation_moves = [
+            {
+                "expected_value": 0.72,
+                "immediate_expected_value": 0.72,
+                "win_probability": 0.56,
+                "continuation_value": 0.12,
+                "continuation_likelihood": 0.58,
+                "attackability_after_hit": 0.70,
+                "post_hit_continue_score": 0.24,
+                "post_hit_stop_score": 0.18,
+                "post_hit_continue_margin": 0.06,
+                "post_hit_best_gap": 0.28,
+                "post_hit_top_k_continue_margin": 0.05,
+                "post_hit_top_k_expected_continue_margin": 0.05,
+                "post_hit_top_k_support_ratio": 1.0,
+                "post_hit_top_k_expected_support_ratio": 1.0,
+                "global_propagation_signal": 0.86,
+                "global_propagation_bonus": 0.14,
+                "global_propagation_continuation_bonus": 0.05,
+                "self_public_exposure": 0.06,
+                "self_newly_drawn_exposure": 0.02,
+                "self_finish_fragility": 0.02,
+            },
+        ]
+        stable_moves = [
+            {
+                **propagation_moves[0],
+                "global_propagation_signal": 0.0,
+                "global_propagation_bonus": 0.0,
+                "global_propagation_continuation_bonus": 0.0,
+            },
+        ]
+
+        propagation_best, propagation_summary = engine.choose_best_move(
+            propagation_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        stable_best, stable_summary = engine.choose_best_move(
+            stable_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(propagation_best)
+        self.assertIsNone(stable_best)
+        self.assertGreater(
+            propagation_summary["decision_score_breakdown"]["global_propagation_support"],
+            0.0,
+        )
+        self.assertGreater(
+            propagation_summary["continue_margin"],
+            stable_summary["continue_margin"],
+        )
+
     def test_choose_best_move_uses_public_reveal_bridge_support(self):
         engine = DaVinciDecisionEngine()
         bridge_moves = [
@@ -2038,6 +2095,65 @@ class StopThresholdTests(unittest.TestCase):
         )
         self.assertGreater(
             finish_summary["continue_margin"],
+            stable_summary["continue_margin"],
+        )
+
+    def test_choose_best_move_uses_branch_search_support(self):
+        engine = DaVinciDecisionEngine()
+        search_moves = [
+            {
+                "expected_value": 0.72,
+                "immediate_expected_value": 0.72,
+                "win_probability": 0.56,
+                "continuation_value": 0.12,
+                "continuation_likelihood": 0.58,
+                "attackability_after_hit": 0.70,
+                "post_hit_continue_score": 0.24,
+                "post_hit_stop_score": 0.18,
+                "post_hit_continue_margin": 0.06,
+                "post_hit_best_gap": 0.28,
+                "post_hit_top_k_continue_margin": 0.05,
+                "post_hit_top_k_expected_continue_margin": 0.05,
+                "post_hit_top_k_support_ratio": 1.0,
+                "post_hit_top_k_expected_support_ratio": 1.0,
+                "post_hit_branch_search_value": 0.24,
+                "post_hit_branch_search_margin": 0.18,
+                "post_hit_branch_search_support_ratio": 1.0,
+                "post_hit_branch_search_signal": 0.92,
+                "self_public_exposure": 0.06,
+                "self_newly_drawn_exposure": 0.02,
+                "self_finish_fragility": 0.02,
+            },
+        ]
+        stable_moves = [
+            {
+                **search_moves[0],
+                "post_hit_branch_search_value": 0.0,
+                "post_hit_branch_search_margin": 0.0,
+                "post_hit_branch_search_support_ratio": 0.0,
+                "post_hit_branch_search_signal": 0.0,
+            },
+        ]
+
+        search_best, search_summary = engine.choose_best_move(
+            search_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        stable_best, stable_summary = engine.choose_best_move(
+            stable_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(search_best)
+        self.assertIsNone(stable_best)
+        self.assertGreater(
+            search_summary["decision_score_breakdown"]["branch_search_support"],
+            0.0,
+        )
+        self.assertGreater(
+            search_summary["continue_margin"],
             stable_summary["continue_margin"],
         )
 

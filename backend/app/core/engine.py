@@ -263,6 +263,10 @@ class BehavioralLikelihoodModel:
     CONTINUATION_CONFIDENT_STREAK_BONUS = 0.03
     CONTINUATION_TARGET_FINISH_CHAIN_BONUS = 1.08
     CONTINUATION_TARGET_CHAIN_HISTORY_BONUS = 1.06
+    PLAYER_GLOBAL_PROPAGATION_BONUS = 0.14
+    JOINT_ACTION_PLAN_BONUS = 1.10
+    JOINT_ACTION_PLAN_PENALTY = 0.92
+    JOINT_ACTION_COMPONENT_REFERENCE = 0.16
     EPSILON = 1e-9
 
     def build_guess_signals(
@@ -581,34 +585,47 @@ class BehavioralLikelihoodModel:
             hypothesis_by_player.get(signal.guesser_id, {}),
         )
         weight *= self._score_self_hand(guesser_cards, signal.guessed_card)
-        weight *= self._score_target_player_selection(
+        target_player_weight = self._score_target_player_selection(
             game_state,
             hypothesis_by_player,
             signal,
         )
-        weight *= self._score_target_slot_selection(
+        weight *= target_player_weight
+        target_slot_selection_weight = self._score_target_slot_selection(
             game_state,
             hypothesis_by_player,
             signal,
         )
-        weight *= self._score_target_value_selection(
+        weight *= target_slot_selection_weight
+        value_selection = self._value_selection_breakdown(
             game_state,
             hypothesis_by_player,
             signal,
             target_card,
             guesser_cards,
         )
+        weight *= value_selection["total_weight"]
         weight *= self._score_target_slot(
             game_state,
             hypothesis_by_player,
             signal,
             target_card,
         )
-        weight *= self._score_continue_decision(
+        continue_weight = self._score_continue_decision(
             game_state,
             hypothesis_by_player,
             signal,
         )
+        weight *= continue_weight
+        weight *= self._joint_action_fit_breakdown(
+            game_state,
+            hypothesis_by_player,
+            signal,
+            target_player_weight=target_player_weight,
+            target_slot_selection_weight=target_slot_selection_weight,
+            value_selection=value_selection,
+            continue_weight=continue_weight,
+        )["weight"]
         return max(self.EPSILON, weight)
 
     def _player_cards(
@@ -755,6 +772,151 @@ class BehavioralLikelihoodModel:
         ):
             weight *= self.TARGET_PLAYER_BREAK_CONFIDENT_CHAIN_PENALTY
         return weight
+
+    def _normalized_joint_action_component_fit(
+        self,
+        weight: float,
+        *,
+        reference: Optional[float] = None,
+    ) -> float:
+        fit_reference = (
+            self.JOINT_ACTION_COMPONENT_REFERENCE
+            if reference is None
+            else max(reference, self.EPSILON)
+        )
+        return clamp((float(weight) - 1.0) / fit_reference, -1.0, 1.0)
+
+    def _joint_action_fit_breakdown(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+        *,
+        target_player_weight: float,
+        target_slot_selection_weight: float,
+        value_selection: Dict[str, Any],
+        continue_weight: float,
+    ) -> Dict[str, float]:
+        target_player_fit = self._normalized_joint_action_component_fit(
+            target_player_weight,
+        )
+        target_slot_fit = self._normalized_joint_action_component_fit(
+            target_slot_selection_weight,
+        )
+        value_fit = self._normalized_joint_action_component_fit(
+            float(value_selection.get("total_weight", 1.0)),
+            reference=0.20,
+        )
+        continue_fit = self._normalized_joint_action_component_fit(
+            continue_weight,
+        )
+        target_player_attackability = clamp(
+            self._player_attackability(
+                game_state,
+                hypothesis_by_player,
+                signal.target_player_id,
+                exclude_slot=slot_key(signal.target_player_id, signal.target_slot_index),
+            ),
+            0.0,
+            1.0,
+        )
+        target_slot_attackability = clamp(
+            self._slot_attackability(
+                game_state,
+                hypothesis_by_player,
+                signal.target_player_id,
+                signal.target_slot_index,
+            ),
+            0.0,
+            1.0,
+        )
+        attack_window_signal = self._slot_attack_window_pressure(
+            game_state,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
+        joint_collapse_signal = self._continue_joint_collapse_signal(
+            game_state,
+            signal,
+        )
+        global_propagation_signal = self._global_public_propagation_pressure(game_state)
+        public_bridge_signal = self._recent_public_bridge_signal_for_guess(
+            game_state,
+            signal,
+        )
+        target_chain_signal = self._recent_target_chain_pressure(
+            game_state,
+            guesser_id=signal.guesser_id,
+            target_player_id=signal.target_player_id,
+        )
+        finish_chain_signal = self._slot_finish_chain_pressure_after_hit(
+            game_state,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
+
+        local_alignment = clamp(
+            (0.26 * max(0.0, target_player_fit))
+            + (0.20 * max(0.0, target_slot_fit))
+            + (0.24 * max(0.0, value_fit))
+            + (0.18 * max(0.0, continue_fit))
+            + (
+                0.12
+                * clamp(
+                    (0.65 * target_player_attackability)
+                    + (0.35 * target_slot_attackability),
+                    0.0,
+                    1.0,
+                )
+            ),
+            0.0,
+            1.0,
+        )
+        propagated_alignment = clamp(
+            (0.28 * attack_window_signal)
+            + (0.24 * joint_collapse_signal)
+            + (0.22 * global_propagation_signal)
+            + (0.14 * public_bridge_signal)
+            + (0.12 * max(target_chain_signal, finish_chain_signal)),
+            0.0,
+            1.0,
+        )
+        penalty_signal = clamp(
+            (0.34 * max(0.0, -target_player_fit))
+            + (0.22 * max(0.0, -target_slot_fit))
+            + (0.28 * max(0.0, -value_fit))
+            + (0.16 * max(0.0, -continue_fit)),
+            0.0,
+            1.0,
+        )
+        joint_signal = clamp(
+            (0.70 * local_alignment) + (0.30 * propagated_alignment),
+            0.0,
+            1.0,
+        )
+        weight = 1.0 + ((self.JOINT_ACTION_PLAN_BONUS - 1.0) * joint_signal)
+        weight *= 1.0 - (
+            (1.0 - self.JOINT_ACTION_PLAN_PENALTY) * penalty_signal
+        )
+        return {
+            "weight": max(self.EPSILON, weight),
+            "signal": joint_signal,
+            "penalty_signal": penalty_signal,
+            "local_alignment": local_alignment,
+            "propagated_alignment": propagated_alignment,
+            "target_player_fit": target_player_fit,
+            "target_slot_fit": target_slot_fit,
+            "value_fit": value_fit,
+            "continue_fit": continue_fit,
+            "target_player_attackability": target_player_attackability,
+            "target_slot_attackability": target_slot_attackability,
+            "attack_window_signal": attack_window_signal,
+            "joint_collapse_signal": joint_collapse_signal,
+            "global_propagation_signal": global_propagation_signal,
+            "public_bridge_signal": public_bridge_signal,
+            "target_chain_signal": target_chain_signal,
+            "finish_chain_signal": finish_chain_signal,
+        }
 
     def _has_failure_switch_guess_continuity(
         self,
@@ -1131,6 +1293,13 @@ class BehavioralLikelihoodModel:
                 "hypothesis_target_card": None,
                 "total_weight": 1.0,
                 "component_weights": {},
+                "joint_action": {
+                    "weight": 1.0,
+                    "signal": 0.0,
+                    "penalty_signal": 0.0,
+                    "local_alignment": 0.0,
+                    "propagated_alignment": 0.0,
+                },
                 "value_selection": {
                     "total_weight": 1.0,
                     "signal_tags": [],
@@ -1176,6 +1345,15 @@ class BehavioralLikelihoodModel:
             hypothesis_by_player,
             signal,
         )
+        joint_action = self._joint_action_fit_breakdown(
+            game_state,
+            hypothesis_by_player,
+            signal,
+            target_player_weight=target_player_weight,
+            target_slot_selection_weight=target_slot_selection_weight,
+            value_selection=value_selection,
+            continue_weight=continue_weight,
+        )
         component_weights = {
             "self_hand": self_hand_weight,
             "target_player_selection": target_player_weight,
@@ -1183,6 +1361,7 @@ class BehavioralLikelihoodModel:
             "target_value_selection": value_selection["total_weight"],
             "target_slot_fit": target_slot_weight,
             "continue_decision_fit": continue_weight,
+            "joint_action_fit": joint_action["weight"],
         }
         total_weight = 1.0
         for weight in component_weights.values():
@@ -1193,6 +1372,7 @@ class BehavioralLikelihoodModel:
             "hypothesis_target_card": serialize_card(target_card),
             "total_weight": max(self.EPSILON, total_weight),
             "component_weights": component_weights,
+            "joint_action": joint_action,
             "value_selection": value_selection,
         }
 
@@ -1590,8 +1770,11 @@ class BehavioralLikelihoodModel:
             signal.target_player_id,
         )
         global_collapse = self._global_public_collapse_pressure(game_state)
+        global_propagation = self._global_public_propagation_pressure(game_state)
         return clamp(
-            (0.60 * target_collapse) + (0.40 * global_collapse),
+            (0.45 * target_collapse)
+            + (0.25 * global_collapse)
+            + (0.30 * global_propagation),
             0.0,
             1.0,
         )
@@ -1832,6 +2015,7 @@ class BehavioralLikelihoodModel:
             exclude_slot=exclude_slot,
         )
         global_collapse_pressure = self._global_public_collapse_pressure(game_state)
+        global_propagation_pressure = self._global_public_propagation_pressure(game_state)
         recent_public_reveal = self._recent_public_reveal_pressure(game_state, player_id)
         recent_failed_guess = self._recent_failed_guess_pressure(game_state, player_id)
         return best * (
@@ -1839,6 +2023,7 @@ class BehavioralLikelihoodModel:
             + (self.PLAYER_FINISH_PRESSURE_BONUS * finish_pressure)
             + (self.PLAYER_ATTACK_WINDOW_BONUS * attack_window_pressure)
             + (self.PLAYER_GLOBAL_COLLAPSE_BONUS * global_collapse_pressure)
+            + (self.PLAYER_GLOBAL_PROPAGATION_BONUS * global_propagation_pressure)
             + (self.PLAYER_RECENT_PUBLIC_REVEAL_BONUS * recent_public_reveal)
             + (self.PLAYER_RECENT_FAILED_GUESS_BONUS * recent_failed_guess)
         )
@@ -1930,6 +2115,76 @@ class BehavioralLikelihoodModel:
             if recency_weight < 0.2:
                 break
         return clamp(collapse_score, 0.0, 1.0)
+
+    def _global_public_propagation_pressure(
+        self,
+        game_state: GameState,
+    ) -> float:
+        inference_players = list(game_state.inference_player_ids())
+        if not inference_players:
+            return 0.0
+
+        exposure_pressures: List[float] = []
+        finish_pressures: List[float] = []
+        for player_id in inference_players:
+            exposure_profile = self._public_hand_exposure_profile(game_state, player_id)
+            exposure_pressures.append(
+                clamp(
+                    exposure_profile["total_exposure"]
+                    + (0.30 * exposure_profile["finish_fragility"]),
+                    0.0,
+                    1.0,
+                )
+            )
+            finish_pressures.append(
+                self._player_finish_pressure(game_state, player_id)
+            )
+
+        exposure_pressure = sum(exposure_pressures) / len(exposure_pressures)
+        finish_pressure = sum(finish_pressures) / len(finish_pressures)
+        collapse_players: Set[str] = set()
+        player_recency_pressure: Dict[str, float] = {
+            player_id: 0.0 for player_id in inference_players
+        }
+
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            revealed_player_id = getattr(action, "revealed_player_id", None)
+            if revealed_player_id in player_recency_pressure and action.revealed_card() is not None:
+                player_recency_pressure[revealed_player_id] = max(
+                    player_recency_pressure[revealed_player_id],
+                    recency_weight,
+                )
+                collapse_players.add(revealed_player_id)
+            elif (
+                getattr(action, "action_type", None) == "guess"
+                and not getattr(action, "result", False)
+            ):
+                failed_target_player_id = getattr(action, "target_player_id", None)
+                if (
+                    failed_target_player_id in player_recency_pressure
+                    and action.guessed_card() is not None
+                ):
+                    player_recency_pressure[failed_target_player_id] = max(
+                        player_recency_pressure[failed_target_player_id],
+                        0.72 * recency_weight,
+                    )
+                    collapse_players.add(failed_target_player_id)
+            recency_weight *= 0.68
+            if recency_weight < 0.18:
+                break
+
+        collapse_breadth = len(collapse_players) / len(inference_players)
+        recency_pressure = sum(player_recency_pressure.values()) / len(inference_players)
+        return clamp(
+            (0.35 * self._global_public_collapse_pressure(game_state))
+            + (0.20 * collapse_breadth)
+            + (0.25 * exposure_pressure)
+            + (0.10 * finish_pressure)
+            + (0.10 * recency_pressure),
+            0.0,
+            1.0,
+        )
 
     def _recent_player_collapse_streak_pressure(
         self,
@@ -2716,15 +2971,19 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_FAILURE_RECOVERY = 0.12
     STOP_MARGIN_ATTACK_WINDOW = 0.10
     STOP_MARGIN_JOINT_COLLAPSE = 0.08
+    STOP_MARGIN_GLOBAL_PROPAGATION = 0.08
     STOP_MARGIN_PUBLIC_BRIDGE = 0.06
     STOP_MARGIN_TARGET_CHAIN = 0.07
     STOP_MARGIN_FINISH_CHAIN = 0.08
+    STOP_MARGIN_BRANCH_SEARCH = 0.10
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     FAILURE_RECOVERY_REFERENCE = 0.30
     POST_HIT_GAP_REFERENCE = 0.22
     POST_HIT_TOP_K_COUNT = 3
+    DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE = 1.0
     CONTINUATION_TOP_K_BLEND = 0.38
+    CONTINUATION_BRANCH_SEARCH_BLEND = 0.24
     LOW_CONFIDENCE_GUARD_MARGIN = 0.22
     WEAK_EDGE_GUARD_MARGIN = 0.18
     SELF_EXPOSURE_GUARD_REFERENCE = 0.40
@@ -2765,12 +3024,15 @@ class DaVinciDecisionEngine:
     TARGET_ATTACK_WINDOW_CONTINUATION_SCALE = 0.12
     JOINT_COLLAPSE_VALUE_BONUS = 0.22
     JOINT_COLLAPSE_CONTINUATION_SCALE = 0.08
+    GLOBAL_PROPAGATION_VALUE_BONUS = 0.20
+    GLOBAL_PROPAGATION_CONTINUATION_SCALE = 0.08
     PUBLIC_REVEAL_BRIDGE_VALUE_BONUS = 0.18
     PUBLIC_REVEAL_BRIDGE_CONTINUATION_SCALE = 0.06
     TARGET_CHAIN_VALUE_BONUS = 0.22
     TARGET_CHAIN_CONTINUATION_SCALE = 0.08
     TARGET_FINISH_CHAIN_VALUE_BONUS = 0.26
     TARGET_FINISH_CHAIN_CONTINUATION_SCALE = 0.10
+    BRANCH_SEARCH_FUTURE_MARGIN_BLEND = 0.55
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -3029,12 +3291,19 @@ class DaVinciDecisionEngine:
                 "best_joint_collapse_signal": 0.0,
                 "best_joint_collapse_bonus": 0.0,
                 "best_joint_collapse_continuation_bonus": 0.0,
+                "best_global_propagation_signal": 0.0,
+                "best_global_propagation_bonus": 0.0,
+                "best_global_propagation_continuation_bonus": 0.0,
                 "best_target_chain_signal": 0.0,
                 "best_target_chain_bonus": 0.0,
                 "best_target_chain_continuation_bonus": 0.0,
                 "best_target_finish_chain_signal": 0.0,
                 "best_target_finish_chain_bonus": 0.0,
                 "best_target_finish_chain_continuation_bonus": 0.0,
+                "best_post_hit_branch_search_value": 0.0,
+                "best_post_hit_branch_search_margin": 0.0,
+                "best_post_hit_branch_search_support_ratio": 0.0,
+                "best_post_hit_branch_search_signal": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -3075,9 +3344,11 @@ class DaVinciDecisionEngine:
                     "failure_recovery_pressure": 0.0,
                     "attack_window_support": 0.0,
                     "joint_collapse_support": 0.0,
+                    "global_propagation_support": 0.0,
                     "public_reveal_bridge_support": 0.0,
                     "target_chain_support": 0.0,
                     "target_finish_chain_support": 0.0,
+                    "branch_search_support": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -3202,6 +3473,12 @@ class DaVinciDecisionEngine:
                 "joint_collapse_continuation_bonus",
                 0.0,
             ),
+            "best_global_propagation_signal": best_move.get("global_propagation_signal", 0.0),
+            "best_global_propagation_bonus": best_move.get("global_propagation_bonus", 0.0),
+            "best_global_propagation_continuation_bonus": best_move.get(
+                "global_propagation_continuation_bonus",
+                0.0,
+            ),
             "best_target_chain_signal": best_move.get("target_chain_signal", 0.0),
             "best_target_chain_bonus": best_move.get("target_chain_bonus", 0.0),
             "best_target_chain_continuation_bonus": best_move.get(
@@ -3214,6 +3491,13 @@ class DaVinciDecisionEngine:
                 "target_finish_chain_continuation_bonus",
                 0.0,
             ),
+            "best_post_hit_branch_search_value": best_move.get("post_hit_branch_search_value", 0.0),
+            "best_post_hit_branch_search_margin": best_move.get("post_hit_branch_search_margin", 0.0),
+            "best_post_hit_branch_search_support_ratio": best_move.get(
+                "post_hit_branch_search_support_ratio",
+                0.0,
+            ),
+            "best_post_hit_branch_search_signal": best_move.get("post_hit_branch_search_signal", 0.0),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -3224,6 +3508,127 @@ class DaVinciDecisionEngine:
             "stop_reason": stop_reason,
         }
         return (best_move if decision_snapshot["should_continue"] else None), decision_summary
+
+    def benchmark_decision_cases(
+        self,
+        cases: Sequence[Any],
+    ) -> Dict[str, float]:
+        case_count = 0
+        correct_count = 0
+        continue_margins: List[float] = []
+        stop_margins: List[float] = []
+        correct_signed_margins: List[float] = []
+
+        for case in cases:
+            my_hidden_count = int(getattr(case, "my_hidden_count", 0))
+            moves = list(getattr(case, "moves", ()))
+            expect_continue = bool(getattr(case, "expect_continue", False))
+            best_move, summary = self.choose_best_move(
+                moves,
+                risk_factor=self.calculate_risk_factor(my_hidden_count),
+                my_hidden_count=my_hidden_count,
+            )
+            predicted_continue = best_move is not None
+            continue_margin = float(summary.get("continue_margin", 0.0))
+
+            case_count += 1
+            if predicted_continue == expect_continue:
+                correct_count += 1
+                correct_signed_margins.append(
+                    continue_margin if expect_continue else -continue_margin
+                )
+            if expect_continue:
+                continue_margins.append(continue_margin)
+            else:
+                stop_margins.append(continue_margin)
+
+        average_continue_margin = (
+            sum(continue_margins) / len(continue_margins)
+            if continue_margins
+            else 0.0
+        )
+        average_stop_margin = (
+            sum(stop_margins) / len(stop_margins)
+            if stop_margins
+            else 0.0
+        )
+        return {
+            "case_count": float(case_count),
+            "accuracy": (
+                float(correct_count) / float(case_count)
+                if case_count > 0
+                else 0.0
+            ),
+            "average_continue_margin": average_continue_margin,
+            "average_stop_margin": average_stop_margin,
+            "margin_separation": average_continue_margin - average_stop_margin,
+            "min_correct_margin": (
+                min(correct_signed_margins)
+                if correct_signed_margins
+                else 0.0
+            ),
+        }
+
+    def benchmark_behavior_cases(
+        self,
+        cases: Sequence[Any],
+        *,
+        model: Optional[BehavioralLikelihoodModel] = None,
+    ) -> Dict[str, float]:
+        behavior_model = model or BehavioralLikelihoodModel()
+        case_count = 0
+        correct_count = 0
+        log_margins: List[float] = []
+        score_ratios: List[float] = []
+
+        for case in cases:
+            preferred_state = getattr(case, "preferred_state")
+            alternative_state = getattr(case, "alternative_state")
+            preferred_hypothesis = getattr(case, "preferred_hypothesis")
+            alternative_hypothesis = getattr(case, "alternative_hypothesis")
+
+            preferred_score = behavior_model.score_hypothesis(
+                preferred_hypothesis,
+                behavior_model.build_guess_signals(preferred_state),
+                preferred_state,
+            )
+            alternative_score = behavior_model.score_hypothesis(
+                alternative_hypothesis,
+                behavior_model.build_guess_signals(alternative_state),
+                alternative_state,
+            )
+            log_margin = log2(
+                max(behavior_model.EPSILON, preferred_score)
+                / max(behavior_model.EPSILON, alternative_score)
+            )
+
+            case_count += 1
+            if preferred_score > alternative_score:
+                correct_count += 1
+            log_margins.append(log_margin)
+            score_ratios.append(
+                preferred_score / max(behavior_model.EPSILON, alternative_score)
+            )
+
+        return {
+            "case_count": float(case_count),
+            "accuracy": (
+                float(correct_count) / float(case_count)
+                if case_count > 0
+                else 0.0
+            ),
+            "average_log_margin": (
+                sum(log_margins) / len(log_margins)
+                if log_margins
+                else 0.0
+            ),
+            "min_log_margin": min(log_margins) if log_margins else 0.0,
+            "average_score_ratio": (
+                sum(score_ratios) / len(score_ratios)
+                if score_ratios
+                else 0.0
+            ),
+        }
 
     def _score_single_move(
         self,
@@ -3272,6 +3677,10 @@ class DaVinciDecisionEngine:
         post_hit_top_k_expected_support_ratio = 0.0
         post_hit_top_k_support_ratio = 0.0
         post_hit_top_k_positive_count = 0.0
+        post_hit_branch_search_value = 0.0
+        post_hit_branch_search_margin = 0.0
+        post_hit_branch_search_support_ratio = 0.0
+        post_hit_branch_search_signal = 0.0
         post_hit_behavior_support_adjustment = 0.0
         post_hit_behavior_support_gain = 0.0
         post_hit_behavior_fragility_drag = 0.0
@@ -3288,6 +3697,9 @@ class DaVinciDecisionEngine:
         joint_collapse_signal = 0.0
         joint_collapse_bonus = 0.0
         joint_collapse_continuation_bonus = 0.0
+        global_propagation_signal = 0.0
+        global_propagation_bonus = 0.0
+        global_propagation_continuation_bonus = 0.0
         public_reveal_bridge_signal = 0.0
         public_reveal_bridge_bonus = 0.0
         public_reveal_bridge_continuation_bonus = 0.0
@@ -3389,6 +3801,10 @@ class DaVinciDecisionEngine:
                 post_hit_top_k_expected_support_ratio = post_hit_rollout["top_k_expected_support_ratio"]
                 post_hit_top_k_support_ratio = post_hit_rollout["top_k_support_ratio"]
                 post_hit_top_k_positive_count = post_hit_rollout["top_k_positive_count"]
+                post_hit_branch_search_value = post_hit_rollout["branch_search_value"]
+                post_hit_branch_search_margin = post_hit_rollout["branch_search_margin"]
+                post_hit_branch_search_support_ratio = post_hit_rollout["branch_search_support_ratio"]
+                post_hit_branch_search_signal = post_hit_rollout["branch_search_signal"]
                 post_hit_failure_recovery_bonus = post_hit_rollout["failure_recovery_bonus"]
                 post_hit_failed_switch_bonus = post_hit_rollout["failed_switch_bonus"]
                 post_hit_failed_switch_signal = post_hit_rollout["failed_switch_signal"]
@@ -3397,9 +3813,19 @@ class DaVinciDecisionEngine:
                         0.35,
                         post_hit_best_gap / self.POST_HIT_GAP_REFERENCE,
                     )
+                rollout_base_weight = max(
+                    0.0,
+                    1.0
+                    - self.CONTINUATION_TOP_K_BLEND
+                    - self.CONTINUATION_BRANCH_SEARCH_BLEND,
+                )
                 rollout_margin_basis = (
-                    ((1.0 - self.CONTINUATION_TOP_K_BLEND) * max(0.0, post_hit_continue_margin))
+                    (rollout_base_weight * max(0.0, post_hit_continue_margin))
                     + (self.CONTINUATION_TOP_K_BLEND * post_hit_top_k_continue_margin)
+                    + (
+                        self.CONTINUATION_BRANCH_SEARCH_BLEND
+                        * post_hit_branch_search_margin
+                    )
                 )
                 post_hit_continuation_value = (
                     self.CONTINUATION_DISCOUNT
@@ -3510,18 +3936,25 @@ class DaVinciDecisionEngine:
             )
             joint_collapse_signal = clamp(
                 (
-                    0.60
+                    0.45
                     * behavior_model._recent_player_collapse_streak_pressure(
                         game_state,
                         player_id,
                     )
                 )
                 + (
-                    0.40
+                    0.25
                     * behavior_model._global_public_collapse_pressure(game_state)
+                )
+                + (
+                    0.30
+                    * behavior_model._global_public_propagation_pressure(game_state)
                 ),
                 0.0,
                 1.0,
+            )
+            global_propagation_signal = behavior_model._global_public_propagation_pressure(
+                game_state
             )
             public_reveal_bridge_signal = self._recent_public_reveal_bridge_signal(
                 game_state,
@@ -3587,6 +4020,17 @@ class DaVinciDecisionEngine:
             * max(continuation_likelihood, attackability_after_hit, 0.25)
         )
         continuation_value += joint_collapse_continuation_bonus
+        global_propagation_bonus = (
+            self.GLOBAL_PROPAGATION_VALUE_BONUS
+            * global_propagation_signal
+            * max(probability, attackability_after_hit, continuation_likelihood, 0.25)
+        )
+        global_propagation_continuation_bonus = (
+            self.GLOBAL_PROPAGATION_CONTINUATION_SCALE
+            * global_propagation_signal
+            * max(continuation_likelihood, attackability_after_hit, 0.25)
+        )
+        continuation_value += global_propagation_continuation_bonus
         public_reveal_bridge_bonus = (
             self.PUBLIC_REVEAL_BRIDGE_VALUE_BONUS
             * public_reveal_bridge_signal
@@ -3628,6 +4072,7 @@ class DaVinciDecisionEngine:
             + failed_guess_switch_bonus
             + target_attack_window_bonus
             + joint_collapse_bonus
+            + global_propagation_bonus
             + public_reveal_bridge_bonus
             + target_chain_bonus
             + target_finish_chain_bonus
@@ -3735,6 +4180,10 @@ class DaVinciDecisionEngine:
             "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
             "post_hit_top_k_support_ratio": post_hit_top_k_support_ratio,
             "post_hit_top_k_positive_count": post_hit_top_k_positive_count,
+            "post_hit_branch_search_value": post_hit_branch_search_value,
+            "post_hit_branch_search_margin": post_hit_branch_search_margin,
+            "post_hit_branch_search_support_ratio": post_hit_branch_search_support_ratio,
+            "post_hit_branch_search_signal": post_hit_branch_search_signal,
             "history_continue_rate": history_continue_rate,
             "hit_reward": hit_reward,
             "miss_penalty": miss_penalty,
@@ -3757,6 +4206,9 @@ class DaVinciDecisionEngine:
             "joint_collapse_signal": joint_collapse_signal,
             "joint_collapse_bonus": joint_collapse_bonus,
             "joint_collapse_continuation_bonus": joint_collapse_continuation_bonus,
+            "global_propagation_signal": global_propagation_signal,
+            "global_propagation_bonus": global_propagation_bonus,
+            "global_propagation_continuation_bonus": global_propagation_continuation_bonus,
             "public_reveal_bridge_signal": public_reveal_bridge_signal,
             "public_reveal_bridge_bonus": public_reveal_bridge_bonus,
             "public_reveal_bridge_continuation_bonus": public_reveal_bridge_continuation_bonus,
@@ -3787,6 +4239,9 @@ class DaVinciDecisionEngine:
                 "joint_collapse_signal": joint_collapse_signal,
                 "joint_collapse_bonus": joint_collapse_bonus,
                 "joint_collapse_continuation_bonus": joint_collapse_continuation_bonus,
+                "global_propagation_signal": global_propagation_signal,
+                "global_propagation_bonus": global_propagation_bonus,
+                "global_propagation_continuation_bonus": global_propagation_continuation_bonus,
                 "public_reveal_bridge_signal": public_reveal_bridge_signal,
                 "public_reveal_bridge_bonus": public_reveal_bridge_bonus,
                 "public_reveal_bridge_continuation_bonus": public_reveal_bridge_continuation_bonus,
@@ -3842,6 +4297,10 @@ class DaVinciDecisionEngine:
                 "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
                 "post_hit_top_k_support_ratio": post_hit_top_k_support_ratio,
                 "post_hit_top_k_positive_count": post_hit_top_k_positive_count,
+                "post_hit_branch_search_value": post_hit_branch_search_value,
+                "post_hit_branch_search_margin": post_hit_branch_search_margin,
+                "post_hit_branch_search_support_ratio": post_hit_branch_search_support_ratio,
+                "post_hit_branch_search_signal": post_hit_branch_search_signal,
             },
             "recommendation_reason": self._build_reason(
                 probability,
@@ -3953,6 +4412,55 @@ class DaVinciDecisionEngine:
             if top_k_continue_edges
             else 0.0
         )
+        branch_search_value = 0.0
+        branch_search_margin = 0.0
+        branch_search_support_ratio = 0.0
+        branch_search_signal = 0.0
+        branch_weight_sum = 0.0
+        branch_positive_count = 0.0
+        for move in top_k_moves:
+            immediate_branch_margin = max(
+                0.0,
+                move.get("ranking_score", move["expected_value"]) - stop_score,
+            )
+            future_branch_margin = max(
+                0.0,
+                float(move.get("post_hit_top_k_continue_margin", 0.0)),
+            )
+            combined_branch_value = immediate_branch_margin + (
+                self.BRANCH_SEARCH_FUTURE_MARGIN_BLEND * future_branch_margin
+            )
+            branch_weight = max(
+                0.0,
+                (0.45 * float(move.get("win_probability", 0.0)))
+                + (0.25 * float(move.get("continuation_likelihood", 0.0)))
+                + (0.20 * float(move.get("post_hit_top_k_support_ratio", 0.0)))
+                + (0.10 * float(move.get("target_attack_window_signal", 0.0))),
+            )
+            branch_search_value += branch_weight * combined_branch_value
+            branch_search_margin += branch_weight * immediate_branch_margin
+            branch_weight_sum += branch_weight
+            if combined_branch_value > 0.0:
+                branch_positive_count += 1.0
+        if branch_weight_sum > 0.0:
+            branch_search_value /= branch_weight_sum
+            branch_search_margin /= branch_weight_sum
+        if top_k_moves:
+            branch_search_support_ratio = branch_positive_count / len(top_k_moves)
+        branch_search_signal = clamp(
+            (0.55 * branch_search_support_ratio)
+            + (
+                0.45
+                * clamp(
+                    branch_search_margin
+                    / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                    0.0,
+                    1.0,
+                )
+            ),
+            0.0,
+            1.0,
+        )
         return {
             "should_continue": next_best_move is not None,
             "continue_score": next_summary.get("continue_score", 0.0),
@@ -3994,6 +4502,10 @@ class DaVinciDecisionEngine:
             "top_k_expected_support_ratio": top_k_expected_support_ratio,
             "top_k_support_ratio": top_k_support_ratio,
             "top_k_positive_count": top_k_positive_count,
+            "branch_search_value": branch_search_value,
+            "branch_search_margin": branch_search_margin,
+            "branch_search_support_ratio": branch_search_support_ratio,
+            "branch_search_signal": branch_search_signal,
             "guidance_debug": post_hit_behavior_guidance_debug,
         }
 
@@ -4833,6 +5345,11 @@ class DaVinciDecisionEngine:
             * float(best_move.get("joint_collapse_signal", 0.0))
         )
         continue_score += joint_collapse_support
+        global_propagation_support = (
+            self.STOP_MARGIN_GLOBAL_PROPAGATION
+            * float(best_move.get("global_propagation_signal", 0.0))
+        )
+        continue_score += global_propagation_support
         public_reveal_bridge_support = (
             self.STOP_MARGIN_PUBLIC_BRIDGE
             * float(best_move.get("public_reveal_bridge_signal", 0.0))
@@ -4848,6 +5365,11 @@ class DaVinciDecisionEngine:
             * float(best_move.get("target_finish_chain_signal", 0.0))
         )
         continue_score += target_finish_chain_support
+        branch_search_support = (
+            self.STOP_MARGIN_BRANCH_SEARCH
+            * float(best_move.get("post_hit_branch_search_signal", 0.0))
+        )
+        continue_score += branch_search_support
         post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
             best_move=best_move,
         )
@@ -4973,9 +5495,11 @@ class DaVinciDecisionEngine:
                 "failure_recovery_pressure": failure_recovery_pressure,
                 "attack_window_support": attack_window_support,
                 "joint_collapse_support": joint_collapse_support,
+                "global_propagation_support": global_propagation_support,
                 "public_reveal_bridge_support": public_reveal_bridge_support,
                 "target_chain_support": target_chain_support,
                 "target_finish_chain_support": target_finish_chain_support,
+                "branch_search_support": branch_search_support,
             },
         }
 

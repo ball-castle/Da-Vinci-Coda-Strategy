@@ -872,6 +872,16 @@ class DecisionRegressionCaseTests(unittest.TestCase):
                 if case.max_continue_margin is not None:
                     self.assertLess(summary["continue_margin"], case.max_continue_margin)
 
+    def test_decision_benchmark_quantifies_accuracy_and_margin(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_decision_cases(DECISION_REGRESSION_CASES)
+
+        self.assertEqual(benchmark["case_count"], float(len(DECISION_REGRESSION_CASES)))
+        self.assertEqual(benchmark["accuracy"], 1.0)
+        self.assertGreater(benchmark["margin_separation"], 0.15)
+        self.assertGreater(benchmark["min_correct_margin"], 0.0)
+
 
 class BehaviorRegressionCaseTests(unittest.TestCase):
     def test_behavior_regression_cases(self):
@@ -890,6 +900,17 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
                     case.alternative_state,
                 )
                 self.assertGreater(preferred_score, alternative_score)
+
+    def test_behavior_benchmark_quantifies_preference_margin(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_behavior_cases(BEHAVIOR_REGRESSION_CASES)
+
+        self.assertEqual(benchmark["case_count"], float(len(BEHAVIOR_REGRESSION_CASES)))
+        self.assertEqual(benchmark["accuracy"], 1.0)
+        self.assertGreater(benchmark["average_log_margin"], 0.0)
+        self.assertGreater(benchmark["min_log_margin"], 0.0)
+        self.assertGreater(benchmark["average_score_ratio"], 1.0)
 
 
 if __name__ == "__main__":
