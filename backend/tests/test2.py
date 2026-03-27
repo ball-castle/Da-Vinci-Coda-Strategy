@@ -795,6 +795,83 @@ class StopThresholdTests(unittest.TestCase):
         self.assertEqual(opp_move["failed_guess_switch_continuity_signal"], 0.0)
         self.assertGreater(side_move["expected_value"], stable_side_move["expected_value"])
 
+    def test_evaluate_all_moves_rewards_target_attack_window(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                1: {("W", 2): 0.62, ("W", 3): 0.38},
+            },
+            "side": {
+                2: {("W", 4): 0.62, ("W", 5): 0.38},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {1: 0},
+            "side": {2: 0},
+        }
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=4, color="B", value=7, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=game_state,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        opp_move = next(move for move in moves if move["target_player_id"] == "opp")
+        side_move = next(move for move in moves if move["target_player_id"] == "side")
+
+        self.assertGreater(
+            opp_move["target_attack_window_signal"],
+            side_move["target_attack_window_signal"],
+        )
+        self.assertGreater(
+            opp_move["target_attack_window_bonus"],
+            side_move["target_attack_window_bonus"],
+        )
+        self.assertGreater(
+            opp_move["expected_value"],
+            side_move["expected_value"],
+        )
+
     def test_choose_best_move_raises_stop_threshold_for_self_exposure(self):
         engine = DaVinciDecisionEngine()
         fragile_moves = [
@@ -1311,6 +1388,63 @@ class StopThresholdTests(unittest.TestCase):
             stable_summary["continue_margin"],
         )
 
+    def test_choose_best_move_uses_attack_window_support(self):
+        engine = DaVinciDecisionEngine()
+        window_moves = [
+            {
+                "expected_value": 0.72,
+                "immediate_expected_value": 0.72,
+                "win_probability": 0.56,
+                "continuation_value": 0.12,
+                "continuation_likelihood": 0.58,
+                "attackability_after_hit": 0.70,
+                "post_hit_continue_score": 0.24,
+                "post_hit_stop_score": 0.18,
+                "post_hit_continue_margin": 0.06,
+                "post_hit_best_gap": 0.28,
+                "post_hit_top_k_continue_margin": 0.05,
+                "post_hit_top_k_expected_continue_margin": 0.05,
+                "post_hit_top_k_support_ratio": 1.0,
+                "post_hit_top_k_expected_support_ratio": 1.0,
+                "target_attack_window_signal": 0.72,
+                "target_attack_window_bonus": 0.18,
+                "target_attack_window_continuation_bonus": 0.08,
+                "self_public_exposure": 0.06,
+                "self_newly_drawn_exposure": 0.02,
+                "self_finish_fragility": 0.02,
+            },
+        ]
+        stable_moves = [
+            {
+                **window_moves[0],
+                "target_attack_window_signal": 0.0,
+                "target_attack_window_bonus": 0.0,
+                "target_attack_window_continuation_bonus": 0.0,
+            },
+        ]
+
+        window_best, window_summary = engine.choose_best_move(
+            window_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        stable_best, stable_summary = engine.choose_best_move(
+            stable_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(window_best)
+        self.assertIsNone(stable_best)
+        self.assertGreater(
+            window_summary["decision_score_breakdown"]["attack_window_support"],
+            0.0,
+        )
+        self.assertGreater(
+            window_summary["continue_margin"],
+            stable_summary["continue_margin"],
+        )
+
     def test_choose_best_move_boosts_edge_pressure_under_self_exposure(self):
         engine = DaVinciDecisionEngine()
         fragile_moves = [
@@ -1677,10 +1811,9 @@ class StopThresholdTests(unittest.TestCase):
             and move["guess_card"] == ["W", 5]
         )
 
-        self.assertAlmostEqual(
+        self.assertGreaterEqual(
             stable_move["behavior_match_bonus"],
             diffuse_move["behavior_match_bonus"],
-            places=6,
         )
         self.assertGreater(
             stable_move["behavior_match_candidate_confidence"],

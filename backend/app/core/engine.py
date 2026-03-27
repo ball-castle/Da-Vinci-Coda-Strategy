@@ -184,6 +184,7 @@ class BehavioralLikelihoodModel:
     PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
     PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
     PLAYER_RECENT_FAILED_GUESS_BONUS = 0.10
+    PLAYER_ATTACK_WINDOW_BONUS = 0.14
 
     TARGET_SLOT_BEST_MATCH_BONUS = 1.08
     TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
@@ -191,9 +192,11 @@ class BehavioralLikelihoodModel:
     TARGET_SLOT_RETRY_AFTER_FAILURE_BONUS = 1.06
     TARGET_SLOT_CONFIDENT_ADJACENT_FOLLOW_BONUS = 1.04
     TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS = 1.03
+    TARGET_SLOT_ATTACK_WINDOW_BONUS = 1.05
     SLOT_EDGE_PRESSURE_BONUS = 1.05
     SLOT_RECENT_REVEAL_NEIGHBOR_BONUS = 1.06
     SLOT_FAILURE_NEIGHBOR_ATTACK_BONUS = 1.04
+    SLOT_ATTACK_WINDOW_BONUS = 1.08
     PLAYER_SECONDARY_ATTACKABILITY_BLEND = 0.20
     PLAYER_FINISH_PRESSURE_BONUS = 0.26
     MATRIX_SECONDARY_ATTACKABILITY_BLEND = 0.22
@@ -693,6 +696,16 @@ class BehavioralLikelihoodModel:
             weight *= self.TARGET_SLOT_CONFIDENT_ADJACENT_FOLLOW_BONUS
         if self._is_adjacent_slot_probe_after_failure(game_state, signal):
             weight *= self.TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS
+        attack_window_pressure = self._slot_attack_window_pressure(
+            game_state,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
+        if attack_window_pressure > 0.0:
+            weight *= 1.0 + (
+                (self.TARGET_SLOT_ATTACK_WINDOW_BONUS - 1.0)
+                * attack_window_pressure
+            )
         return weight
 
     def _is_adjacent_slot_follow_after_confident_hit(
@@ -1596,13 +1609,54 @@ class BehavioralLikelihoodModel:
             player_id,
             exclude_slot=exclude_slot,
         )
+        attack_window_pressure = self._player_attack_window_pressure(
+            game_state,
+            player_id,
+            exclude_slot=exclude_slot,
+        )
         recent_public_reveal = self._recent_public_reveal_pressure(game_state, player_id)
         recent_failed_guess = self._recent_failed_guess_pressure(game_state, player_id)
         return best * (
             1.0
             + (self.PLAYER_FINISH_PRESSURE_BONUS * finish_pressure)
+            + (self.PLAYER_ATTACK_WINDOW_BONUS * attack_window_pressure)
             + (self.PLAYER_RECENT_PUBLIC_REVEAL_BONUS * recent_public_reveal)
             + (self.PLAYER_RECENT_FAILED_GUESS_BONUS * recent_failed_guess)
+        )
+
+    def _player_attack_window_pressure(
+        self,
+        game_state: GameState,
+        player_id: str,
+        *,
+        exclude_slot: Optional[SlotKey] = None,
+    ) -> float:
+        slot_pressures: List[float] = []
+        for slot in game_state.resolved_ordered_slots(player_id):
+            if slot.known_card() is not None:
+                continue
+            key = slot_key(player_id, slot.slot_index)
+            if exclude_slot is not None and key == exclude_slot:
+                continue
+            slot_pressures.append(
+                self._slot_attack_window_pressure(
+                    game_state,
+                    player_id,
+                    slot.slot_index,
+                )
+            )
+        if not slot_pressures:
+            return 0.0
+        best = max(slot_pressures)
+        finish_pressure = self._player_finish_pressure(
+            game_state,
+            player_id,
+            exclude_slot=exclude_slot,
+        )
+        return clamp(
+            (0.62 * best) + (0.38 * finish_pressure),
+            0.0,
+            1.0,
         )
 
     def _player_finish_pressure(
@@ -1730,7 +1784,65 @@ class BehavioralLikelihoodModel:
                 (self.SLOT_FAILURE_NEIGHBOR_ATTACK_BONUS - 1.0)
                 * failed_guess_neighbor_pressure
             )
+        attack_window_pressure = self._slot_attack_window_pressure(
+            game_state,
+            player_id,
+            slot_index,
+        )
+        if attack_window_pressure > 0.0:
+            confidence *= 1.0 + (
+                (self.SLOT_ATTACK_WINDOW_BONUS - 1.0)
+                * attack_window_pressure
+            )
         return confidence
+
+    def _slot_attack_window_pressure(
+        self,
+        game_state: GameState,
+        player_id: str,
+        slot_index: int,
+    ) -> float:
+        ordered_slots = list(game_state.resolved_ordered_slots(player_id))
+        index_by_slot = {slot.slot_index: idx for idx, slot in enumerate(ordered_slots)}
+        order_index = index_by_slot.get(slot_index)
+        if order_index is None:
+            return 0.0
+        if ordered_slots[order_index].known_card() is not None:
+            return 0.0
+
+        span = 1
+        left_anchor = 0.0
+        cursor = order_index - 1
+        while cursor >= 0:
+            left_slot = ordered_slots[cursor]
+            if left_slot.known_card() is not None:
+                left_anchor = 1.0
+                break
+            span += 1
+            cursor -= 1
+        if cursor < 0:
+            left_anchor = max(left_anchor, 0.45)
+
+        right_anchor = 0.0
+        cursor = order_index + 1
+        while cursor < len(ordered_slots):
+            right_slot = ordered_slots[cursor]
+            if right_slot.known_card() is not None:
+                right_anchor = 1.0
+                break
+            span += 1
+            cursor += 1
+        if cursor >= len(ordered_slots):
+            right_anchor = max(right_anchor, 0.45)
+
+        span_signal = clamp((4.0 - float(span)) / 3.0, 0.0, 1.0)
+        anchor_signal = clamp((left_anchor + right_anchor) / 2.0, 0.0, 1.0)
+        dual_anchor_bonus = 0.18 if left_anchor > 0.0 and right_anchor > 0.0 else 0.0
+        return clamp(
+            (0.58 * span_signal) + (0.32 * anchor_signal) + dual_anchor_bonus,
+            0.0,
+            1.0,
+        )
 
     def _recent_reveal_neighbor_pressure(
         self,
@@ -2298,6 +2410,7 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_FINISH_FRAGILITY = 0.18
     STOP_MARGIN_EDGE_SELF_EXPOSURE_BOOST = 0.45
     STOP_MARGIN_FAILURE_RECOVERY = 0.12
+    STOP_MARGIN_ATTACK_WINDOW = 0.10
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     FAILURE_RECOVERY_REFERENCE = 0.30
@@ -2340,6 +2453,8 @@ class DaVinciDecisionEngine:
     FAILED_GUESS_NEIGHBOR_COLLAPSE_VALUE_BONUS = 0.12
     FAILED_GUESS_PLAYER_COLLAPSE_VALUE_BONUS = 0.10
     FAILED_GUESS_SWITCH_CONTINUITY_VALUE_BONUS = 0.18
+    TARGET_ATTACK_WINDOW_VALUE_BONUS = 0.24
+    TARGET_ATTACK_WINDOW_CONTINUATION_SCALE = 0.12
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -2526,6 +2641,9 @@ class DaVinciDecisionEngine:
                 "best_failure_collapse_bonus": 0.0,
                 "best_failed_guess_switch_bonus": 0.0,
                 "best_failed_guess_switch_continuity_signal": 0.0,
+                "best_target_attack_window_signal": 0.0,
+                "best_target_attack_window_bonus": 0.0,
+                "best_target_attack_window_continuation_bonus": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -2564,6 +2682,7 @@ class DaVinciDecisionEngine:
                     "behavior_match_component_penalty": 0.0,
                     "behavior_match_context_focus": 0.0,
                     "failure_recovery_pressure": 0.0,
+                    "attack_window_support": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -2676,6 +2795,12 @@ class DaVinciDecisionEngine:
                 "failed_guess_switch_continuity_signal",
                 0.0,
             ),
+            "best_target_attack_window_signal": best_move.get("target_attack_window_signal", 0.0),
+            "best_target_attack_window_bonus": best_move.get("target_attack_window_bonus", 0.0),
+            "best_target_attack_window_continuation_bonus": best_move.get(
+                "target_attack_window_continuation_bonus",
+                0.0,
+            ),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -2744,6 +2869,9 @@ class DaVinciDecisionEngine:
         post_hit_failure_recovery_bonus = 0.0
         post_hit_failed_switch_bonus = 0.0
         post_hit_failed_switch_signal = 0.0
+        target_attack_window_signal = 0.0
+        target_attack_window_bonus = 0.0
+        target_attack_window_continuation_bonus = 0.0
         continuation_exposure_gate = 1.0
         behavior_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
         behavior_guidance_support = 0.0
@@ -2934,6 +3062,27 @@ class DaVinciDecisionEngine:
                 card,
             )
         )
+        if game_state is not None:
+            target_attack_window_signal = clamp(
+                (
+                    0.65
+                    * behavior_model._slot_attack_window_pressure(
+                        game_state,
+                        player_id,
+                        slot_index,
+                    )
+                )
+                + (
+                    0.35
+                    * behavior_model._player_attack_window_pressure(
+                        game_state,
+                        player_id,
+                        exclude_slot=slot_key(player_id, slot_index),
+                    )
+                ),
+                0.0,
+                1.0,
+            )
         structural_risk_factor = risk_factor * (
             1.0
             + (self.SELF_EXPOSURE_RISK_SCALE * float(self_exposure_profile["total_exposure"]))
@@ -2958,12 +3107,24 @@ class DaVinciDecisionEngine:
             * failed_guess_switch_continuity_signal
             * max(probability, attackability_after_hit, 0.25)
         )
+        target_attack_window_bonus = (
+            self.TARGET_ATTACK_WINDOW_VALUE_BONUS
+            * target_attack_window_signal
+            * max(probability, attackability_after_hit, continuation_likelihood, 0.25)
+        )
+        target_attack_window_continuation_bonus = (
+            self.TARGET_ATTACK_WINDOW_CONTINUATION_SCALE
+            * target_attack_window_signal
+            * max(continuation_likelihood, attackability_after_hit, 0.25)
+        )
+        continuation_value += target_attack_window_continuation_bonus
         immediate_expected_value = (
             hit_reward
             - miss_penalty
             + info_bonus
             + failure_collapse_bonus
             + failed_guess_switch_bonus
+            + target_attack_window_bonus
         )
         expected_value = immediate_expected_value + continuation_value
         if (
@@ -3084,6 +3245,9 @@ class DaVinciDecisionEngine:
             "failure_collapse_bonus": failure_collapse_bonus,
             "failed_guess_switch_continuity_signal": failed_guess_switch_continuity_signal,
             "failed_guess_switch_bonus": failed_guess_switch_bonus,
+            "target_attack_window_signal": target_attack_window_signal,
+            "target_attack_window_bonus": target_attack_window_bonus,
+            "target_attack_window_continuation_bonus": target_attack_window_continuation_bonus,
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
@@ -3099,6 +3263,9 @@ class DaVinciDecisionEngine:
                 "failure_collapse_bonus": failure_collapse_bonus,
                 "failed_guess_switch_continuity_signal": failed_guess_switch_continuity_signal,
                 "failed_guess_switch_bonus": failed_guess_switch_bonus,
+                "target_attack_window_signal": target_attack_window_signal,
+                "target_attack_window_bonus": target_attack_window_bonus,
+                "target_attack_window_continuation_bonus": target_attack_window_continuation_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
                 "post_hit_continuation_value": post_hit_continuation_value,
@@ -4126,6 +4293,11 @@ class DaVinciDecisionEngine:
             self.STOP_MARGIN_FAILURE_RECOVERY * failure_recovery_signal
         )
         continue_score += failure_recovery_pressure
+        attack_window_support = (
+            self.STOP_MARGIN_ATTACK_WINDOW
+            * float(best_move.get("target_attack_window_signal", 0.0))
+        )
+        continue_score += attack_window_support
         post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
             best_move=best_move,
         )
@@ -4249,6 +4421,7 @@ class DaVinciDecisionEngine:
                 "behavior_match_component_penalty": behavior_match_component_penalty,
                 "behavior_match_context_focus": behavior_match_context_focus,
                 "failure_recovery_pressure": failure_recovery_pressure,
+                "attack_window_support": attack_window_support,
             },
         }
 
@@ -5376,6 +5549,9 @@ class GameController:
             "expected_failed_guess_switch_signal": {"B": 0.0, "W": 0.0},
             "expected_post_hit_failure_recovery_bonus": {"B": 0.0, "W": 0.0},
             "expected_post_hit_failed_switch_bonus": {"B": 0.0, "W": 0.0},
+            "expected_target_attack_window_signal": {"B": 0.0, "W": 0.0},
+            "expected_target_attack_window_bonus": {"B": 0.0, "W": 0.0},
+            "expected_target_attack_window_continuation_bonus": {"B": 0.0, "W": 0.0},
             "expected_win_probability": {"B": 0.0, "W": 0.0},
             "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
             "target_retention_ratio": {"B": 0.0, "W": 0.0},
@@ -5436,6 +5612,9 @@ class GameController:
             failed_guess_switch_signal_sum = 0.0
             post_hit_failure_recovery_bonus_sum = 0.0
             post_hit_failed_switch_bonus_sum = 0.0
+            target_attack_window_signal_sum = 0.0
+            target_attack_window_bonus_sum = 0.0
+            target_attack_window_continuation_bonus_sum = 0.0
             win_probability_sum = 0.0
             attackability_sum = 0.0
             target_retention_count = 0.0
@@ -5504,6 +5683,18 @@ class GameController:
                 )
                 post_hit_failed_switch_bonus_sum += float(
                     simulated_decision.get("best_post_hit_failed_switch_bonus", 0.0)
+                )
+                target_attack_window_signal_sum += float(
+                    simulated_decision.get("best_target_attack_window_signal", 0.0)
+                )
+                target_attack_window_bonus_sum += float(
+                    simulated_decision.get("best_target_attack_window_bonus", 0.0)
+                )
+                target_attack_window_continuation_bonus_sum += float(
+                    simulated_decision.get(
+                        "best_target_attack_window_continuation_bonus",
+                        0.0,
+                    )
                 )
                 win_probability_sum += sampled_win_probability
                 attackability_sum += float(
@@ -5615,6 +5806,15 @@ class GameController:
             )
             summary["expected_post_hit_failed_switch_bonus"][color] = (
                 post_hit_failed_switch_bonus_sum / len(sample_cards)
+            )
+            summary["expected_target_attack_window_signal"][color] = (
+                target_attack_window_signal_sum / len(sample_cards)
+            )
+            summary["expected_target_attack_window_bonus"][color] = (
+                target_attack_window_bonus_sum / len(sample_cards)
+            )
+            summary["expected_target_attack_window_continuation_bonus"][color] = (
+                target_attack_window_continuation_bonus_sum / len(sample_cards)
             )
             summary["expected_win_probability"][color] = (
                 win_probability_sum / len(sample_cards)
@@ -5732,6 +5932,18 @@ class GameController:
             summary["expected_win_probability"]["B"]
             - summary["expected_win_probability"]["W"]
         )
+        target_attack_window_signal_gap = (
+            summary["expected_target_attack_window_signal"]["B"]
+            - summary["expected_target_attack_window_signal"]["W"]
+        )
+        target_attack_window_bonus_gap = (
+            summary["expected_target_attack_window_bonus"]["B"]
+            - summary["expected_target_attack_window_bonus"]["W"]
+        )
+        target_attack_window_continuation_bonus_gap = (
+            summary["expected_target_attack_window_continuation_bonus"]["B"]
+            - summary["expected_target_attack_window_continuation_bonus"]["W"]
+        )
         attackability_gap = (
             summary["expected_attackability_after_hit"]["B"]
             - summary["expected_attackability_after_hit"]["W"]
@@ -5819,6 +6031,36 @@ class GameController:
         summary["win_probability_pressure"] = {
             "B": clamp(win_probability_gap, -1.0, 1.0),
             "W": clamp(-win_probability_gap, -1.0, 1.0),
+        }
+        summary["target_attack_window_signal_pressure"] = {
+            "B": clamp(target_attack_window_signal_gap, -1.0, 1.0),
+            "W": clamp(-target_attack_window_signal_gap, -1.0, 1.0),
+        }
+        summary["target_attack_window_bonus_pressure"] = {
+            "B": clamp(
+                target_attack_window_bonus_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-target_attack_window_bonus_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["target_attack_window_continuation_pressure"] = {
+            "B": clamp(
+                target_attack_window_continuation_bonus_gap
+                / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-target_attack_window_continuation_bonus_gap)
+                / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
         }
         summary["attackability_pressure"] = {
             "B": clamp(
@@ -6213,6 +6455,9 @@ class GameController:
                     + (0.08 * draw_rollout_failed_switch_pressure[color])
                     + (0.08 * draw_rollout_post_hit_failure_recovery_pressure[color])
                     + (0.06 * draw_rollout_post_hit_failed_switch_pressure[color])
+                    + (0.08 * draw_rollout["target_attack_window_signal_pressure"][color])
+                    + (0.10 * draw_rollout["target_attack_window_bonus_pressure"][color])
+                    + (0.08 * draw_rollout["target_attack_window_continuation_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -6302,6 +6547,30 @@ class GameController:
                     - draw_rollout_post_hit_failed_switch_pressure["W"]
                 )
             ),
+            "draw_rollout_target_attack_window_signal_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout["target_attack_window_signal_pressure"]["B"]
+                    - draw_rollout["target_attack_window_signal_pressure"]["W"]
+                )
+            ),
+            "draw_rollout_target_attack_window_bonus_pressure": (
+                draw_rollout_activation_scale
+                * 0.10
+                * abs(
+                    draw_rollout["target_attack_window_bonus_pressure"]["B"]
+                    - draw_rollout["target_attack_window_bonus_pressure"]["W"]
+                )
+            ),
+            "draw_rollout_target_attack_window_continuation_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout["target_attack_window_continuation_pressure"]["B"]
+                    - draw_rollout["target_attack_window_continuation_pressure"]["W"]
+                )
+            ),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
             "target_entropy_pressure": abs(
@@ -6374,6 +6643,12 @@ class GameController:
             "draw_rollout_expected_post_hit_failure_recovery_bonus_white": draw_rollout["expected_post_hit_failure_recovery_bonus"]["W"],
             "draw_rollout_expected_post_hit_failed_switch_bonus_black": draw_rollout["expected_post_hit_failed_switch_bonus"]["B"],
             "draw_rollout_expected_post_hit_failed_switch_bonus_white": draw_rollout["expected_post_hit_failed_switch_bonus"]["W"],
+            "draw_rollout_expected_target_attack_window_signal_black": draw_rollout["expected_target_attack_window_signal"]["B"],
+            "draw_rollout_expected_target_attack_window_signal_white": draw_rollout["expected_target_attack_window_signal"]["W"],
+            "draw_rollout_expected_target_attack_window_bonus_black": draw_rollout["expected_target_attack_window_bonus"]["B"],
+            "draw_rollout_expected_target_attack_window_bonus_white": draw_rollout["expected_target_attack_window_bonus"]["W"],
+            "draw_rollout_expected_target_attack_window_continuation_bonus_black": draw_rollout["expected_target_attack_window_continuation_bonus"]["B"],
+            "draw_rollout_expected_target_attack_window_continuation_bonus_white": draw_rollout["expected_target_attack_window_continuation_bonus"]["W"],
             "draw_rollout_continuation_value_pressure_black": draw_rollout["continuation_value_pressure"]["B"],
             "draw_rollout_continuation_value_pressure_white": draw_rollout["continuation_value_pressure"]["W"],
             "draw_rollout_continuation_likelihood_pressure_black": draw_rollout["continuation_likelihood_pressure"]["B"],
@@ -6396,6 +6671,12 @@ class GameController:
             "draw_rollout_post_hit_failure_recovery_pressure_white": draw_rollout_post_hit_failure_recovery_pressure["W"],
             "draw_rollout_post_hit_failed_switch_pressure_black": draw_rollout_post_hit_failed_switch_pressure["B"],
             "draw_rollout_post_hit_failed_switch_pressure_white": draw_rollout_post_hit_failed_switch_pressure["W"],
+            "draw_rollout_target_attack_window_signal_pressure_black": draw_rollout["target_attack_window_signal_pressure"]["B"],
+            "draw_rollout_target_attack_window_signal_pressure_white": draw_rollout["target_attack_window_signal_pressure"]["W"],
+            "draw_rollout_target_attack_window_bonus_pressure_black": draw_rollout["target_attack_window_bonus_pressure"]["B"],
+            "draw_rollout_target_attack_window_bonus_pressure_white": draw_rollout["target_attack_window_bonus_pressure"]["W"],
+            "draw_rollout_target_attack_window_continuation_pressure_black": draw_rollout["target_attack_window_continuation_pressure"]["B"],
+            "draw_rollout_target_attack_window_continuation_pressure_white": draw_rollout["target_attack_window_continuation_pressure"]["W"],
             "draw_rollout_expected_win_probability_black": draw_rollout["expected_win_probability"]["B"],
             "draw_rollout_expected_win_probability_white": draw_rollout["expected_win_probability"]["W"],
             "draw_rollout_expected_attackability_after_hit_black": draw_rollout["expected_attackability_after_hit"]["B"],
