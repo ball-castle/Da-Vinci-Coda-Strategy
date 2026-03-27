@@ -676,6 +676,87 @@ class StopThresholdTests(unittest.TestCase):
         self.assertIsNone(fragile_best)
         self.assertIsNotNone(stable_best)
 
+    def test_evaluate_all_moves_tracks_finish_fragility_for_short_exposed_hand(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+        }
+        short_fragile_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=1, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=2, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+        )
+        buffered_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=3, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=6, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+        )
+
+        short_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=short_fragile_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+        buffered_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=2,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=buffered_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        self.assertGreater(
+            short_moves[0]["self_finish_fragility"],
+            buffered_moves[0]["self_finish_fragility"],
+        )
+        self.assertGreater(
+            short_moves[0]["self_public_exposure"],
+            buffered_moves[0]["self_public_exposure"],
+        )
+
     def test_evaluate_all_moves_uses_behavior_match_bonus_in_ranking(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()

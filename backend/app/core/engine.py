@@ -1973,6 +1973,7 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_BEHAVIOR_ROLLOUT = 0.16
     STOP_MARGIN_SELF_EXPOSURE = 0.18
     STOP_MARGIN_NEW_DRAWN_EXPOSURE = 0.22
+    STOP_MARGIN_FINISH_FRAGILITY = 0.18
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     POST_HIT_GAP_REFERENCE = 0.22
@@ -2137,6 +2138,7 @@ class DaVinciDecisionEngine:
                 "best_post_hit_top_k_support_ratio": 0.0,
                 "best_self_public_exposure": 0.0,
                 "best_self_newly_drawn_exposure": 0.0,
+                "best_self_finish_fragility": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -2266,6 +2268,7 @@ class DaVinciDecisionEngine:
             "best_post_hit_top_k_support_ratio": best_move.get("post_hit_top_k_support_ratio", 0.0),
             "best_self_public_exposure": best_move.get("self_public_exposure", 0.0),
             "best_self_newly_drawn_exposure": best_move.get("self_newly_drawn_exposure", 0.0),
+            "best_self_finish_fragility": best_move.get("self_finish_fragility", 0.0),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -2457,6 +2460,7 @@ class DaVinciDecisionEngine:
             "max_slot_exposure": 0.0,
             "newly_drawn_exposure": 0.0,
             "average_slot_exposure": 0.0,
+            "finish_fragility": 0.0,
             "hidden_count": 0.0,
         }
         structural_risk_factor = risk_factor * (
@@ -2576,12 +2580,14 @@ class DaVinciDecisionEngine:
             "self_max_slot_exposure": float(self_exposure_profile["max_slot_exposure"]),
             "self_newly_drawn_exposure": float(self_exposure_profile["newly_drawn_exposure"]),
             "self_average_slot_exposure": float(self_exposure_profile["average_slot_exposure"]),
+            "self_finish_fragility": float(self_exposure_profile["finish_fragility"]),
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
                 "structural_risk_factor": structural_risk_factor,
                 "self_public_exposure": float(self_exposure_profile["total_exposure"]),
                 "self_newly_drawn_exposure": float(self_exposure_profile["newly_drawn_exposure"]),
+                "self_finish_fragility": float(self_exposure_profile["finish_fragility"]),
                 "information_gain_bonus": info_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
@@ -4028,6 +4034,11 @@ class DaVinciDecisionEngine:
                 0.0,
                 1.0,
             )
+            threshold += self.STOP_MARGIN_FINISH_FRAGILITY * clamp(
+                float(best_move.get("self_finish_fragility", 0.0)),
+                0.0,
+                1.0,
+            )
             if best_move["win_probability"] < 0.5:
                 threshold += self.STOP_MARGIN_LOW_CONFIDENCE * (0.5 - best_move["win_probability"]) / 0.5
             if best_move.get("continuation_likelihood", 0.0) < 0.5:
@@ -4153,6 +4164,7 @@ class DaVinciDecisionEngine:
                 "max_slot_exposure": 0.0,
                 "newly_drawn_exposure": 0.0,
                 "average_slot_exposure": 0.0,
+                "finish_fragility": 0.0,
                 "hidden_count": 0.0,
             }
 
@@ -4173,6 +4185,7 @@ class DaVinciDecisionEngine:
                 "max_slot_exposure": 0.0,
                 "newly_drawn_exposure": 0.0,
                 "average_slot_exposure": 0.0,
+                "finish_fragility": 0.0,
                 "hidden_count": 0.0,
             }
 
@@ -4180,12 +4193,19 @@ class DaVinciDecisionEngine:
         total_exposure = slot_exposures[0]
         if len(slot_exposures) >= 2:
             total_exposure += self.SELF_EXPOSURE_SECONDARY_BLEND * slot_exposures[1]
+        hidden_count = float(len(slot_exposures))
+        finish_fragility = clamp(
+            ((3.0 - hidden_count) / 3.0) * slot_exposures[0],
+            0.0,
+            1.0,
+        )
         return {
             "total_exposure": total_exposure,
             "max_slot_exposure": slot_exposures[0],
             "newly_drawn_exposure": newly_drawn_exposure,
             "average_slot_exposure": sum(slot_exposures) / float(len(slot_exposures)),
-            "hidden_count": float(len(slot_exposures)),
+            "finish_fragility": finish_fragility,
+            "hidden_count": hidden_count,
         }
 
     def _public_self_slot_exposure(
