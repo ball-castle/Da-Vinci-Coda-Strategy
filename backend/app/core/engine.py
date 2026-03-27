@@ -273,6 +273,9 @@ class BehavioralLikelihoodModel:
     JOINT_ACTION_GENERATION_BLEND = 0.35
     JOINT_ACTION_GENERATION_PRIOR_BLEND = 0.26
     JOINT_ACTION_GENERATION_MAX_WEIGHT = 2.8
+    JOINT_ACTION_GENERATIVE_TEMPERATURE = 2.2
+    JOINT_ACTION_GENERATIVE_BLEND = 0.40
+    JOINT_ACTION_GENERATIVE_MAX_WEIGHT = 3.2
     EPSILON = 1e-9
 
     def build_guess_signals(
@@ -631,6 +634,14 @@ class BehavioralLikelihoodModel:
             signal,
             joint_action_probability=joint_action_probability,
         )
+        joint_action_generative_probability = (
+            self._joint_action_generative_probability_breakdown(
+                game_state,
+                hypothesis_by_player,
+                signal,
+                guesser_cards=guesser_cards,
+            )
+        )
         joint_action_fit = self._joint_action_fit_breakdown(
             game_state,
             hypothesis_by_player,
@@ -651,6 +662,7 @@ class BehavioralLikelihoodModel:
         weight = self_hand_weight
         weight *= max(self.EPSILON, joint_action_probability["joint_probability"])
         weight *= joint_action_generation["weight"]
+        weight *= joint_action_generative_probability["weight"]
         weight *= joint_action_fit["weight"]
         weight *= structured_fit ** self.JOINT_ACTION_STRUCTURED_BLEND
         return max(self.EPSILON, weight)
@@ -948,13 +960,20 @@ class BehavioralLikelihoodModel:
     def _softmax_probabilities(
         self,
         raw_scores: Dict[Any, float],
+        *,
+        temperature: Optional[float] = None,
     ) -> Dict[Any, float]:
         if not raw_scores:
             return {}
         max_score = max(float(score) for score in raw_scores.values())
+        temperature = (
+            self.JOINT_ACTION_TEMPERATURE
+            if temperature is None
+            else float(temperature)
+        )
         exp_scores = {
             key: exp(
-                self.JOINT_ACTION_TEMPERATURE * (float(score) - max_score)
+                temperature * (float(score) - max_score)
             )
             for key, score in raw_scores.items()
         }
@@ -1292,6 +1311,243 @@ class BehavioralLikelihoodModel:
             "finish_chain_signal": finish_chain_signal,
             "generative_prior": generative_prior,
             "weight": weight,
+        }
+
+    def _joint_action_generative_probability_breakdown(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+        *,
+        guesser_cards: Sequence[Card],
+    ) -> Dict[str, Any]:
+        raw_scores: Dict[Tuple[str, int, Card, Optional[bool]], float] = {}
+        metadata: Dict[Tuple[str, int, Card, Optional[bool]], Dict[str, Any]] = {}
+        global_propagation_signal = self._global_public_propagation_pressure(game_state)
+
+        for player_id in game_state.players:
+            if player_id == signal.guesser_id:
+                continue
+            hidden_slots = [
+                slot.slot_index
+                for slot in game_state.resolved_ordered_slots(player_id)
+                if slot.known_card() is None
+            ]
+            for slot_index in hidden_slots:
+                target_card = hypothesis_by_player.get(player_id, {}).get(slot_index)
+                if target_card is None:
+                    continue
+                base_signal = replace(
+                    signal,
+                    target_player_id=player_id,
+                    target_slot_index=slot_index,
+                )
+                player_selection_score = self._score_target_player_selection(
+                    game_state,
+                    hypothesis_by_player,
+                    base_signal,
+                )
+                slot_selection_score = self._score_target_slot_selection(
+                    game_state,
+                    hypothesis_by_player,
+                    base_signal,
+                )
+                slot_attackability = self._slot_attackability(
+                    game_state,
+                    hypothesis_by_player,
+                    player_id,
+                    slot_index,
+                )
+                attack_window_signal = self._slot_attack_window_pressure(
+                    game_state,
+                    player_id,
+                    slot_index,
+                )
+                public_bridge_signal = self._recent_public_bridge_signal_for_guess(
+                    game_state,
+                    base_signal,
+                )
+                target_chain_signal = self._recent_target_chain_pressure(
+                    game_state,
+                    guesser_id=signal.guesser_id,
+                    target_player_id=player_id,
+                )
+                finish_chain_signal = self._slot_finish_chain_pressure_after_hit(
+                    game_state,
+                    player_id,
+                    slot_index,
+                )
+                for candidate_card in self._joint_action_value_candidates(
+                    game_state,
+                    hypothesis_by_player,
+                    base_signal,
+                    target_card=target_card,
+                ):
+                    candidate_signal = replace(base_signal, guessed_card=candidate_card)
+                    value_breakdown = self._value_selection_breakdown(
+                        game_state,
+                        hypothesis_by_player,
+                        candidate_signal,
+                        target_card,
+                        guesser_cards,
+                    )
+                    local_slot_fit = self._score_target_slot(
+                        game_state,
+                        hypothesis_by_player,
+                        candidate_signal,
+                        target_card,
+                    )
+                    continue_options: Sequence[Optional[bool]]
+                    if signal.result and signal.continued_turn is not None:
+                        continue_options = (True, False)
+                    else:
+                        continue_options = (None,)
+                    for continued_turn in continue_options:
+                        action_signal = (
+                            replace(candidate_signal, continued_turn=continued_turn)
+                            if continued_turn is not None
+                            else candidate_signal
+                        )
+                        continue_score = (
+                            self._score_continue_decision(
+                                game_state,
+                                hypothesis_by_player,
+                                action_signal,
+                            )
+                            if continued_turn is not None
+                            else 1.0
+                        )
+                        same_card_bonus = 0.20 if candidate_card == target_card else -0.05
+                        self_card_penalty = (
+                            0.18 if candidate_card in guesser_cards else 0.0
+                        )
+                        raw_score = (
+                            (0.23 * player_selection_score)
+                            + (0.18 * slot_selection_score)
+                            + (0.22 * value_breakdown["total_weight"])
+                            + (0.11 * local_slot_fit)
+                            + (0.10 * continue_score)
+                            + (0.06 * slot_attackability)
+                            + (0.04 * attack_window_signal)
+                            + (0.02 * public_bridge_signal)
+                            + (0.02 * target_chain_signal)
+                            + (0.02 * finish_chain_signal)
+                            + (0.02 * global_propagation_signal)
+                            + same_card_bonus
+                            - self_card_penalty
+                        )
+                        action_key = (
+                            player_id,
+                            slot_index,
+                            candidate_card,
+                            continued_turn,
+                        )
+                        raw_scores[action_key] = raw_score
+                        metadata[action_key] = {
+                            "player_selection_score": player_selection_score,
+                            "slot_selection_score": slot_selection_score,
+                            "value_selection_score": value_breakdown["total_weight"],
+                            "local_slot_fit": local_slot_fit,
+                            "continue_score": continue_score,
+                            "slot_attackability": slot_attackability,
+                            "attack_window_signal": attack_window_signal,
+                            "public_bridge_signal": public_bridge_signal,
+                            "target_chain_signal": target_chain_signal,
+                            "finish_chain_signal": finish_chain_signal,
+                            "global_propagation_signal": global_propagation_signal,
+                        }
+
+        if not raw_scores:
+            return {
+                "candidate_count": 1.0,
+                "uniform_probability": 1.0,
+                "probability": 1.0,
+                "probability_advantage": 1.0,
+                "weight": 1.0,
+                "observed_rank": 1.0,
+                "top_actions": [],
+            }
+
+        action_probabilities = self._softmax_probabilities(
+            raw_scores,
+            temperature=self.JOINT_ACTION_GENERATIVE_TEMPERATURE,
+        )
+        observed_key = (
+            signal.target_player_id,
+            signal.target_slot_index,
+            signal.guessed_card,
+            signal.continued_turn if signal.continued_turn is not None else None,
+        )
+        candidate_count = float(len(action_probabilities))
+        uniform_probability = 1.0 / candidate_count
+        observed_probability = max(
+            self.EPSILON,
+            action_probabilities.get(observed_key, self.EPSILON),
+        )
+        probability_advantage = observed_probability / max(
+            self.EPSILON,
+            uniform_probability,
+        )
+        weight = clamp(
+            probability_advantage ** self.JOINT_ACTION_GENERATIVE_BLEND,
+            self.EPSILON,
+            self.JOINT_ACTION_GENERATIVE_MAX_WEIGHT,
+        )
+        ranked_actions = sorted(
+            action_probabilities.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1], card_sort_key(item[0][2])),
+        )
+        observed_rank = float(
+            next(
+                (
+                    index + 1
+                    for index, (action_key, _) in enumerate(ranked_actions)
+                    if action_key == observed_key
+                ),
+                len(ranked_actions),
+            )
+        )
+        top_actions = []
+        for action_key, probability in ranked_actions[:3]:
+            meta = metadata.get(action_key, {})
+            top_actions.append(
+                {
+                    "target_player_id": action_key[0],
+                    "target_slot_index": action_key[1],
+                    "guess_card": serialize_card(action_key[2]),
+                    "continued_turn": action_key[3],
+                    "probability": float(probability),
+                    "player_selection_score": float(
+                        meta.get("player_selection_score", 0.0)
+                    ),
+                    "slot_selection_score": float(
+                        meta.get("slot_selection_score", 0.0)
+                    ),
+                    "value_selection_score": float(
+                        meta.get("value_selection_score", 0.0)
+                    ),
+                    "continue_score": float(meta.get("continue_score", 0.0)),
+                }
+            )
+        observed_meta = metadata.get(observed_key, {})
+        return {
+            "candidate_count": candidate_count,
+            "uniform_probability": uniform_probability,
+            "probability": observed_probability,
+            "probability_advantage": probability_advantage,
+            "weight": weight,
+            "observed_rank": observed_rank,
+            "player_selection_score": float(
+                observed_meta.get("player_selection_score", 0.0)
+            ),
+            "slot_selection_score": float(
+                observed_meta.get("slot_selection_score", 0.0)
+            ),
+            "value_selection_score": float(
+                observed_meta.get("value_selection_score", 0.0)
+            ),
+            "continue_score": float(observed_meta.get("continue_score", 0.0)),
+            "top_actions": top_actions,
         }
 
     def _has_failure_switch_guess_continuity(
@@ -1690,6 +1946,15 @@ class BehavioralLikelihoodModel:
                     "generative_prior": 1.0,
                     "weight": 1.0,
                 },
+                "joint_action_generative_probability": {
+                    "candidate_count": 1.0,
+                    "uniform_probability": 1.0,
+                    "probability": 1.0,
+                    "probability_advantage": 1.0,
+                    "weight": 1.0,
+                    "observed_rank": 1.0,
+                    "top_actions": [],
+                },
                 "value_selection": {
                     "total_weight": 1.0,
                     "signal_tags": [],
@@ -1748,6 +2013,14 @@ class BehavioralLikelihoodModel:
             signal,
             joint_action_probability=joint_action_probability,
         )
+        joint_action_generative_probability = (
+            self._joint_action_generative_probability_breakdown(
+                game_state,
+                hypothesis_by_player,
+                signal,
+                guesser_cards=guesser_cards,
+            )
+        )
         joint_action = self._joint_action_fit_breakdown(
             game_state,
             hypothesis_by_player,
@@ -1766,6 +2039,9 @@ class BehavioralLikelihoodModel:
             "continue_decision_fit": continue_weight,
             "joint_action_probability": joint_action_probability["joint_probability"],
             "joint_action_generation": joint_action_generation["weight"],
+            "joint_action_generative_probability": (
+                joint_action_generative_probability["weight"]
+            ),
             "joint_action_fit": joint_action["weight"],
         }
         total_weight = 1.0
@@ -1780,6 +2056,9 @@ class BehavioralLikelihoodModel:
             "joint_action": joint_action,
             "joint_action_probability": joint_action_probability,
             "joint_action_generation": joint_action_generation,
+            "joint_action_generative_probability": (
+                joint_action_generative_probability
+            ),
             "value_selection": value_selection,
         }
 
@@ -3442,21 +3721,31 @@ class DaVinciDecisionEngine:
     TARGET_FINISH_CHAIN_VALUE_BONUS = 0.26
     TARGET_FINISH_CHAIN_CONTINUATION_SCALE = 0.10
     BRANCH_SEARCH_FUTURE_MARGIN_BLEND = 0.55
+    TREE_SEARCH_TOP_K = 2
+    TREE_SEARCH_FUTURE_SCALE = 0.72
     EXPECTIMAX_TOP_K = 3
     EXPECTIMAX_FUTURE_SCALE = 0.60
-    DEEP_ROLLOUT_DEPTH = 2
-    DEEP_ROLLOUT_TARGET_HIDDEN_THRESHOLD = 2
-    DEEP_ROLLOUT_SELF_HIDDEN_THRESHOLD = 4
-    DEEP_ROLLOUT_SEARCH_SPACE_THRESHOLD = 180.0
+    DEEP_ROLLOUT_DEPTH = 3
+    DEEP_ROLLOUT_TARGET_HIDDEN_THRESHOLD = 1
+    DEEP_ROLLOUT_SELF_HIDDEN_THRESHOLD = 3
+    DEEP_ROLLOUT_SEARCH_SPACE_THRESHOLD = 80.0
     SELF_PLAY_BENCHMARK_HAND_SIZE = 3
     SELF_PLAY_BENCHMARK_WORLD_COUNT = 24
     SELF_PLAY_BENCHMARK_MAX_STEPS = 3
+    LONG_SELF_PLAY_HAND_SIZE = 2
+    LONG_SELF_PLAY_GAME_COUNT = 4
+    LONG_SELF_PLAY_MAX_TURNS = 10
+    LONG_SELF_PLAY_PRE_DRAW_ROLLOUT_DEPTH = 1
+    LONG_SELF_PLAY_DRAW_ROLLOUT_SAMPLE_LIMIT = 2
     STRATEGY_OBJECTIVE_WIN_SCALE = 0.18
     STRATEGY_OBJECTIVE_CONTINUATION_SCALE = 0.20
     STRATEGY_OBJECTIVE_ATTACKABILITY_SCALE = 0.14
     STRATEGY_OBJECTIVE_INFORMATION_GAIN_SCALE = 0.12
     STRATEGY_OBJECTIVE_EXPECTIMAX_SCALE = 0.18
     STRATEGY_OBJECTIVE_SUPPORT_SCALE = 0.08
+    STRATEGY_OBJECTIVE_BEHAVIOR_SCALE = 0.10
+    STRATEGY_OBJECTIVE_SEARCH_SIGNAL_SCALE = 0.14
+    STRATEGY_OBJECTIVE_RECOVERY_SCALE = 0.08
     STRATEGY_OBJECTIVE_SELF_EXPOSURE_DRAG = 0.12
     STRATEGY_OBJECTIVE_FINISH_FRAGILITY_DRAG = 0.10
 
@@ -4580,6 +4869,477 @@ class DaVinciDecisionEngine:
             "deep_rollout_usage": deep_rollout_count / float(total_worlds),
         }
 
+    def _clone_truth_slots(
+        self,
+        truth_slots: Sequence[CardSlot],
+    ) -> List[CardSlot]:
+        return [replace(slot) for slot in truth_slots]
+
+    def _sorted_truth_slots(
+        self,
+        truth_slots: Sequence[CardSlot],
+    ) -> List[CardSlot]:
+        return [
+            replace(slot, slot_index=index)
+            for index, slot in enumerate(
+                sorted(
+                    self._clone_truth_slots(truth_slots),
+                    key=lambda slot: card_sort_key(
+                        (
+                            slot.color if slot.color in CARD_COLORS else "B",
+                            slot.value if slot.value is not None else JOKER,
+                        )
+                    ),
+                )
+            )
+        ]
+
+    def _remap_actions_for_reindexed_player(
+        self,
+        actions: Sequence[GuessAction],
+        *,
+        player_id: str,
+        previous_slots: Sequence[CardSlot],
+        next_slots: Sequence[CardSlot],
+    ) -> List[GuessAction]:
+        old_card_by_index = {
+            slot.slot_index: slot.known_card()
+            for slot in previous_slots
+            if slot.known_card() is not None
+        }
+        new_index_by_card = {
+            slot.known_card(): slot.slot_index
+            for slot in next_slots
+            if slot.known_card() is not None
+        }
+        remapped_actions: List[GuessAction] = []
+        for action in actions:
+            updated_target_slot_index = action.target_slot_index
+            if (
+                action.target_player_id == player_id
+                and action.target_slot_index is not None
+            ):
+                old_card = old_card_by_index.get(action.target_slot_index)
+                if old_card in new_index_by_card:
+                    updated_target_slot_index = new_index_by_card[old_card]
+            updated_revealed_slot_index = action.revealed_slot_index
+            if (
+                action.revealed_player_id == player_id
+                and action.revealed_slot_index is not None
+            ):
+                old_card = old_card_by_index.get(action.revealed_slot_index)
+                if old_card in new_index_by_card:
+                    updated_revealed_slot_index = new_index_by_card[old_card]
+            remapped_actions.append(
+                replace(
+                    action,
+                    target_slot_index=updated_target_slot_index,
+                    revealed_slot_index=updated_revealed_slot_index,
+                )
+            )
+        return remapped_actions
+
+    def _build_long_self_play_world(
+        self,
+        rng: Random,
+    ) -> Dict[str, Any]:
+        deck = self._self_play_benchmark_deck()
+        rng.shuffle(deck)
+
+        def draw_truth_hand() -> List[CardSlot]:
+            hand_cards = sorted(
+                [
+                    deck.pop()
+                    for _ in range(self.LONG_SELF_PLAY_HAND_SIZE)
+                ],
+                key=card_sort_key,
+            )
+            return [
+                CardSlot(
+                    slot_index=index,
+                    color=card[0],
+                    value=card[1],
+                    is_revealed=(index == 0),
+                    is_newly_drawn=False,
+                )
+                for index, card in enumerate(hand_cards)
+            ]
+
+        return {
+            "truth_slots_by_player": {
+                "p0": draw_truth_hand(),
+                "p1": draw_truth_hand(),
+            },
+            "remaining_deck": list(deck),
+            "actions": [],
+        }
+
+    def _build_perspective_state_from_truth_slots(
+        self,
+        *,
+        truth_slots_by_player: Dict[str, Sequence[CardSlot]],
+        actions: Sequence[GuessAction],
+        self_player_id: str,
+        target_player_id: str,
+    ) -> GameState:
+        players: Dict[str, PlayerState] = {}
+        for player_id, truth_slots in truth_slots_by_player.items():
+            public_slots: List[CardSlot] = []
+            for truth_slot in truth_slots:
+                if player_id == self_player_id:
+                    public_slots.append(replace(truth_slot))
+                else:
+                    public_slots.append(
+                        CardSlot(
+                            slot_index=truth_slot.slot_index,
+                            color=truth_slot.color,
+                            value=truth_slot.value if truth_slot.is_revealed else None,
+                            is_revealed=truth_slot.is_revealed,
+                            is_newly_drawn=False,
+                        )
+                    )
+            players[player_id] = PlayerState(player_id=player_id, slots=public_slots)
+        return GameState(
+            self_player_id=self_player_id,
+            target_player_id=target_player_id,
+            players=players,
+            actions=list(actions),
+        )
+
+    def _draw_remaining_card_by_color(
+        self,
+        remaining_deck: List[Card],
+        *,
+        color: str,
+        rng: Random,
+    ) -> Optional[Card]:
+        color_indices = [
+            index for index, card in enumerate(remaining_deck) if card[0] == color
+        ]
+        if not color_indices:
+            return None
+        selected_index = color_indices[rng.randrange(len(color_indices))]
+        return remaining_deck.pop(selected_index)
+
+    def _benchmark_draw_color_choice(
+        self,
+        *,
+        truth_slots: Sequence[CardSlot],
+        remaining_deck: Sequence[Card],
+    ) -> str:
+        self_color_counts = {
+            color: sum(1 for slot in truth_slots if slot.color == color)
+            for color in CARD_COLORS
+        }
+        remaining_color_counts = {
+            color: sum(1 for card in remaining_deck if card[0] == color)
+            for color in CARD_COLORS
+        }
+        color_scores = {
+            color: (
+                0.65 * remaining_color_counts[color]
+                - (0.35 * self_color_counts[color])
+            )
+            for color in CARD_COLORS
+        }
+        return max(
+            CARD_COLORS,
+            key=lambda color: (color_scores[color], remaining_color_counts[color]),
+        )
+
+    def _benchmark_recommended_draw_color(
+        self,
+        *,
+        truth_slots_by_player: Dict[str, Sequence[CardSlot]],
+        actions: Sequence[GuessAction],
+        acting_player_id: str,
+        target_player_id: str,
+        remaining_deck: Sequence[Card],
+    ) -> str:
+        pre_draw_state = self._build_perspective_state_from_truth_slots(
+            truth_slots_by_player=truth_slots_by_player,
+            actions=actions,
+            self_player_id=acting_player_id,
+            target_player_id=target_player_id,
+        )
+        controller = GameController(pre_draw_state)
+        controller.decision_engine.DEEP_ROLLOUT_DEPTH = (
+            self.LONG_SELF_PLAY_PRE_DRAW_ROLLOUT_DEPTH
+        )
+        controller.decision_engine.DRAW_ROLLOUT_SAMPLE_LIMIT = (
+            self.LONG_SELF_PLAY_DRAW_ROLLOUT_SAMPLE_LIMIT
+        )
+        result = controller.run_turn(include_draw_color_summary=True)
+        recommended_color = result.get("recommended_draw_color")
+        if recommended_color in CARD_COLORS:
+            return str(recommended_color)
+        return self._benchmark_draw_color_choice(
+            truth_slots=truth_slots_by_player[acting_player_id],
+            remaining_deck=remaining_deck,
+        )
+
+    def _all_revealed(
+        self,
+        truth_slots: Sequence[CardSlot],
+    ) -> bool:
+        return all(slot.is_revealed for slot in truth_slots)
+
+    def _simulate_long_self_play_game(
+        self,
+        *,
+        rng: Random,
+    ) -> Dict[str, float]:
+        world = self._build_long_self_play_world(rng)
+        truth_slots_by_player = {
+            player_id: self._clone_truth_slots(slots)
+            for player_id, slots in world["truth_slots_by_player"].items()
+        }
+        remaining_deck = list(world["remaining_deck"])
+        actions: List[GuessAction] = list(world["actions"])
+        acting_player_id = "p0"
+        winner: Optional[str] = None
+        total_turns = 0.0
+        total_guesses = 0.0
+        successful_guesses = 0.0
+        draw_turns = 0.0
+        post_draw_stop_turns = 0.0
+
+        for _ in range(self.LONG_SELF_PLAY_MAX_TURNS):
+            total_turns += 1.0
+            target_player_id = "p1" if acting_player_id == "p0" else "p0"
+            requested_color = self._benchmark_recommended_draw_color(
+                truth_slots_by_player=truth_slots_by_player,
+                actions=actions,
+                acting_player_id=acting_player_id,
+                target_player_id=target_player_id,
+                remaining_deck=remaining_deck,
+            )
+            drawn_card = self._draw_remaining_card_by_color(
+                remaining_deck,
+                color=requested_color,
+                rng=rng,
+            )
+            if drawn_card is None:
+                fallback_color = "W" if requested_color == "B" else "B"
+                drawn_card = self._draw_remaining_card_by_color(
+                    remaining_deck,
+                    color=fallback_color,
+                    rng=rng,
+                )
+            if drawn_card is None:
+                break
+
+            draw_turns += 1.0
+            previous_slots = self._clone_truth_slots(truth_slots_by_player[acting_player_id])
+            updated_slots = [
+                replace(slot, is_newly_drawn=False)
+                for slot in truth_slots_by_player[acting_player_id]
+            ]
+            updated_slots.append(
+                CardSlot(
+                    slot_index=-1,
+                    color=drawn_card[0],
+                    value=drawn_card[1],
+                    is_revealed=False,
+                    is_newly_drawn=True,
+                )
+            )
+            updated_slots = self._sorted_truth_slots(updated_slots)
+            actions = self._remap_actions_for_reindexed_player(
+                actions,
+                player_id=acting_player_id,
+                previous_slots=previous_slots,
+                next_slots=updated_slots,
+            )
+            truth_slots_by_player[acting_player_id] = updated_slots
+            drawn_slot_index = next(
+                slot.slot_index for slot in updated_slots if slot.is_newly_drawn
+            )
+            turn_had_guess = False
+            last_success_action_index: Optional[int] = None
+
+            while True:
+                post_draw_state = self._build_perspective_state_from_truth_slots(
+                    truth_slots_by_player=truth_slots_by_player,
+                    actions=actions,
+                    self_player_id=acting_player_id,
+                    target_player_id=target_player_id,
+                )
+                post_draw_controller = GameController(post_draw_state)
+                post_draw_controller.decision_engine.DEEP_ROLLOUT_DEPTH = 1
+                post_draw_result = post_draw_controller.run_turn(
+                    include_draw_color_summary=False,
+                )
+                best_move = post_draw_result.get("best_move")
+                if (
+                    best_move is None
+                    and post_draw_result.get("strategy_phase") == "post_draw_opening"
+                ):
+                    top_moves = list(post_draw_result.get("top_moves", ()))
+                    if top_moves:
+                        best_move = top_moves[0]
+                if best_move is None:
+                    if not turn_had_guess:
+                        post_draw_stop_turns += 1.0
+                    if last_success_action_index is not None:
+                        actions[last_success_action_index] = replace(
+                            actions[last_success_action_index],
+                            continued_turn=False,
+                        )
+                    break
+
+                total_guesses += 1.0
+                turn_had_guess = True
+                guess_card = best_move.get("guess_card")
+                target_slot_index = int(best_move.get("target_slot_index", -1))
+                target_truth_slot = next(
+                    (
+                        slot
+                        for slot in truth_slots_by_player[target_player_id]
+                        if slot.slot_index == target_slot_index
+                    ),
+                    None,
+                )
+                if (
+                    target_truth_slot is None
+                    or not isinstance(guess_card, (list, tuple))
+                    or len(guess_card) != 2
+                ):
+                    break
+                guessed_card = (guess_card[0], guess_card[1])
+                actual_card = target_truth_slot.known_card()
+                if actual_card == guessed_card:
+                    successful_guesses += 1.0
+                    updated_target_slots: List[CardSlot] = []
+                    for slot in truth_slots_by_player[target_player_id]:
+                        if slot.slot_index == target_slot_index:
+                            updated_target_slots.append(replace(slot, is_revealed=True))
+                        else:
+                            updated_target_slots.append(replace(slot))
+                    truth_slots_by_player[target_player_id] = updated_target_slots
+                    actions.append(
+                        GuessAction(
+                            guesser_id=acting_player_id,
+                            target_player_id=target_player_id,
+                            target_slot_index=target_slot_index,
+                            guessed_color=guessed_card[0],
+                            guessed_value=guessed_card[1],
+                            result=True,
+                            continued_turn=True,
+                            revealed_player_id=target_player_id,
+                            revealed_slot_index=target_slot_index,
+                            revealed_color=actual_card[0],
+                            revealed_value=actual_card[1],
+                        )
+                    )
+                    last_success_action_index = len(actions) - 1
+                    if self._all_revealed(truth_slots_by_player[target_player_id]):
+                        winner = acting_player_id
+                        break
+                    continue
+
+                updated_self_slots = []
+                revealed_drawn_card = None
+                for slot in truth_slots_by_player[acting_player_id]:
+                    if slot.slot_index == drawn_slot_index:
+                        revealed_drawn_card = slot.known_card()
+                        updated_self_slots.append(replace(slot, is_revealed=True))
+                    else:
+                        updated_self_slots.append(replace(slot))
+                truth_slots_by_player[acting_player_id] = updated_self_slots
+                if revealed_drawn_card is not None:
+                    actions.append(
+                        GuessAction(
+                            guesser_id=acting_player_id,
+                            target_player_id=target_player_id,
+                            target_slot_index=target_slot_index,
+                            guessed_color=guessed_card[0],
+                            guessed_value=guessed_card[1],
+                            result=False,
+                            continued_turn=False,
+                            revealed_player_id=acting_player_id,
+                            revealed_slot_index=drawn_slot_index,
+                            revealed_color=revealed_drawn_card[0],
+                            revealed_value=revealed_drawn_card[1],
+                        )
+                    )
+                if self._all_revealed(truth_slots_by_player[acting_player_id]):
+                    winner = target_player_id
+                break
+
+            for player_id, slots in truth_slots_by_player.items():
+                truth_slots_by_player[player_id] = [
+                    replace(slot, is_newly_drawn=False)
+                    for slot in slots
+                ]
+            if winner is not None:
+                break
+            acting_player_id = target_player_id
+
+        return {
+            "p0_win": 1.0 if winner == "p0" else 0.0,
+            "p1_win": 1.0 if winner == "p1" else 0.0,
+            "draw_game": 1.0 if winner is None else 0.0,
+            "turn_count": total_turns,
+            "guess_count": total_guesses,
+            "successful_guesses": successful_guesses,
+            "post_draw_stop_turns": post_draw_stop_turns,
+            "draw_turns": draw_turns,
+        }
+
+    def benchmark_long_horizon_self_play(
+        self,
+        *,
+        game_count: Optional[int] = None,
+        seed: int = 19,
+    ) -> Dict[str, float]:
+        total_games = int(game_count or self.LONG_SELF_PLAY_GAME_COUNT)
+        if total_games <= 0:
+            return {
+                "game_count": 0.0,
+                "p0_win_rate": 0.0,
+                "p1_win_rate": 0.0,
+                "draw_rate": 0.0,
+                "average_turn_count": 0.0,
+                "average_guess_count": 0.0,
+                "average_successful_guesses": 0.0,
+                "post_draw_stop_rate": 0.0,
+            }
+
+        rng = Random(seed)
+        p0_wins = 0.0
+        p1_wins = 0.0
+        draw_games = 0.0
+        turn_sum = 0.0
+        guess_sum = 0.0
+        success_sum = 0.0
+        post_draw_stop_sum = 0.0
+        draw_turn_sum = 0.0
+
+        for _ in range(total_games):
+            result = self._simulate_long_self_play_game(rng=rng)
+            p0_wins += result["p0_win"]
+            p1_wins += result["p1_win"]
+            draw_games += result["draw_game"]
+            turn_sum += result["turn_count"]
+            guess_sum += result["guess_count"]
+            success_sum += result["successful_guesses"]
+            post_draw_stop_sum += result["post_draw_stop_turns"]
+            draw_turn_sum += result["draw_turns"]
+
+        return {
+            "game_count": float(total_games),
+            "p0_win_rate": p0_wins / float(total_games),
+            "p1_win_rate": p1_wins / float(total_games),
+            "draw_rate": draw_games / float(total_games),
+            "average_turn_count": turn_sum / float(total_games),
+            "average_guess_count": guess_sum / float(total_games),
+            "average_successful_guesses": success_sum / float(total_games),
+            "post_draw_stop_rate": (
+                post_draw_stop_sum / draw_turn_sum if draw_turn_sum > 0.0 else 0.0
+            ),
+        }
+
     def _strategy_objective_breakdown(
         self,
         *,
@@ -4589,7 +5349,11 @@ class DaVinciDecisionEngine:
         attackability_after_hit: float,
         information_gain: float,
         expectimax_margin: float,
+        tree_search_signal: float,
         support_ratio: float,
+        behavior_match_bonus: float,
+        post_hit_behavior_support_adjustment: float,
+        failure_recovery_signal: float,
         self_public_exposure: float,
         self_finish_fragility: float,
     ) -> Dict[str, float]:
@@ -4620,6 +5384,16 @@ class DaVinciDecisionEngine:
             "support_ratio_support": (
                 self.STRATEGY_OBJECTIVE_SUPPORT_SCALE * support_ratio
             ),
+            "behavior_support": (
+                self.STRATEGY_OBJECTIVE_BEHAVIOR_SCALE
+                * max(0.0, behavior_match_bonus + post_hit_behavior_support_adjustment)
+            ),
+            "tree_search_support": (
+                self.STRATEGY_OBJECTIVE_SEARCH_SIGNAL_SCALE * tree_search_signal
+            ),
+            "recovery_support": (
+                self.STRATEGY_OBJECTIVE_RECOVERY_SCALE * failure_recovery_signal
+            ),
             "self_exposure_drag": (
                 self.STRATEGY_OBJECTIVE_SELF_EXPOSURE_DRAG
                 * self_public_exposure
@@ -4637,6 +5411,9 @@ class DaVinciDecisionEngine:
             + breakdown["information_gain_support"]
             + breakdown["expectimax_support"]
             + breakdown["support_ratio_support"]
+            + breakdown["behavior_support"]
+            + breakdown["tree_search_support"]
+            + breakdown["recovery_support"]
             - breakdown["self_exposure_drag"]
             - breakdown["finish_fragility_drag"]
         )
@@ -4827,6 +5604,10 @@ class DaVinciDecisionEngine:
         post_hit_branch_search_margin = 0.0
         post_hit_branch_search_support_ratio = 0.0
         post_hit_branch_search_signal = 0.0
+        post_hit_tree_search_value = 0.0
+        post_hit_tree_search_margin = 0.0
+        post_hit_tree_search_support_ratio = 0.0
+        post_hit_tree_search_signal = 0.0
         post_hit_expectimax_value = 0.0
         post_hit_expectimax_margin = 0.0
         post_hit_expectimax_support_ratio = 0.0
@@ -4880,6 +5661,9 @@ class DaVinciDecisionEngine:
             "information_gain_support": 0.0,
             "expectimax_support": 0.0,
             "support_ratio_support": 0.0,
+            "behavior_support": 0.0,
+            "tree_search_support": 0.0,
+            "recovery_support": 0.0,
             "self_exposure_drag": 0.0,
             "finish_fragility_drag": 0.0,
             "total": 0.0,
@@ -4969,6 +5753,10 @@ class DaVinciDecisionEngine:
                 post_hit_branch_search_margin = post_hit_rollout["branch_search_margin"]
                 post_hit_branch_search_support_ratio = post_hit_rollout["branch_search_support_ratio"]
                 post_hit_branch_search_signal = post_hit_rollout["branch_search_signal"]
+                post_hit_tree_search_value = post_hit_rollout["tree_search_value"]
+                post_hit_tree_search_margin = post_hit_rollout["tree_search_margin"]
+                post_hit_tree_search_support_ratio = post_hit_rollout["tree_search_support_ratio"]
+                post_hit_tree_search_signal = post_hit_rollout["tree_search_signal"]
                 post_hit_expectimax_value = post_hit_rollout["expectimax_value"]
                 post_hit_expectimax_margin = post_hit_rollout["expectimax_margin"]
                 post_hit_expectimax_support_ratio = post_hit_rollout["expectimax_support_ratio"]
@@ -5294,6 +6082,22 @@ class DaVinciDecisionEngine:
         behavior_match_ranking_bonus = behavior_match_ranking_breakdown["ranking_bonus"]
         behavior_match_net_structure = behavior_match_ranking_breakdown["net_structure"]
         behavior_match_structure_adjustment = behavior_match_ranking_breakdown["structure_adjustment"]
+        failure_recovery_signal = clamp(
+            (
+                post_hit_failure_recovery_bonus + post_hit_failed_switch_bonus
+            ) / self.FAILURE_RECOVERY_REFERENCE,
+            0.0,
+            1.0,
+        )
+        tree_search_signal = clamp(
+            max(
+                post_hit_tree_search_signal,
+                post_hit_expectimax_signal,
+                post_hit_branch_search_signal,
+            ),
+            0.0,
+            1.0,
+        )
         strategy_objective_breakdown = self._strategy_objective_breakdown(
             expected_value=expected_value,
             win_probability=probability,
@@ -5301,20 +6105,21 @@ class DaVinciDecisionEngine:
             attackability_after_hit=attackability_after_hit,
             information_gain=info_gain,
             expectimax_margin=post_hit_expectimax_margin,
+            tree_search_signal=tree_search_signal,
             support_ratio=max(
+                post_hit_tree_search_support_ratio,
                 post_hit_expectimax_support_ratio,
                 post_hit_top_k_support_ratio,
                 post_hit_branch_search_support_ratio,
             ),
+            behavior_match_bonus=behavior_match_ranking_bonus,
+            post_hit_behavior_support_adjustment=post_hit_behavior_support_adjustment,
+            failure_recovery_signal=failure_recovery_signal,
             self_public_exposure=float(self_exposure_profile["total_exposure"]),
             self_finish_fragility=float(self_exposure_profile["finish_fragility"]),
         )
         strategy_objective_core = strategy_objective_breakdown["total"]
-        strategy_objective = (
-            strategy_objective_core
-            + behavior_match_ranking_bonus
-            + post_hit_behavior_support_adjustment
-        )
+        strategy_objective = strategy_objective_core
         ranking_score = expected_value + behavior_match_ranking_bonus
 
         return {
@@ -5381,6 +6186,10 @@ class DaVinciDecisionEngine:
             "post_hit_branch_search_margin": post_hit_branch_search_margin,
             "post_hit_branch_search_support_ratio": post_hit_branch_search_support_ratio,
             "post_hit_branch_search_signal": post_hit_branch_search_signal,
+            "post_hit_tree_search_value": post_hit_tree_search_value,
+            "post_hit_tree_search_margin": post_hit_tree_search_margin,
+            "post_hit_tree_search_support_ratio": post_hit_tree_search_support_ratio,
+            "post_hit_tree_search_signal": post_hit_tree_search_signal,
             "post_hit_expectimax_value": post_hit_expectimax_value,
             "post_hit_expectimax_margin": post_hit_expectimax_margin,
             "post_hit_expectimax_support_ratio": post_hit_expectimax_support_ratio,
@@ -5631,12 +6440,20 @@ class DaVinciDecisionEngine:
         branch_search_margin = 0.0
         branch_search_support_ratio = 0.0
         branch_search_signal = 0.0
+        tree_search_value = 0.0
+        tree_search_margin = 0.0
+        tree_search_support_ratio = 0.0
+        tree_search_signal = 0.0
         expectimax_value = 0.0
         expectimax_margin = 0.0
         expectimax_support_ratio = 0.0
         expectimax_signal = 0.0
         branch_weight_sum = 0.0
         branch_positive_count = 0.0
+        tree_weight_sum = 0.0
+        tree_positive_mass = 0.0
+        tree_peak_value = 0.0
+        tree_candidates: List[float] = []
         expectimax_positive_mass = 0.0
         expectimax_weight_sum = 0.0
         expectimax_peak_value = 0.0
@@ -5669,6 +6486,50 @@ class DaVinciDecisionEngine:
             branch_weight_sum += branch_weight
             if combined_branch_value > 0.0:
                 branch_positive_count += 1.0
+        tree_moves = top_k_moves[: self.TREE_SEARCH_TOP_K]
+        for move in tree_moves:
+            immediate_tree_value = float(
+                move.get(
+                    "strategy_objective",
+                    move.get("ranking_score", move["expected_value"]),
+                )
+            )
+            future_tree_value = max(
+                0.0,
+                float(
+                    move.get(
+                        "post_hit_tree_search_value",
+                        move.get(
+                            "post_hit_expectimax_value",
+                            move.get("post_hit_branch_search_value", 0.0),
+                        ),
+                    )
+                ),
+            )
+            branch_tree_value = immediate_tree_value + (
+                self.TREE_SEARCH_FUTURE_SCALE
+                * float(move.get("win_probability", 0.0))
+                * future_tree_value
+            )
+            branch_tree_weight = max(
+                0.0,
+                (0.34 * float(move.get("win_probability", 0.0)))
+                + (0.22 * float(move.get("continuation_likelihood", 0.0)))
+                + (0.16 * float(move.get("post_hit_tree_search_support_ratio", 0.0)))
+                + (0.14 * float(move.get("post_hit_expectimax_support_ratio", 0.0)))
+                + (0.14 * float(move.get("target_attack_window_signal", 0.0))),
+            )
+            tree_candidates.append(branch_tree_value)
+            tree_peak_value = max(tree_peak_value, branch_tree_value)
+            tree_search_value += branch_tree_weight * branch_tree_value
+            tree_search_margin += branch_tree_weight * max(
+                0.0,
+                immediate_tree_value - stop_score,
+            )
+            tree_weight_sum += branch_tree_weight
+            if branch_tree_value > stop_score:
+                tree_positive_mass += branch_tree_weight
+        for move in top_k_moves:
             future_expectimax_value = max(
                 0.0,
                 float(
@@ -5720,6 +6581,40 @@ class DaVinciDecisionEngine:
             0.0,
             1.0,
         )
+        if tree_candidates:
+            if tree_weight_sum > 0.0:
+                tree_search_value /= tree_weight_sum
+                tree_search_margin /= tree_weight_sum
+                tree_search_support_ratio = tree_positive_mass / tree_weight_sum
+            else:
+                tree_search_value = sum(tree_candidates) / len(tree_candidates)
+                tree_search_margin = max(0.0, tree_search_value - stop_score)
+                tree_search_support_ratio = float(
+                    sum(1 for value in tree_candidates if value > stop_score)
+                ) / len(tree_candidates)
+            tree_search_signal = clamp(
+                (0.38 * tree_search_support_ratio)
+                + (
+                    0.32
+                    * clamp(
+                        tree_search_margin
+                        / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                        0.0,
+                        1.0,
+                    )
+                )
+                + (
+                    0.30
+                    * clamp(
+                        max(0.0, tree_peak_value - stop_score)
+                        / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                        0.0,
+                        1.0,
+                    )
+                ),
+                0.0,
+                1.0,
+            )
         if expectimax_candidates:
             if expectimax_weight_sum > 0.0:
                 expectimax_value /= expectimax_weight_sum
@@ -5805,6 +6700,10 @@ class DaVinciDecisionEngine:
             "branch_search_margin": branch_search_margin,
             "branch_search_support_ratio": branch_search_support_ratio,
             "branch_search_signal": branch_search_signal,
+            "tree_search_value": tree_search_value,
+            "tree_search_margin": tree_search_margin,
+            "tree_search_support_ratio": tree_search_support_ratio,
+            "tree_search_signal": tree_search_signal,
             "expectimax_value": expectimax_value,
             "expectimax_margin": expectimax_margin,
             "expectimax_support_ratio": expectimax_support_ratio,
@@ -6626,10 +7525,19 @@ class DaVinciDecisionEngine:
             + behavior_rollout_pressure
         )
         strategy_objective_support = best_move.get(
+            "strategy_objective",
+            best_move.get(
+                "strategy_objective_core",
+                best_move["expected_value"],
+            ),
+        )
+        continue_score = strategy_objective_support
+        strategy_core_support = best_move.get(
             "strategy_objective_core",
             best_move["expected_value"],
         )
-        continue_score = strategy_objective_support + behavior_match_decision_bonus
+        continue_score += max(0.0, strategy_core_support - strategy_objective_support)
+        continue_score += behavior_match_decision_bonus
         failure_recovery_signal = clamp(
             (
                 best_move.get("post_hit_failure_recovery_bonus", 0.0)
@@ -9681,6 +10589,7 @@ class GameController:
         *,
         include_draw_color_summary: bool = True,
     ) -> Dict[str, Any]:
+        strategy_phase = self._strategy_phase()
         has_any_hidden_slots = bool(self.inference_engine.search_positions) or any(
             self.inference_engine.preassigned_hidden.values()
         )
@@ -9731,26 +10640,23 @@ class GameController:
                 },
                 "draw_color_summary": draw_color_summary,
                 "draw_opening_plan": draw_opening_plan,
-                "strategy_action_summary": {
-                    "guess": 0.0,
-                    "draw_black": float(
-                        draw_color_summary.get(
-                            "draw_rollout_expected_strategy_objective_black",
-                            0.0,
-                        )
-                    ),
-                    "draw_white": float(
-                        draw_color_summary.get(
-                            "draw_rollout_expected_strategy_objective_white",
-                            0.0,
-                        )
-                    ),
-                    "stop": 0.0,
-                    "recommended_action": "stop",
-                },
+                "strategy_action_summary": self._build_strategy_action_summary(
+                    decision_summary={},
+                    draw_color_summary=draw_color_summary,
+                    phase=strategy_phase,
+                ),
                 "strategy_rollout_depth": 0,
-                "recommended_action": "stop",
-                "recommended_draw_color": None,
+                "recommended_action": self._build_strategy_action_summary(
+                    decision_summary={},
+                    draw_color_summary=draw_color_summary,
+                    phase=strategy_phase,
+                )["recommended_action"],
+                "recommended_draw_color": (
+                    draw_color_summary.get("recommended_color")
+                    if strategy_phase == "pre_draw"
+                    else None
+                ),
+                "strategy_phase": strategy_phase,
                 "should_stop": True,
             }
 
@@ -9813,6 +10719,7 @@ class GameController:
         strategy_action_summary = self._build_strategy_action_summary(
             decision_summary=decision_summary,
             draw_color_summary=draw_color_summary,
+            phase=strategy_phase,
         )
 
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -9851,6 +10758,7 @@ class GameController:
             "decision_summary": decision_summary,
             "strategy_action_summary": strategy_action_summary,
             "strategy_rollout_depth": rollout_depth,
+            "strategy_phase": strategy_phase,
             "recommended_action": strategy_action_summary["recommended_action"],
             "recommended_draw_color": (
                 "B"
@@ -9861,6 +10769,22 @@ class GameController:
             ),
             "should_stop": best_move is None,
         }
+
+    def _strategy_phase(self) -> str:
+        self_slots = self.game_state.resolved_ordered_slots(self.game_state.self_player_id)
+        if any(getattr(slot, "is_newly_drawn", False) for slot in self_slots):
+            latest_self_action = next(
+                (
+                    action
+                    for action in reversed(self.game_state.actions)
+                    if getattr(action, "guesser_id", None) == self.game_state.self_player_id
+                ),
+                None,
+            )
+            if latest_self_action is not None and getattr(latest_self_action, "result", False):
+                return "post_hit_chain"
+            return "post_draw_opening"
+        return "pre_draw"
 
     def _select_strategy_rollout_depth(
         self,
@@ -9885,6 +10809,7 @@ class GameController:
         *,
         decision_summary: Optional[Dict[str, Any]],
         draw_color_summary: Optional[Dict[str, Any]],
+        phase: str,
     ) -> Dict[str, Any]:
         decision_summary = decision_summary or {}
         draw_color_summary = draw_color_summary or {}
@@ -9909,8 +10834,14 @@ class GameController:
             ),
             "stop": float(decision_summary.get("stop_score", 0.0)),
         }
+        if phase == "pre_draw":
+            allowed_actions = ["draw_black", "draw_white"]
+        elif phase == "post_draw_opening":
+            allowed_actions = ["guess"]
+        else:
+            allowed_actions = ["guess", "stop"]
         recommended_action = max(
-            action_scores,
+            allowed_actions,
             key=lambda action: (
                 round(action_scores[action], 8),
                 1 if action == "guess" else 0,
@@ -9918,6 +10849,8 @@ class GameController:
         )
         return {
             **action_scores,
+            "phase": phase,
+            "allowed_actions": allowed_actions,
             "recommended_action": recommended_action,
         }
 

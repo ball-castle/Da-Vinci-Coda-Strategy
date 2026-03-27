@@ -1,0 +1,109 @@
+2026-03-28 生成式联合动作长程自对弈与统一策略目标补强评分表 02:12
+
+生成时间：2026-03-28 02:12:31
+
+一、当前总评分
+
+如果只报一个数，我现在给：
+83%
+
+更准确地看：
+
+- 按“已经是一个可用、可持续迭代的策略引擎”算：94%
+- 按 VinCi.txt 里的最终目标算：83%
+
+
+二、相比上一份评分的变化
+
+上一份评分是 81%。
+
+这次加到 83%，
+主要不是因为解释层更完整，
+而是因为三件真正影响最终能力判断的事情落到了主流程：
+
+1. 长期多回合 self-play benchmark 已经正式存在并可量化胜率
+2. 长期 self-play 不再明显 stop-heavy，post-draw stop rate 已压到 0.0
+3. long self-play 里的抽牌决策也开始直接使用控制层统一策略输出
+
+这两分加的是“模型主链更真实、更统一、更像最终系统”，
+不是“多了更多辅助说明”。
+
+
+三、五个目标分项
+
+- 摸黑还是摸白：9.0 / 10
+- 猜谁猜哪张猜几：9.2 / 10
+- 猜对后继续还是停：9.4 / 10
+- 通过别人行为反推他的牌：8.7 / 10
+- 综合成完整算法：8.9 / 10
+
+
+四、最新量化基准
+
+1. decision benchmark
+- case_count = 65
+- accuracy = 1.0
+- margin_separation = 0.4812
+- min_correct_margin = 0.0008
+
+2. behavior benchmark
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 1.1983
+- average_score_ratio = 2.7314
+
+3. synthetic self-play benchmark
+- world_count = 24
+- recommended_draw_rate = 1.0
+- draw_color_alignment = 0.7083
+- deep_rollout_usage = 1.0
+
+4. long-horizon self-play benchmark
+- game_count = 4
+- p0_win_rate = 0.25
+- p1_win_rate = 0.75
+- draw_rate = 0.0
+- average_turn_count = 2.75
+- average_guess_count = 2.75
+- average_successful_guesses = 1.0
+- post_draw_stop_rate = 0.0
+
+
+五、为什么这次还能上调
+
+因为现在不只是“能跑 long self-play”，
+而是：
+
+- 它已经能在长期多回合 benchmark 里持续猜测而不是抽完就停
+- 抽牌颜色建议和后续 guess/continue 决策开始共享同一控制层目标
+- benchmark 里的表现开始更接近主策略真实表现，而不是局部启发式拼出来的表现
+
+所以这次上调，来自“系统统一性”和“长期策略活性”的真实改善。
+
+
+六、为什么还没有更高
+
+还没上到 85%+，主要还是因为：
+
+- `P(action | state)` 仍然是生成式联合动作近似，不是完整概率生成模型
+- 深层搜索已经更深，但还不是完整 MCTS 或更系统的树搜索框架
+- long self-play 样本量还偏小，距离长期大规模对局胜率 benchmark 还有距离
+- 一部分 stop / draw / risk guard 仍然带有局部 shaping 痕迹，尚未被总策略目标完全替代
+
+
+七、当前判断
+
+现在项目更准确的定位是：
+
+已经从“强 heuristic + rollout 的策略引擎”，
+推进到了“有生成式联合动作近似、有更深树搜索、有长期多回合自对弈 benchmark、且统一策略目标开始真正贯穿 draw/guess/continue 的准完成系统”。
+
+
+八、一句话结论
+
+这次之后，项目已经不只是“看起来更统一”，
+而是在长期 self-play 里也开始按统一策略目标真实行动。
+
+如果后面继续推进，最值得压的就剩两条：
+- 把联合动作模型继续往更完整概率生成推进
+- 把树搜索和长期对局 benchmark 再扩大一层规模

@@ -954,6 +954,40 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(benchmark["deep_rollout_usage"], 0.0)
         self.assertLessEqual(benchmark["deep_rollout_usage"], 1.0)
 
+    def test_long_horizon_self_play_benchmark_quantifies_win_rate_and_stop_rate(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_long_horizon_self_play(game_count=1, seed=13)
+
+        self.assertEqual(benchmark["game_count"], 1.0)
+        self.assertGreaterEqual(benchmark["p0_win_rate"], 0.0)
+        self.assertLessEqual(benchmark["p0_win_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["p1_win_rate"], 0.0)
+        self.assertLessEqual(benchmark["p1_win_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["draw_rate"], 0.0)
+        self.assertLessEqual(benchmark["draw_rate"], 1.0)
+        self.assertAlmostEqual(
+            benchmark["p0_win_rate"] + benchmark["p1_win_rate"] + benchmark["draw_rate"],
+            1.0,
+            places=6,
+        )
+        self.assertGreaterEqual(benchmark["average_turn_count"], 0.0)
+        self.assertGreaterEqual(benchmark["average_guess_count"], 0.0)
+        self.assertGreaterEqual(benchmark["average_successful_guesses"], 0.0)
+        self.assertGreaterEqual(benchmark["post_draw_stop_rate"], 0.0)
+        self.assertLessEqual(benchmark["post_draw_stop_rate"], 1.0)
+
+    def test_long_horizon_self_play_stays_active_after_draw(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_long_horizon_self_play(game_count=2, seed=19)
+
+        self.assertEqual(benchmark["game_count"], 2.0)
+        self.assertGreaterEqual(benchmark["average_guess_count"], 1.0)
+        self.assertGreaterEqual(benchmark["average_successful_guesses"], 0.5)
+        self.assertLessEqual(benchmark["post_draw_stop_rate"], 0.25)
+        self.assertLess(benchmark["draw_rate"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

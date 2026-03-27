@@ -1632,6 +1632,10 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
             aligned["joint_action_generation"]["weight"],
             weak["joint_action_generation"]["weight"],
         )
+        self.assertGreater(
+            aligned["joint_action_generative_probability"]["weight"],
+            weak["joint_action_generative_probability"]["weight"],
+        )
         self.assertGreater(aligned["total_weight"], weak["total_weight"])
 
     def test_target_player_selection_prefers_more_attackable_target(self):
@@ -6412,6 +6416,7 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("strategy_rollout_depth", result)
         self.assertIn("recommended_action", result)
         self.assertIn("recommended_draw_color", result)
+        self.assertEqual(result["strategy_phase"], "pre_draw")
         self.assertEqual(
             result["strategy_action_summary"]["guess"],
             result["decision_summary"]["continue_score"],
@@ -6433,8 +6438,21 @@ class GameControllerOutputTests(unittest.TestCase):
             {"guess", "draw_black", "draw_white", "stop"},
         )
         self.assertEqual(
+            result["strategy_action_summary"]["phase"],
+            "pre_draw",
+        )
+        self.assertEqual(
+            result["strategy_action_summary"]["allowed_actions"],
+            ["draw_black", "draw_white"],
+        )
+        self.assertEqual(
             result["recommended_action"],
             result["strategy_action_summary"]["recommended_action"],
+        )
+        self.assertIn(result["recommended_action"], {"draw_black", "draw_white"})
+        self.assertEqual(
+            result["recommended_draw_color"],
+            "B" if result["recommended_action"] == "draw_black" else "W",
         )
         self.assertEqual(
             GameController(game_state)._select_strategy_rollout_depth(
@@ -6444,6 +6462,40 @@ class GameControllerOutputTests(unittest.TestCase):
             ),
             GameController(game_state).decision_engine.DEEP_ROLLOUT_DEPTH,
         )
+
+    def test_controller_switches_to_post_draw_strategy_phase(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=False),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="W", value=7, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+        post_draw_state = GameController(game_state)._simulated_draw_game_state(("B", 3))
+
+        result = GameController(post_draw_state).run_turn(include_draw_color_summary=False)
+
+        self.assertEqual(result["strategy_phase"], "post_draw_opening")
+        self.assertEqual(
+            result["strategy_action_summary"]["allowed_actions"],
+            ["guess"],
+        )
+        self.assertEqual(result["recommended_action"], "guess")
+        self.assertIsNone(result["recommended_draw_color"])
 
     def test_controller_returns_behavior_debug_for_guess_actions(self):
         game_state = GameState(

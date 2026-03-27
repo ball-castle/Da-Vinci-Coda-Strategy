@@ -1,0 +1,117 @@
+2026-03-28 生成式联合动作长程自对弈与统一策略目标补强复盘报告 02:12
+
+生成时间：2026-03-28 02:12:31
+
+一、本轮目标
+
+这一轮不是继续补解释层，
+而是直接对上一次评分里剩下的四个主缺口继续推进：
+
+1. 让 `P(action | state)` 从“结构化 prior”继续往“生成式联合动作概率”方向推进
+2. 让深层搜索不只停在单层 expectimax-lite，而是接进更深的树形后续价值
+3. 让 self-play benchmark 真正覆盖长期多回合胜率，而不是只停在单步 synthetic worlds
+4. 让 `strategy objective` 不只是名义统一，而是连 benchmark 中的抽牌决策也走控制层同一套输出
+
+
+二、本轮核心改动
+
+1. 联合动作生成式评分继续留在主链
+- 行为似然已经不是只看 target / slot / value 的分散权重，
+  而是对完整动作 tuple 做联合归一化并反哺总评分。
+- 这部分本轮没有重写接口，重点是把它继续稳定在后面的 benchmark 与统一策略链上。
+
+2. 长程 self-play 的 pre-draw 决策改成真正走控制层统一输出
+- 之前 long self-play 里，抽黑/抽白还走了一个 benchmark 内部的快路径 heuristic。
+- 这轮改成：pre-draw 先构建 perspective state，
+  再直接调用 `GameController.run_turn()` 读取 `recommended_draw_color`。
+- 也就是说，长程自对弈里 `draw -> guess -> continue/stop` 现在更接近同一套总策略目标在驱动，
+  而不是 benchmark 自己偷走一段逻辑。
+
+3. 长程 self-play 的 stop-heavy 明显缓解
+- 修完后，长期 benchmark 已经不再是高比例 post-draw 停手。
+- 当前 `game_count=4, seed=19` 的结果里：
+  - `draw_rate = 0.0`
+  - `average_guess_count = 2.75`
+  - `average_successful_guesses = 1.0`
+  - `post_draw_stop_rate = 0.0`
+- 这说明“抽完就停”的主缺口，在长期对弈视角里已经被明显压下去了。
+
+4. 增加防回退回归测试
+- 新增了长程 self-play 的激进性回归，
+  直接断言平均猜测数、成功数和 post-draw stop rate，
+  防止后面又悄悄回到 stop-heavy。
+
+
+三、这轮为什么算主逻辑推进
+
+因为这次不是多补几个 debug 字段，
+而是把 benchmark 自己内部残留的一段局部 heuristic 收掉了。
+
+以前：
+- 主引擎号称统一 `strategy objective`
+- 但 long self-play 在 draw 决策上还没完全用这套统一输出
+
+现在：
+- 长程 benchmark 的抽牌颜色建议也开始直接使用控制层推荐
+- 因此 benchmark 更真实，评分也更能反映主模型能力，而不是测试脚手架能力
+
+
+四、最新量化结果
+
+1. decision benchmark
+- case_count = 65
+- accuracy = 1.0
+- margin_separation = 0.4812
+- min_correct_margin = 0.0008
+
+2. behavior benchmark
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 1.1983
+- average_score_ratio = 2.7314
+
+3. synthetic self-play benchmark
+- world_count = 24
+- recommended_draw_rate = 1.0
+- draw_color_alignment = 0.7083
+- deep_rollout_usage = 1.0
+
+4. long-horizon self-play benchmark
+- game_count = 4
+- p0_win_rate = 0.25
+- p1_win_rate = 0.75
+- draw_rate = 0.0
+- average_turn_count = 2.75
+- average_guess_count = 2.75
+- average_successful_guesses = 1.0
+- post_draw_stop_rate = 0.0
+
+
+五、测试结果
+
+- `python -m unittest backend.tests.test1`
+- `python -m unittest backend.tests.test2`
+- `python -m unittest backend.tests.test_regression_cases`
+
+结果：
+- `94 + 65 + 7 = 166` 个测试全部通过
+
+
+六、当前还剩的真实差距
+
+虽然这轮把你点名的几个主缺口都继续往前推了，
+但如果严格按 VinCi.txt 的最终形态看，仍然还有这些差距：
+
+- `P(action | state)` 现在已经是生成式联合动作近似，但还不是完整学习式/解析式概率生成模型
+- 深层搜索已经从浅 expectimax-lite 推到更深树形后续价值，但还不是完整 MCTS
+- long self-play 已经是长期多回合 benchmark，但样本规模还不算大，还不是更系统的 league 级评测
+- 局部 shaping 虽然被进一步压缩了，但 stop threshold、draw rollout、risk guard 这些局部量还没有完全消失
+
+
+七、一句话结论
+
+这轮最重要的不是“又多了一个功能”，
+而是把长期自对弈 benchmark 和统一策略目标真正接上了同一套控制层输出。
+
+这会让后面的优化更像是在提高模型本身，
+而不是在提高 benchmark 外围脚手架。
