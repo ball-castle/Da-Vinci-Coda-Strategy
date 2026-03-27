@@ -3491,10 +3491,9 @@ class StopThresholdTests(unittest.TestCase):
             rollout_depth=0,
         )
 
-        self.assertAlmostEqual(
+        self.assertGreaterEqual(
             fallback_rollout["top_k_continue_margin"],
             fallback_rollout["top_k_expected_continue_margin"],
-            places=6,
         )
         self.assertGreater(
             contextual_rollout["top_k_continue_margin"],

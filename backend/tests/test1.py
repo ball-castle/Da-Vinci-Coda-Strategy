@@ -1628,6 +1628,10 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
             aligned["joint_action_probability"]["joint_probability"],
             weak["joint_action_probability"]["joint_probability"],
         )
+        self.assertGreater(
+            aligned["joint_action_generation"]["weight"],
+            weak["joint_action_generation"]["weight"],
+        )
         self.assertGreater(aligned["total_weight"], weak["total_weight"])
 
     def test_target_player_selection_prefers_more_attackable_target(self):
@@ -6403,6 +6407,42 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertGreaterEqual(
             draw_summary["draw_rollout_expected_strategy_objective_black"],
             draw_summary["draw_rollout_expected_strategy_objective_white"],
+        )
+        self.assertIn("strategy_action_summary", result)
+        self.assertIn("strategy_rollout_depth", result)
+        self.assertIn("recommended_action", result)
+        self.assertIn("recommended_draw_color", result)
+        self.assertEqual(
+            result["strategy_action_summary"]["guess"],
+            result["decision_summary"]["continue_score"],
+        )
+        self.assertEqual(
+            result["strategy_action_summary"]["draw_black"],
+            draw_summary["draw_rollout_expected_strategy_objective_black"],
+        )
+        self.assertEqual(
+            result["strategy_action_summary"]["draw_white"],
+            draw_summary["draw_rollout_expected_strategy_objective_white"],
+        )
+        self.assertEqual(
+            result["strategy_action_summary"]["stop"],
+            result["decision_summary"]["stop_score"],
+        )
+        self.assertIn(
+            result["strategy_action_summary"]["recommended_action"],
+            {"guess", "draw_black", "draw_white", "stop"},
+        )
+        self.assertEqual(
+            result["recommended_action"],
+            result["strategy_action_summary"]["recommended_action"],
+        )
+        self.assertEqual(
+            GameController(game_state)._select_strategy_rollout_depth(
+                search_space_size=12.0,
+                my_hidden_count=2,
+                target_hidden_count=1,
+            ),
+            GameController(game_state).decision_engine.DEEP_ROLLOUT_DEPTH,
         )
 
     def test_controller_returns_behavior_debug_for_guess_actions(self):

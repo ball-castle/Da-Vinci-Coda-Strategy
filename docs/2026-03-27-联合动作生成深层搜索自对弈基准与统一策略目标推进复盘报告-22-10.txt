@@ -1,0 +1,185 @@
+2026-03-27 联合动作生成深层搜索自对弈基准与统一策略目标推进复盘报告 22:10
+
+生成时间：2026-03-27 22:10:46
+
+一、这次继续补的是上一份评分里剩下的四条尾缺口
+
+这次不是再加 explain 字段，
+而是继续对着这四条真正影响完成度的点推进：
+
+1. `P(action | state)` 还是结构化联合核，不像更完整的概率生成模型
+2. expectimax 还是浅层，控制层没有真正把更深 rollout 接进去
+3. benchmark 还缺更像 self-play 的样本，而不是只看固定 case
+4. strategy objective 虽然已经共享了，但还没有变成控制层的统一动作比较口径
+
+
+二、这次真正落地的主改动
+
+1. 联合动作概率从“联合核”继续往“生成式 prior”推进
+
+`BehavioralLikelihoodModel` 这次新增了 `joint_action_generation` 分解，
+不再只看 joint fit 和 normalized joint probability，
+还会把这些更接近“动作生成 prior”的量并进去：
+
+- target player attackability
+- target slot attackability
+- attack window
+- global public propagation
+- public reveal bridge
+- target chain
+- finish chain
+
+最后形成 `generative_prior` 和 `joint_action_generation.weight`，
+再跟 `joint_action_probability`、`joint_action_fit`、`structured_fit` 一起进入总权重。
+
+这一步还不是完整生成模型，
+但已经从“结构化乘权”推进成了“联合概率 + 生成 prior”的混合动作分布。
+
+
+2. 深层搜索真正接到控制层了
+
+这次不是只在 engine 里保留 `rollout_depth` 参数，
+而是让 `GameController` 开始根据局面复杂度动态选择搜索深度：
+
+- target hidden 少
+- self hidden 不高
+- search space 可控
+
+就会自动切到 `DEEP_ROLLOUT_DEPTH=2`。
+
+同时 `run_turn` 现在会显式返回：
+
+- `strategy_rollout_depth`
+- `strategy_action_summary`
+- `recommended_action`
+- `recommended_draw_color`
+
+也就是说，深层 rollout 不再只是底层实现细节，
+而是已经进入控制层主输出。
+
+
+3. benchmark 从固定 case 继续推进到 synthetic self-play worlds
+
+这次新增了 `benchmark_self_play_worlds`，
+会构造多组 synthetic public worlds，
+然后直接跑：
+
+- 当前回合策略输出
+- draw color 建议与真实剩余牌的对齐
+- 自对弈式连续执行后的 realized strategy objective
+- 深层 rollout 的实际使用率
+- guess / draw / stop 推荐分布
+
+这还不是完整长期胜率 self-play，
+但已经不再只是固定回归 case，
+而是开始有“策略在合成对局世界里怎么表现”的量化层。
+
+
+4. strategy objective 再往“统一动作目标”推进了一步
+
+这次最大的统一动作改动不是再给 move 加字段，
+而是让控制层开始直接产出统一动作比较表：
+
+- `guess`
+- `draw_black`
+- `draw_white`
+- `stop`
+
+并给出 `recommended_action`。
+
+这意味着 draw / guess / stop 已经开始在同一个 summary 里正面比较，
+而不是只有“best_move + draw summary + should_stop”三套并行输出。
+
+
+三、这次对四个缺口分别推进到了哪里
+
+1. `P(action | state)`
+- 已经从 joint fit + probability，推进到 joint probability + generative prior
+- 仍然不是完整概率生成模型
+- 但已经更像“候选动作在当前世界里被生成出来的相对概率”
+
+2. 深层搜索
+- 控制层现在会按局面复杂度自适应启用 depth=2 rollout
+- post-hit expectimax-lite 不再只是参数保留，而是真的进入 `run_turn`
+- 仍然不是更深 expectimax 树或 MCTS
+
+3. benchmark
+- fixed case benchmark 继续保留
+- 新增 24-world synthetic self-play benchmark
+- 已经能看 action 分布、draw 对齐、realized objective、deep rollout usage
+- 仍然不是长期多回合胜率评测
+
+4. strategy objective 统一
+- draw / guess / stop 已经进入统一 action summary
+- 控制层现在直接返回 `recommended_action`
+- 仍然还没完全把所有局部 shaping 全收敛到唯一目标核
+
+
+四、最新量化结果
+
+验证命令：
+python -m unittest discover -s backend/tests -p "test*.py"
+
+结果：
+163 / 163 通过
+
+最新 benchmark：
+
+1. decision benchmark
+- base_case_count = 13
+- case_count = 65
+- accuracy = 1.0
+- average_continue_margin = 0.3853
+- average_stop_margin = -0.0959
+- margin_separation = 0.4812
+- min_correct_margin = 0.00076
+
+2. behavior benchmark
+- base_case_count = 5
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 1.1499
+- min_log_margin = 0.1317
+- average_score_ratio = 2.6134
+
+3. self-play benchmark
+- world_count = 24
+- guess_rate = 0.0
+- top1_guess_accuracy = 0.0
+- top3_guess_accuracy = 1.0
+- recommended_guess_rate = 0.0
+- recommended_draw_rate = 0.0417
+- recommended_stop_rate = 0.9583
+- draw_color_alignment = 0.7083
+- average_draw_strategy_margin = 0.5598
+- average_realized_strategy_objective = -9.2791
+- deep_rollout_usage = 1.0
+
+
+五、这次结果的真实含义
+
+这次最重要的价值不在于 self-play 数字已经很好看，
+而在于：
+
+- 更强的联合动作概率已经真实接进动作似然
+- 更深 rollout 已经真实接进控制层
+- self-play benchmark 已经开始暴露“当前策略偏保守、偏停手”的问题
+- strategy objective 已经从 move 内部指标推进成控制层统一动作比较口径
+
+也就是说，
+现在不仅能力更强了，
+而且“还差什么”也开始能被 benchmark 直接照出来。
+
+
+六、现在仍然没彻底结束的点
+
+- `P(action | state)` 还是 hand-crafted prior，不是完整生成式/学习式模型
+- 深层搜索目前只有 depth=2 的 expectimax-lite，不是更深树搜索或 MCTS
+- self-play benchmark 已经有了，但从结果看策略还明显偏 stop-heavy
+- strategy objective 虽然已成为控制层动作 summary 的中心，但内部仍有不少局部目标在参与 shaping
+
+
+七、一句话结论
+
+这次之后，项目已经从“联合动作核 + 浅层 expectimax + 固定 case benchmark + 共享 strategy objective”，
+推进到了“带生成 prior 的联合动作概率 + 控制层深层 rollout + synthetic self-play benchmark + 统一动作推荐 summary”的阶段。

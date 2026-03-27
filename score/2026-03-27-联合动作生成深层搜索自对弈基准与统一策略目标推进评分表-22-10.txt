@@ -1,0 +1,106 @@
+2026-03-27 联合动作生成深层搜索自对弈基准与统一策略目标推进评分表 22:10
+
+生成时间：2026-03-27 22:10:46
+
+一、当前总评分
+
+如果只报一个数，我现在给：
+81%
+
+更准确地看：
+
+- 按“已经是一个可用、可持续迭代的策略引擎”算：93%
+- 按 VinCi.txt 里的最终目标算：81%
+
+
+二、相比上一份评分的变化
+
+上一份评分是 80%。
+
+这次加到 81%，
+不是因为做了更多解释层，
+而是因为四个最核心的尾缺口都继续往前推进了：
+
+1. 动作似然从联合核推进到联合概率 + 生成 prior
+2. 深层 rollout 真正进了控制层
+3. benchmark 从固定 case 扩到 24-world synthetic self-play
+4. strategy objective 进入统一 action summary 和 recommended action
+
+这 1 分加的是“系统主干又更完整了一点”，
+不是“多了几个 debug 输出”。
+
+
+三、五个目标分项
+
+- 摸黑还是摸白：8.8 / 10
+- 猜谁猜哪张猜几：9.2 / 10
+- 猜对后继续还是停：9.3 / 10
+- 通过别人行为反推他的牌：8.5 / 10
+- 综合成完整算法：8.6 / 10
+
+
+四、最新量化基准
+
+1. decision benchmark
+- case_count = 65
+- accuracy = 1.0
+- margin_separation = 0.4812
+
+2. behavior benchmark
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 1.1499
+- average_score_ratio = 2.6134
+
+3. self-play benchmark
+- world_count = 24
+- recommended_stop_rate = 0.9583
+- recommended_draw_rate = 0.0417
+- draw_color_alignment = 0.7083
+- average_draw_strategy_margin = 0.5598
+- deep_rollout_usage = 1.0
+
+这些数字说明：
+- 固定回归和行为偏好仍然很稳
+- 深层 rollout 已经被真实触发
+- draw 建议在 synthetic worlds 里已经有一定对齐度
+- 但整体策略还明显偏保守，self-play 中停手占比很高
+
+
+五、为什么这次还能上调
+
+因为这次补上的不只是“能力有没有”，
+而是把三件之前还停在半成品状态的东西真正接到了主流程：
+
+- 更像联合分布的动作似然
+- 控制层可见的深层搜索
+- 控制层统一动作推荐
+
+这会让后面的继续优化不再只是补 heuristic，
+而是能围绕统一动作目标和 self-play 指标往前压。
+
+
+六、为什么还没有更高
+
+还没上到 85%+，主要还是因为：
+
+- `P(action | state)` 还是结构化 prior，不是完整生成式模型
+- 深层搜索只有浅层 expectimax-lite，不是更深树搜索或 MCTS
+- synthetic self-play 还不是长期多回合胜率 benchmark
+- 从 self-play 结果看，当前策略还明显 stop-heavy
+- strategy objective 虽然更统一了，但还没完全替代所有局部 shaping
+
+
+七、当前判断
+
+现在项目更准确的定位是：
+
+已经从“强 heuristic 策略引擎”，
+推进到了“有联合动作概率、有控制层深层 rollout、有 synthetic self-play benchmark、并开始输出统一动作推荐的准完整策略系统”。
+
+
+八、一句话结论
+
+这次之后，项目离 VinCi.txt 意义上的“基本优化完成”又近了一步，
+但剩下最关键的差距已经很集中：
+主要是把 unified objective 再压实，并把 self-play 里偏保守的 stop-heavy 策略继续拉开。

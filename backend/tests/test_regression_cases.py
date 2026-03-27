@@ -926,6 +926,34 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreater(benchmark["min_log_margin"], 0.0)
         self.assertGreater(benchmark["average_score_ratio"], 1.0)
 
+    def test_self_play_benchmark_quantifies_guess_draw_and_rollout_behavior(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_self_play_worlds(world_count=4, seed=11)
+
+        self.assertEqual(benchmark["world_count"], 4.0)
+        self.assertGreaterEqual(benchmark["guess_rate"], 0.0)
+        self.assertLessEqual(benchmark["guess_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["top1_guess_accuracy"], 0.0)
+        self.assertLessEqual(benchmark["top1_guess_accuracy"], 1.0)
+        self.assertGreaterEqual(
+            benchmark["top3_guess_accuracy"],
+            benchmark["top1_guess_accuracy"],
+        )
+        self.assertGreaterEqual(benchmark["draw_color_alignment"], 0.0)
+        self.assertLessEqual(benchmark["draw_color_alignment"], 1.0)
+        self.assertGreaterEqual(benchmark["recommended_guess_rate"], 0.0)
+        self.assertLessEqual(benchmark["recommended_guess_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["recommended_draw_rate"], 0.0)
+        self.assertLessEqual(benchmark["recommended_draw_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["recommended_stop_rate"], 0.0)
+        self.assertLessEqual(benchmark["recommended_stop_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["average_realized_hits_per_turn"], 0.0)
+        self.assertGreater(benchmark["average_realized_strategy_objective"], -10.0)
+        self.assertGreaterEqual(benchmark["average_executed_steps"], 0.0)
+        self.assertGreaterEqual(benchmark["deep_rollout_usage"], 0.0)
+        self.assertLessEqual(benchmark["deep_rollout_usage"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
