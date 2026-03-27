@@ -2082,11 +2082,12 @@ class DaVinciDecisionEngine:
         my_hidden_count: int,
     ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         if not all_moves:
-            stop_threshold = self._stop_threshold(
+            stop_threshold_breakdown = self._stop_threshold_breakdown(
                 risk_factor=risk_factor,
                 my_hidden_count=my_hidden_count,
                 best_move=None,
             )
+            stop_threshold = stop_threshold_breakdown["threshold"]
             return None, {
                 "evaluated_move_count": 0,
                 "best_immediate_value": 0.0,
@@ -2145,7 +2146,14 @@ class DaVinciDecisionEngine:
                 "continue_margin": -stop_threshold,
                 "recommend_stop": True,
                 "decision_score_breakdown": {
-                    "base_stop_threshold": stop_threshold,
+                    "base_stop_threshold": stop_threshold_breakdown["base_stop_threshold"],
+                    "short_hand_threshold": stop_threshold_breakdown["short_hand_threshold"],
+                    "self_exposure_threshold": stop_threshold_breakdown["self_exposure_threshold"],
+                    "newly_drawn_threshold": stop_threshold_breakdown["newly_drawn_threshold"],
+                    "finish_fragility_threshold": stop_threshold_breakdown["finish_fragility_threshold"],
+                    "low_confidence_threshold": stop_threshold_breakdown["low_confidence_threshold"],
+                    "weak_continuation_threshold": stop_threshold_breakdown["weak_continuation_threshold"],
+                    "total_stop_threshold": stop_threshold,
                     "edge_pressure": 0.0,
                     "rollout_pressure": 0.0,
                     "fragile_rollout_pressure": 0.0,
@@ -2175,15 +2183,17 @@ class DaVinciDecisionEngine:
 
         best_move = all_moves[0]
         second_move = all_moves[1] if len(all_moves) > 1 else None
-        stop_threshold = self._stop_threshold(
+        stop_threshold_breakdown = self._stop_threshold_breakdown(
             risk_factor=risk_factor,
             my_hidden_count=my_hidden_count,
             best_move=best_move,
         )
+        stop_threshold = stop_threshold_breakdown["threshold"]
         decision_snapshot = self._evaluate_continue_decision(
             best_move=best_move,
             second_move=second_move,
             stop_threshold=stop_threshold,
+            stop_threshold_breakdown=stop_threshold_breakdown,
             my_hidden_count=my_hidden_count,
         )
         stop_reason = self._build_stop_reason(
@@ -3498,6 +3508,7 @@ class DaVinciDecisionEngine:
         best_move: Dict[str, Any],
         second_move: Optional[Dict[str, Any]],
         stop_threshold: float,
+        stop_threshold_breakdown: Optional[Dict[str, float]],
         my_hidden_count: int,
     ) -> Dict[str, Any]:
         best_gap = best_move["expected_value"] - (second_move["expected_value"] if second_move else 0.0)
@@ -3637,7 +3648,28 @@ class DaVinciDecisionEngine:
             "low_confidence_guard": low_confidence_guard,
             "weak_edge_guard": weak_edge_guard,
             "decision_score_breakdown": {
-                "base_stop_threshold": stop_threshold,
+                "base_stop_threshold": float(
+                    (stop_threshold_breakdown or {}).get("base_stop_threshold", stop_threshold)
+                ),
+                "short_hand_threshold": float(
+                    (stop_threshold_breakdown or {}).get("short_hand_threshold", 0.0)
+                ),
+                "self_exposure_threshold": float(
+                    (stop_threshold_breakdown or {}).get("self_exposure_threshold", 0.0)
+                ),
+                "newly_drawn_threshold": float(
+                    (stop_threshold_breakdown or {}).get("newly_drawn_threshold", 0.0)
+                ),
+                "finish_fragility_threshold": float(
+                    (stop_threshold_breakdown or {}).get("finish_fragility_threshold", 0.0)
+                ),
+                "low_confidence_threshold": float(
+                    (stop_threshold_breakdown or {}).get("low_confidence_threshold", 0.0)
+                ),
+                "weak_continuation_threshold": float(
+                    (stop_threshold_breakdown or {}).get("weak_continuation_threshold", 0.0)
+                ),
+                "total_stop_threshold": stop_threshold,
                 "edge_pressure": edge_pressure,
                 "rollout_pressure": rollout_pressure,
                 "fragile_rollout_pressure": fragile_rollout_pressure,
@@ -4010,6 +4042,74 @@ class DaVinciDecisionEngine:
             * edge_scale
         )
 
+    def _stop_threshold_breakdown(
+        self,
+        *,
+        risk_factor: float,
+        my_hidden_count: int,
+        best_move: Optional[Dict[str, Any]],
+    ) -> Dict[str, float]:
+        base_stop_threshold = self.STOP_MARGIN_BASE + max(
+            0.0,
+            (risk_factor - self.HIT_REWARD) * self.STOP_MARGIN_RISK_SCALE,
+        )
+        short_hand_threshold = 0.0
+        if my_hidden_count <= 2:
+            short_hand_threshold += self.STOP_MARGIN_SHORT_HAND
+        if my_hidden_count <= 1:
+            short_hand_threshold += self.STOP_MARGIN_SHORT_HAND
+
+        self_exposure_threshold = 0.0
+        newly_drawn_threshold = 0.0
+        finish_fragility_threshold = 0.0
+        low_confidence_threshold = 0.0
+        weak_continuation_threshold = 0.0
+
+        if best_move is not None:
+            self_exposure_threshold = self.STOP_MARGIN_SELF_EXPOSURE * clamp(
+                float(best_move.get("self_public_exposure", 0.0)),
+                0.0,
+                1.0,
+            )
+            newly_drawn_threshold = self.STOP_MARGIN_NEW_DRAWN_EXPOSURE * clamp(
+                float(best_move.get("self_newly_drawn_exposure", 0.0)),
+                0.0,
+                1.0,
+            )
+            finish_fragility_threshold = self.STOP_MARGIN_FINISH_FRAGILITY * clamp(
+                float(best_move.get("self_finish_fragility", 0.0)),
+                0.0,
+                1.0,
+            )
+            if best_move["win_probability"] < 0.5:
+                low_confidence_threshold = self.STOP_MARGIN_LOW_CONFIDENCE * (
+                    (0.5 - best_move["win_probability"]) / 0.5
+                )
+            if best_move.get("continuation_likelihood", 0.0) < 0.5:
+                weak_continuation_threshold = self.STOP_MARGIN_WEAK_CONTINUATION * (
+                    (0.5 - best_move.get("continuation_likelihood", 0.0)) / 0.5
+                )
+
+        threshold = (
+            base_stop_threshold
+            + short_hand_threshold
+            + self_exposure_threshold
+            + newly_drawn_threshold
+            + finish_fragility_threshold
+            + low_confidence_threshold
+            + weak_continuation_threshold
+        )
+        return {
+            "base_stop_threshold": base_stop_threshold,
+            "short_hand_threshold": short_hand_threshold,
+            "self_exposure_threshold": self_exposure_threshold,
+            "newly_drawn_threshold": newly_drawn_threshold,
+            "finish_fragility_threshold": finish_fragility_threshold,
+            "low_confidence_threshold": low_confidence_threshold,
+            "weak_continuation_threshold": weak_continuation_threshold,
+            "threshold": threshold,
+        }
+
     def _stop_threshold(
         self,
         *,
@@ -4017,33 +4117,11 @@ class DaVinciDecisionEngine:
         my_hidden_count: int,
         best_move: Optional[Dict[str, Any]],
     ) -> float:
-        threshold = self.STOP_MARGIN_BASE + max(0.0, (risk_factor - self.HIT_REWARD) * self.STOP_MARGIN_RISK_SCALE)
-        if my_hidden_count <= 2:
-            threshold += self.STOP_MARGIN_SHORT_HAND
-        if my_hidden_count <= 1:
-            threshold += self.STOP_MARGIN_SHORT_HAND
-
-        if best_move is not None:
-            threshold += self.STOP_MARGIN_SELF_EXPOSURE * clamp(
-                float(best_move.get("self_public_exposure", 0.0)),
-                0.0,
-                1.0,
-            )
-            threshold += self.STOP_MARGIN_NEW_DRAWN_EXPOSURE * clamp(
-                float(best_move.get("self_newly_drawn_exposure", 0.0)),
-                0.0,
-                1.0,
-            )
-            threshold += self.STOP_MARGIN_FINISH_FRAGILITY * clamp(
-                float(best_move.get("self_finish_fragility", 0.0)),
-                0.0,
-                1.0,
-            )
-            if best_move["win_probability"] < 0.5:
-                threshold += self.STOP_MARGIN_LOW_CONFIDENCE * (0.5 - best_move["win_probability"]) / 0.5
-            if best_move.get("continuation_likelihood", 0.0) < 0.5:
-                threshold += self.STOP_MARGIN_WEAK_CONTINUATION * (0.5 - best_move.get("continuation_likelihood", 0.0)) / 0.5
-        return threshold
+        return self._stop_threshold_breakdown(
+            risk_factor=risk_factor,
+            my_hidden_count=my_hidden_count,
+            best_move=best_move,
+        )["threshold"]
 
     def _build_stop_reason(
         self,

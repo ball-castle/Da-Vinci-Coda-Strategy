@@ -757,6 +757,42 @@ class StopThresholdTests(unittest.TestCase):
             buffered_moves[0]["self_public_exposure"],
         )
 
+    def test_choose_best_move_surfaces_self_exposure_threshold_breakdown(self):
+        engine = DaVinciDecisionEngine()
+        all_moves = [
+            {
+                "expected_value": 0.88,
+                "immediate_expected_value": 0.88,
+                "win_probability": 0.57,
+                "continuation_value": 0.18,
+                "continuation_likelihood": 0.61,
+                "attackability_after_hit": 0.72,
+                "post_hit_continue_score": 0.0,
+                "post_hit_stop_score": 0.0,
+                "post_hit_continue_margin": 0.0,
+                "post_hit_best_gap": 0.24,
+                "post_hit_top_k_continue_margin": 0.0,
+                "post_hit_top_k_support_ratio": 0.0,
+                "self_public_exposure": 0.58,
+                "self_newly_drawn_exposure": 0.52,
+                "self_finish_fragility": 0.31,
+            },
+        ]
+
+        _, summary = engine.choose_best_move(
+            all_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertGreater(summary["decision_score_breakdown"]["self_exposure_threshold"], 0.0)
+        self.assertGreater(summary["decision_score_breakdown"]["newly_drawn_threshold"], 0.0)
+        self.assertGreater(summary["decision_score_breakdown"]["finish_fragility_threshold"], 0.0)
+        self.assertEqual(
+            summary["decision_score_breakdown"]["total_stop_threshold"],
+            summary["stop_threshold"],
+        )
+
     def test_evaluate_all_moves_uses_behavior_match_bonus_in_ranking(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()
