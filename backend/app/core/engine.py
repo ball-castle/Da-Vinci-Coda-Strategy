@@ -2471,6 +2471,7 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_EDGE_SELF_EXPOSURE_BOOST = 0.45
     STOP_MARGIN_FAILURE_RECOVERY = 0.12
     STOP_MARGIN_ATTACK_WINDOW = 0.10
+    STOP_MARGIN_JOINT_COLLAPSE = 0.08
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     FAILURE_RECOVERY_REFERENCE = 0.30
@@ -2748,6 +2749,7 @@ class DaVinciDecisionEngine:
                     "behavior_match_context_focus": 0.0,
                     "failure_recovery_pressure": 0.0,
                     "attack_window_support": 0.0,
+                    "joint_collapse_support": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -4405,6 +4407,11 @@ class DaVinciDecisionEngine:
             * float(best_move.get("target_attack_window_signal", 0.0))
         )
         continue_score += attack_window_support
+        joint_collapse_support = (
+            self.STOP_MARGIN_JOINT_COLLAPSE
+            * float(best_move.get("joint_collapse_signal", 0.0))
+        )
+        continue_score += joint_collapse_support
         post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
             best_move=best_move,
         )
@@ -4529,6 +4536,7 @@ class DaVinciDecisionEngine:
                 "behavior_match_context_focus": behavior_match_context_focus,
                 "failure_recovery_pressure": failure_recovery_pressure,
                 "attack_window_support": attack_window_support,
+                "joint_collapse_support": joint_collapse_support,
             },
         }
 
