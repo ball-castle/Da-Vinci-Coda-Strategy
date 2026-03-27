@@ -2677,6 +2677,8 @@ class DaVinciDecisionEngine:
     JOINT_COLLAPSE_CONTINUATION_SCALE = 0.08
     PUBLIC_REVEAL_BRIDGE_VALUE_BONUS = 0.18
     PUBLIC_REVEAL_BRIDGE_CONTINUATION_SCALE = 0.06
+    TARGET_CHAIN_VALUE_BONUS = 0.22
+    TARGET_CHAIN_CONTINUATION_SCALE = 0.08
     TARGET_FINISH_CHAIN_VALUE_BONUS = 0.26
     TARGET_FINISH_CHAIN_CONTINUATION_SCALE = 0.10
 
@@ -2766,6 +2768,31 @@ class DaVinciDecisionEngine:
             if recency_weight < 0.2:
                 break
         return clamp(bridge_score, 0.0, 1.0)
+
+    def _recent_target_chain_signal(
+        self,
+        game_state: Optional[GameState],
+        target_player_id: str,
+    ) -> float:
+        if game_state is None:
+            return 0.0
+        chain_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+            if getattr(action, "target_player_id", None) != target_player_id:
+                continue
+            if getattr(action, "result", False):
+                chain_score += 0.65 * recency_weight
+                if getattr(action, "continued_turn", None) is True:
+                    chain_score += 0.20 * recency_weight
+            if getattr(action, "revealed_player_id", None) == target_player_id:
+                chain_score += 0.35 * recency_weight
+            recency_weight *= 0.62
+            if recency_weight < 0.15:
+                break
+        return clamp(chain_score, 0.0, 1.0)
 
     def evaluate_all_moves(
         self,
@@ -2912,6 +2939,9 @@ class DaVinciDecisionEngine:
                 "best_joint_collapse_signal": 0.0,
                 "best_joint_collapse_bonus": 0.0,
                 "best_joint_collapse_continuation_bonus": 0.0,
+                "best_target_chain_signal": 0.0,
+                "best_target_chain_bonus": 0.0,
+                "best_target_chain_continuation_bonus": 0.0,
                 "best_target_finish_chain_signal": 0.0,
                 "best_target_finish_chain_bonus": 0.0,
                 "best_target_finish_chain_continuation_bonus": 0.0,
@@ -3081,6 +3111,12 @@ class DaVinciDecisionEngine:
                 "joint_collapse_continuation_bonus",
                 0.0,
             ),
+            "best_target_chain_signal": best_move.get("target_chain_signal", 0.0),
+            "best_target_chain_bonus": best_move.get("target_chain_bonus", 0.0),
+            "best_target_chain_continuation_bonus": best_move.get(
+                "target_chain_continuation_bonus",
+                0.0,
+            ),
             "best_target_finish_chain_signal": best_move.get("target_finish_chain_signal", 0.0),
             "best_target_finish_chain_bonus": best_move.get("target_finish_chain_bonus", 0.0),
             "best_target_finish_chain_continuation_bonus": best_move.get(
@@ -3164,6 +3200,9 @@ class DaVinciDecisionEngine:
         public_reveal_bridge_signal = 0.0
         public_reveal_bridge_bonus = 0.0
         public_reveal_bridge_continuation_bonus = 0.0
+        target_chain_signal = 0.0
+        target_chain_bonus = 0.0
+        target_chain_continuation_bonus = 0.0
         target_finish_chain_signal = 0.0
         target_finish_chain_bonus = 0.0
         target_finish_chain_continuation_bonus = 0.0
@@ -3398,6 +3437,10 @@ class DaVinciDecisionEngine:
                 player_id,
                 card,
             )
+            target_chain_signal = self._recent_target_chain_signal(
+                game_state,
+                player_id,
+            )
             target_finish_chain_signal = clamp(
                 behavior_model._player_finish_pressure(
                     game_state,
@@ -3464,6 +3507,17 @@ class DaVinciDecisionEngine:
             * max(continuation_likelihood, attackability_after_hit, 0.25)
         )
         continuation_value += public_reveal_bridge_continuation_bonus
+        target_chain_bonus = (
+            self.TARGET_CHAIN_VALUE_BONUS
+            * target_chain_signal
+            * max(probability, attackability_after_hit, continuation_likelihood, 0.25)
+        )
+        target_chain_continuation_bonus = (
+            self.TARGET_CHAIN_CONTINUATION_SCALE
+            * target_chain_signal
+            * max(continuation_likelihood, attackability_after_hit, 0.25)
+        )
+        continuation_value += target_chain_continuation_bonus
         target_finish_chain_bonus = (
             self.TARGET_FINISH_CHAIN_VALUE_BONUS
             * target_finish_chain_signal
@@ -3484,6 +3538,7 @@ class DaVinciDecisionEngine:
             + target_attack_window_bonus
             + joint_collapse_bonus
             + public_reveal_bridge_bonus
+            + target_chain_bonus
             + target_finish_chain_bonus
         )
         expected_value = immediate_expected_value + continuation_value
@@ -3614,6 +3669,9 @@ class DaVinciDecisionEngine:
             "public_reveal_bridge_signal": public_reveal_bridge_signal,
             "public_reveal_bridge_bonus": public_reveal_bridge_bonus,
             "public_reveal_bridge_continuation_bonus": public_reveal_bridge_continuation_bonus,
+            "target_chain_signal": target_chain_signal,
+            "target_chain_bonus": target_chain_bonus,
+            "target_chain_continuation_bonus": target_chain_continuation_bonus,
             "target_finish_chain_signal": target_finish_chain_signal,
             "target_finish_chain_bonus": target_finish_chain_bonus,
             "target_finish_chain_continuation_bonus": target_finish_chain_continuation_bonus,
@@ -3641,6 +3699,9 @@ class DaVinciDecisionEngine:
                 "public_reveal_bridge_signal": public_reveal_bridge_signal,
                 "public_reveal_bridge_bonus": public_reveal_bridge_bonus,
                 "public_reveal_bridge_continuation_bonus": public_reveal_bridge_continuation_bonus,
+                "target_chain_signal": target_chain_signal,
+                "target_chain_bonus": target_chain_bonus,
+                "target_chain_continuation_bonus": target_chain_continuation_bonus,
                 "target_finish_chain_signal": target_finish_chain_signal,
                 "target_finish_chain_bonus": target_finish_chain_bonus,
                 "target_finish_chain_continuation_bonus": target_finish_chain_continuation_bonus,

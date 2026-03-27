@@ -974,6 +974,108 @@ class StopThresholdTests(unittest.TestCase):
             spread_move["expected_value"],
         )
 
+    def test_evaluate_all_moves_rewards_recent_target_chain(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+            "quiet": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+            "quiet": {0: 0},
+        }
+        chain_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+                "quiet": PlayerState(
+                    player_id="quiet",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=True,
+                    continued_turn=True,
+                    revealed_player_id="opp",
+                    revealed_slot_index=0,
+                    revealed_color="W",
+                    revealed_value=6,
+                )
+            ],
+        )
+        quiet_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=chain_world.players,
+            actions=[],
+        )
+
+        chain_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=chain_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+        quiet_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=quiet_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        chain_move = next(move for move in chain_moves if move["target_player_id"] == "opp")
+        quiet_move = next(move for move in quiet_moves if move["target_player_id"] == "opp")
+
+        self.assertGreater(chain_move["target_chain_signal"], 0.0)
+        self.assertGreater(chain_move["target_chain_bonus"], 0.0)
+        self.assertGreater(
+            chain_move["continuation_value"],
+            quiet_move["continuation_value"],
+        )
+        self.assertGreater(
+            chain_move["expected_value"],
+            quiet_move["expected_value"],
+        )
+
     def test_evaluate_all_moves_rewards_failed_guess_switch_continuity(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()
