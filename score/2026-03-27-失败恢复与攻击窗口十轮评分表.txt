@@ -1,0 +1,69 @@
+2026-03-27 失败恢复与攻击窗口十轮评分表
+
+一、当前总评分
+
+如果只报一个数，我现在给：
+72%
+
+更准确地看：
+
+- 按“已经是一个可用、可持续迭代的策略引擎”算：86%
+- 按 VinCi.txt 里的最终目标算：72%
+
+
+二、相比上一份评分的变化
+
+上一份评分是 70%。
+
+这次上调到 72%，核心原因不是解释更完整了，而是主逻辑真的更闭环了：
+
+1. draw / guess / continue 三条主线现在共享更多同一批信号
+2. failed guess 不再只留下日志，而是已经会反过来改变 attackability、target switching、continue boundary
+3. target attack window 已经从“局部直觉”进入了实际评分函数
+
+这两分主要加在：
+
+- 目标 1 的实战联动性
+- 目标 2 的 target ranking 质量
+- 目标 3 的 continue / stop 真实性
+- 目标 5 的闭环完整度
+
+
+三、五个目标分项
+
+- 摸黑还是摸白：8.0 / 10
+- 猜谁猜哪张猜几：8.4 / 10
+- 猜对后继续还是停：8.5 / 10
+- 通过别人行为反推他的牌：6.9 / 10
+- 综合成完整算法：7.2 / 10
+
+
+四、这批十轮的加分点
+
+- draw rollout 已经会读取 post-draw stop threshold、continue margin、failure recovery、target attack window
+- 猜牌排序不再忽略 failed guess 之后的连续性和坍缩收益
+- continue / stop 已经会直接读取 failure recovery pressure 和 attack window support
+- 行为似然和主决策共享的信号明显更多，尤其是在 target switching 和 tight attack window 上
+
+
+五、为什么还没有更高
+
+现在还没有上到 75% 以上，主要还是因为这些主缺口还在：
+
+- `P(action | state)` 还不是更完整的联合动作模型
+- 公共信息坍缩虽然更强了，但还没有形成更硬的全场传播
+- draw / guess / continue 虽然更联动，但 benchmark 还不够硬，强弱变化还缺更系统的量化
+- 还没有进入更强搜索层，当前仍然是结构化 heuristic + rollout 主导
+
+
+六、结论
+
+这批十轮之后，项目已经不只是“会猜”和“会停”，而是开始真正处理：
+
+1. 失败后如何恢复
+2. 命中后是否进入终结窗口
+3. 抽牌时是否值得为这种窗口提前布局
+
+一句话总结：
+
+`模型已经开始从局部强 heuristic，往共享信号驱动的完整策略闭环推进。`

@@ -1,0 +1,130 @@
+2026-03-27 失败恢复与攻击窗口十轮主缺口强化总复盘报告
+
+一、这十轮的主目标
+
+这批十轮不再补解释层，而是直接补 VinCi.txt 里最缺的主决策能力：
+
+1. 猜错之后，公共信息坍缩不能只停留在“知道错了”，要能继续转化成下一手 target switching、draw、continue 的真实收益
+2. 命中之后，模型不能只看单步 EV，还要看“这一下打中以后，目标是不是进入了可连续收口的攻击窗口”
+3. 抽牌、猜牌、继续停手三条线要共享同一套恢复信号和攻击窗口信号，而不是各做各的
+
+
+二、十轮核心推进
+
+第 1 轮 `e043d93 make post-draw self exposure rollout color-sensitive`
+- post-draw rollout 不再把摸到的新牌简单挂到末尾
+- 改成真正按自手牌排序插入，并让 self exposure 对颜色和同色 anchor 敏感
+
+第 2 轮 `52d84f5 link draw rollout to post-draw stop and fragility`
+- draw rollout 开始直接汇总 post-draw 的 stop threshold、continue margin、finish fragility
+- 抽黑/抽白建议第一次正式读取“摸完后是否更适合收手”
+
+第 3 轮 `49d54ad feed failed-guess collapse into attackability`
+- failed guess 的公共坍缩进入 attackability
+- 玩家级和 slot 级都开始显式读取 recent failed guess pressure
+
+第 4 轮 `2cead08 reward collapsed targets in guess ranking`
+- 猜牌排序不再只看 win probability 和信息增益
+- recently collapsed target 会直接获得 ranking bonus
+
+第 5 轮 `8ed8049 reward continuous target switching after failure`
+- 猜错后换目标不再是完全离散的
+- 如果新目标沿着同色近邻连续推进，会得到 continuity bonus
+
+第 6 轮 `190069c feed failure recovery into draw rollout`
+- draw rollout 开始读取 failed guess collapse bonus / switch bonus
+- 抽牌建议正式感知“摸完之后是否更容易利用失败后的恢复窗口”
+
+第 7 轮 `701b270 feed failure recovery into continuation rollout`
+- post-hit rollout 开始读取 failure recovery bonus
+- continue / stop 不再只看命中后的直接续压，也开始看“命中后还能否顺着最近失败窗口继续接力”
+
+第 8 轮 `a010c41 feed post-hit recovery into draw rollout`
+- post-hit failure recovery 反过来回灌到 draw rollout
+- 抽牌建议开始同时评估：摸完后更容易直接进攻，还是更容易形成命中后的续压恢复链
+
+第 9 轮 `6535175 use failure recovery pressure in continue boundaries`
+- failure recovery 不再只是 move 级 bonus
+- 它已经直接进入 continue boundary，本轮让一些窄边界 case 从 stop 翻到 continue
+
+第 10 轮 `07a6887 apply target attack windows across guess continue and draw`
+- 新增 target attack window signal
+- 行为似然、候选动作评分、continue/stop 边界、draw rollout 全部接入“命中后是否进入可连续收口窗口”
+- 这轮把目标 1、2、3 三条线真正用同一套终结窗口信号连起来了
+
+
+三、这一批完成后的能力变化
+
+这批做完之后，项目的主能力变化不是“字段更多了”，而是下面这几件事真的开始联动：
+
+1. 猜错后的失败不再只是惩罚
+- 模型会把 failed guess 当成新的公共坍缩源
+- 这些坍缩现在会进入 attackability、guess ranking、draw rollout、post-hit continuation
+
+2. 命中后的继续判断更像真实玩家
+- 不再只看 continue_value 正不正
+- 还会看是否存在 failure recovery window
+- 还会看这一下命中后，目标是不是进入了窄攻击窗口
+
+3. 抽黑/抽白建议明显更接近主决策
+- draw rollout 已经开始真正模拟摸完之后的 best move、stop threshold、continue margin、failure recovery、attack window
+- 抽牌建议和后续猜牌/续压不再是松耦合关系
+
+4. 行为似然与主决策更一致
+- 行为层已经认可“猜错后沿连续目标切换、命中后压攻击窗口”是合理行为
+- 主决策层也开始用同一批信号进行排序和 continue 判断
+
+
+四、对五个目标的直接影响
+
+目标 1 摸黑还是摸白
+- 不再只是看颜色平衡和隐藏池
+- 现在已经会看摸完后的 stop/continue 风险、failure recovery、target attack window
+
+目标 2 猜谁猜哪张猜几
+- 最近失败造成的坍缩已经实打实进入了 target ranking
+- 可连续切换的新目标、可收口的终结窗口，也都开始显式加分
+
+目标 3 猜对后继续还是停
+- 这一批提升最大
+- continue/stop 已经从“单次正收益判断”推进成“收益 + 恢复窗口 + 攻击窗口 + 风险边界”的复合判定
+
+目标 4 通过别人行为反推他的牌
+- 行为层现在更像一个可用的 `P(action | state)` 雏形
+- 尤其是 failed guess、target switching、tight window 这类行为信号，已经不只是解释，而是能回灌到排序
+
+目标 5 综合成完整算法
+- draw / guess / continue 三条主线的共享信号明显更多了
+- 虽然还没到完整强策略体，但闭环性已经比上一批更强
+
+
+五、验证结果
+
+验证命令：
+python -m unittest discover -s backend/tests -p "test*.py"
+
+最终结果：
+128 / 128 通过
+
+
+六、本批价值判断
+
+这批十轮最大的价值，不是单独把某个分数推高，而是把“失败恢复链”和“终结攻击窗口”这两条原本分散的局部逻辑，接成了真正的共享主信号。
+
+现在模型已经开始具备下面这种能力：
+
+1. 猜错后不只是挨罚，而是会顺着新暴露出来的结构寻找下一跳
+2. 命中后不只是看还能不能猜，而是看能不能把目标压进一个可连续收口的窗口
+3. 摸牌建议会提前考虑这种窗口是否更容易形成
+
+这比继续补 explanation / summary 更接近 VinCi.txt 里要的核心能力。
+
+
+七、下一步建议
+
+下一批最值得继续补的，仍然是主缺口，不建议再回解释链：
+
+1. 把 failed guess 之后的公共信息传播再做硬一点
+2. 把 target attack window 从局部 slot/window 扩展到更强的全场 joint pressure
+3. 开始补更系统的 benchmark，把 draw / guess / continue 的强弱变化量化下来
+4. 如果要继续提目标 4，就往更完整的 `P(action | state)` 联合建模走，而不是继续堆局部标签
