@@ -4699,6 +4699,8 @@ class GameController:
     DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE = 3.0
     DRAW_ROLLOUT_ATTACKABILITY_REFERENCE = 0.40
     DRAW_ROLLOUT_BEST_GAP_REFERENCE = 1.5
+    DRAW_ROLLOUT_STOP_THRESHOLD_REFERENCE = 0.8
+    DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE = 1.0
 
     def __init__(self, game_state: GameState):
         self.game_state = game_state
@@ -5083,6 +5085,9 @@ class GameController:
             "expected_continuation_likelihood": {"B": 0.0, "W": 0.0},
             "expected_self_public_exposure": {"B": 0.0, "W": 0.0},
             "expected_self_newly_drawn_exposure": {"B": 0.0, "W": 0.0},
+            "expected_self_finish_fragility": {"B": 0.0, "W": 0.0},
+            "expected_stop_threshold": {"B": 0.0, "W": 0.0},
+            "expected_continue_margin": {"B": 0.0, "W": 0.0},
             "expected_win_probability": {"B": 0.0, "W": 0.0},
             "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
             "target_retention_ratio": {"B": 0.0, "W": 0.0},
@@ -5135,6 +5140,9 @@ class GameController:
             continuation_likelihood_sum = 0.0
             self_public_exposure_sum = 0.0
             self_newly_drawn_exposure_sum = 0.0
+            self_finish_fragility_sum = 0.0
+            stop_threshold_sum = 0.0
+            continue_margin_sum = 0.0
             win_probability_sum = 0.0
             attackability_sum = 0.0
             target_retention_count = 0.0
@@ -5176,6 +5184,15 @@ class GameController:
                 )
                 self_newly_drawn_exposure_sum += float(
                     simulated_decision.get("best_self_newly_drawn_exposure", 0.0)
+                )
+                self_finish_fragility_sum += float(
+                    simulated_decision.get("best_self_finish_fragility", 0.0)
+                )
+                stop_threshold_sum += float(
+                    simulated_decision.get("stop_threshold", 0.0)
+                )
+                continue_margin_sum += float(
+                    simulated_decision.get("continue_margin", 0.0)
                 )
                 win_probability_sum += sampled_win_probability
                 attackability_sum += float(
@@ -5263,6 +5280,15 @@ class GameController:
             )
             summary["expected_self_newly_drawn_exposure"][color] = (
                 self_newly_drawn_exposure_sum / len(sample_cards)
+            )
+            summary["expected_self_finish_fragility"][color] = (
+                self_finish_fragility_sum / len(sample_cards)
+            )
+            summary["expected_stop_threshold"][color] = (
+                stop_threshold_sum / len(sample_cards)
+            )
+            summary["expected_continue_margin"][color] = (
+                continue_margin_sum / len(sample_cards)
             )
             summary["expected_win_probability"][color] = (
                 win_probability_sum / len(sample_cards)
@@ -5680,6 +5706,35 @@ class GameController:
             )
             for color in CARD_COLORS
         }
+        draw_rollout_finish_fragility_pressure = {
+            color: (
+                draw_rollout["expected_self_finish_fragility"]["W" if color == "B" else "B"]
+                - draw_rollout["expected_self_finish_fragility"][color]
+            )
+            for color in CARD_COLORS
+        }
+        draw_rollout_stop_threshold_pressure = {
+            color: clamp(
+                (
+                    draw_rollout["expected_stop_threshold"]["W" if color == "B" else "B"]
+                    - draw_rollout["expected_stop_threshold"][color]
+                ) / self.DRAW_ROLLOUT_STOP_THRESHOLD_REFERENCE,
+                -1.0,
+                1.0,
+            )
+            for color in CARD_COLORS
+        }
+        draw_rollout_continue_margin_pressure = {
+            color: clamp(
+                (
+                    draw_rollout["expected_continue_margin"][color]
+                    - draw_rollout["expected_continue_margin"]["W" if color == "B" else "B"]
+                ) / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                -1.0,
+                1.0,
+            )
+            for color in CARD_COLORS
+        }
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -5781,6 +5836,9 @@ class GameController:
                     + (0.05 * draw_rollout["information_gain_floor_pressure"][color])
                     + (0.08 * draw_rollout_self_exposure_pressure[color])
                     + (0.06 * draw_rollout_new_drawn_exposure_pressure[color])
+                    + (0.08 * draw_rollout_finish_fragility_pressure[color])
+                    + (0.10 * draw_rollout_stop_threshold_pressure[color])
+                    + (0.10 * draw_rollout_continue_margin_pressure[color])
                 )
             )
             for color in CARD_COLORS
@@ -5798,13 +5856,45 @@ class GameController:
                 recent_self_exposure_pressure["B"]
                 - recent_self_exposure_pressure["W"]
             ),
-            "draw_rollout_self_exposure_pressure": abs(
-                draw_rollout_self_exposure_pressure["B"]
-                - draw_rollout_self_exposure_pressure["W"]
+            "draw_rollout_self_exposure_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout_self_exposure_pressure["B"]
+                    - draw_rollout_self_exposure_pressure["W"]
+                )
             ),
-            "draw_rollout_new_drawn_exposure_pressure": abs(
-                draw_rollout_new_drawn_exposure_pressure["B"]
-                - draw_rollout_new_drawn_exposure_pressure["W"]
+            "draw_rollout_new_drawn_exposure_pressure": (
+                draw_rollout_activation_scale
+                * 0.06
+                * abs(
+                    draw_rollout_new_drawn_exposure_pressure["B"]
+                    - draw_rollout_new_drawn_exposure_pressure["W"]
+                )
+            ),
+            "draw_rollout_finish_fragility_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout_finish_fragility_pressure["B"]
+                    - draw_rollout_finish_fragility_pressure["W"]
+                )
+            ),
+            "draw_rollout_stop_threshold_pressure": (
+                draw_rollout_activation_scale
+                * 0.10
+                * abs(
+                    draw_rollout_stop_threshold_pressure["B"]
+                    - draw_rollout_stop_threshold_pressure["W"]
+                )
+            ),
+            "draw_rollout_continue_margin_pressure": (
+                draw_rollout_activation_scale
+                * 0.10
+                * abs(
+                    draw_rollout_continue_margin_pressure["B"]
+                    - draw_rollout_continue_margin_pressure["W"]
+                )
             ),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
@@ -5862,6 +5952,12 @@ class GameController:
             "draw_rollout_expected_self_public_exposure_white": draw_rollout["expected_self_public_exposure"]["W"],
             "draw_rollout_expected_self_newly_drawn_exposure_black": draw_rollout["expected_self_newly_drawn_exposure"]["B"],
             "draw_rollout_expected_self_newly_drawn_exposure_white": draw_rollout["expected_self_newly_drawn_exposure"]["W"],
+            "draw_rollout_expected_self_finish_fragility_black": draw_rollout["expected_self_finish_fragility"]["B"],
+            "draw_rollout_expected_self_finish_fragility_white": draw_rollout["expected_self_finish_fragility"]["W"],
+            "draw_rollout_expected_stop_threshold_black": draw_rollout["expected_stop_threshold"]["B"],
+            "draw_rollout_expected_stop_threshold_white": draw_rollout["expected_stop_threshold"]["W"],
+            "draw_rollout_expected_continue_margin_black": draw_rollout["expected_continue_margin"]["B"],
+            "draw_rollout_expected_continue_margin_white": draw_rollout["expected_continue_margin"]["W"],
             "draw_rollout_continuation_value_pressure_black": draw_rollout["continuation_value_pressure"]["B"],
             "draw_rollout_continuation_value_pressure_white": draw_rollout["continuation_value_pressure"]["W"],
             "draw_rollout_continuation_likelihood_pressure_black": draw_rollout["continuation_likelihood_pressure"]["B"],
@@ -5870,6 +5966,12 @@ class GameController:
             "draw_rollout_self_exposure_pressure_white": draw_rollout_self_exposure_pressure["W"],
             "draw_rollout_new_drawn_exposure_pressure_black": draw_rollout_new_drawn_exposure_pressure["B"],
             "draw_rollout_new_drawn_exposure_pressure_white": draw_rollout_new_drawn_exposure_pressure["W"],
+            "draw_rollout_finish_fragility_pressure_black": draw_rollout_finish_fragility_pressure["B"],
+            "draw_rollout_finish_fragility_pressure_white": draw_rollout_finish_fragility_pressure["W"],
+            "draw_rollout_stop_threshold_pressure_black": draw_rollout_stop_threshold_pressure["B"],
+            "draw_rollout_stop_threshold_pressure_white": draw_rollout_stop_threshold_pressure["W"],
+            "draw_rollout_continue_margin_pressure_black": draw_rollout_continue_margin_pressure["B"],
+            "draw_rollout_continue_margin_pressure_white": draw_rollout_continue_margin_pressure["W"],
             "draw_rollout_expected_win_probability_black": draw_rollout["expected_win_probability"]["B"],
             "draw_rollout_expected_win_probability_white": draw_rollout["expected_win_probability"]["W"],
             "draw_rollout_expected_attackability_after_hit_black": draw_rollout["expected_attackability_after_hit"]["B"],
