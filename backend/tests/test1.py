@@ -584,6 +584,90 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(exposed_weight, protected_weight)
 
+    def test_stop_decision_rewards_public_finish_fragility(self):
+        model = BehavioralLikelihoodModel()
+
+        short_fragile_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=1, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=2, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                )
+            ],
+        )
+        buffered_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=3, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=6, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                )
+            ],
+        )
+
+        short_signal = model.build_guess_signals(short_fragile_world)["me"][0]
+        buffered_signal = model.build_guess_signals(buffered_world)["me"][0]
+        short_weight = model._score_continue_decision(
+            short_fragile_world,
+            {"opp": {0: ("W", 5), 1: ("B", 6)}},
+            short_signal,
+        )
+        buffered_weight = model._score_continue_decision(
+            buffered_world,
+            {"opp": {0: ("W", 5), 1: ("B", 6)}},
+            buffered_signal,
+        )
+
+        self.assertGreater(short_weight, buffered_weight)
+
     def test_target_player_selection_prefers_more_attackable_target(self):
         model = BehavioralLikelihoodModel()
 

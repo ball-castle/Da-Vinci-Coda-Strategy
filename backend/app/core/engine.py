@@ -225,8 +225,10 @@ class BehavioralLikelihoodModel:
     STOP_TARGET_FINISH_PENALTY = 0.96
     CONTINUE_SELF_EXPOSURE_PENALTY = 0.93
     CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY = 0.91
+    CONTINUE_FINISH_FRAGILITY_PENALTY = 0.92
     STOP_SELF_EXPOSURE_BONUS = 1.05
     STOP_NEW_DRAWN_EXPOSURE_BONUS = 1.07
+    STOP_FINISH_FRAGILITY_BONUS = 1.06
     PUBLIC_SELF_EXPOSURE_SECONDARY_BLEND = 0.35
     PUBLIC_SELF_EXPOSURE_FINISH_REFERENCE = 3.0
 
@@ -1297,6 +1299,10 @@ class BehavioralLikelihoodModel:
                 (1.0 - self.CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY)
                 * self_exposure_profile["newly_drawn_exposure"]
             )
+            weight *= 1.0 - (
+                (1.0 - self.CONTINUE_FINISH_FRAGILITY_PENALTY)
+                * self_exposure_profile["finish_fragility"]
+            )
             if target_followup_attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD:
                 weight *= self.CONTINUE_TARGET_FOLLOWUP_BONUS
             if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
@@ -1315,6 +1321,10 @@ class BehavioralLikelihoodModel:
         weight *= 1.0 + (
             (self.STOP_NEW_DRAWN_EXPOSURE_BONUS - 1.0)
             * self_exposure_profile["newly_drawn_exposure"]
+        )
+        weight *= 1.0 + (
+            (self.STOP_FINISH_FRAGILITY_BONUS - 1.0)
+            * self_exposure_profile["finish_fragility"]
         )
         if target_followup_attackability >= self.ATTACKABILITY_TIGHT_THRESHOLD:
             weight *= self.STOP_TARGET_FOLLOWUP_PENALTY
