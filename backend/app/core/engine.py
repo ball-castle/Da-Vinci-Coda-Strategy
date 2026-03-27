@@ -2469,6 +2469,9 @@ class DaVinciDecisionEngine:
                 "best_post_hit_top_k_continue_margin": 0.0,
                 "best_post_hit_top_k_expected_support_ratio": 0.0,
                 "best_post_hit_top_k_support_ratio": 0.0,
+                "best_post_hit_failure_recovery_bonus": 0.0,
+                "best_post_hit_failed_switch_bonus": 0.0,
+                "best_post_hit_failed_switch_signal": 0.0,
                 "best_self_public_exposure": 0.0,
                 "best_self_newly_drawn_exposure": 0.0,
                 "best_self_finish_fragility": 0.0,
@@ -2612,6 +2615,9 @@ class DaVinciDecisionEngine:
             "best_post_hit_top_k_continue_margin": best_move.get("post_hit_top_k_continue_margin", 0.0),
             "best_post_hit_top_k_expected_support_ratio": best_move.get("post_hit_top_k_expected_support_ratio", 0.0),
             "best_post_hit_top_k_support_ratio": best_move.get("post_hit_top_k_support_ratio", 0.0),
+            "best_post_hit_failure_recovery_bonus": best_move.get("post_hit_failure_recovery_bonus", 0.0),
+            "best_post_hit_failed_switch_bonus": best_move.get("post_hit_failed_switch_bonus", 0.0),
+            "best_post_hit_failed_switch_signal": best_move.get("post_hit_failed_switch_signal", 0.0),
             "best_self_public_exposure": best_move.get("self_public_exposure", 0.0),
             "best_self_newly_drawn_exposure": best_move.get("self_newly_drawn_exposure", 0.0),
             "best_self_finish_fragility": best_move.get("self_finish_fragility", 0.0),
@@ -5306,6 +5312,8 @@ class GameController:
             "expected_failure_collapse_bonus": {"B": 0.0, "W": 0.0},
             "expected_failed_guess_switch_bonus": {"B": 0.0, "W": 0.0},
             "expected_failed_guess_switch_signal": {"B": 0.0, "W": 0.0},
+            "expected_post_hit_failure_recovery_bonus": {"B": 0.0, "W": 0.0},
+            "expected_post_hit_failed_switch_bonus": {"B": 0.0, "W": 0.0},
             "expected_win_probability": {"B": 0.0, "W": 0.0},
             "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
             "target_retention_ratio": {"B": 0.0, "W": 0.0},
@@ -5364,6 +5372,8 @@ class GameController:
             failure_collapse_bonus_sum = 0.0
             failed_guess_switch_bonus_sum = 0.0
             failed_guess_switch_signal_sum = 0.0
+            post_hit_failure_recovery_bonus_sum = 0.0
+            post_hit_failed_switch_bonus_sum = 0.0
             win_probability_sum = 0.0
             attackability_sum = 0.0
             target_retention_count = 0.0
@@ -5426,6 +5436,12 @@ class GameController:
                         "best_failed_guess_switch_continuity_signal",
                         0.0,
                     )
+                )
+                post_hit_failure_recovery_bonus_sum += float(
+                    simulated_decision.get("best_post_hit_failure_recovery_bonus", 0.0)
+                )
+                post_hit_failed_switch_bonus_sum += float(
+                    simulated_decision.get("best_post_hit_failed_switch_bonus", 0.0)
                 )
                 win_probability_sum += sampled_win_probability
                 attackability_sum += float(
@@ -5531,6 +5547,12 @@ class GameController:
             )
             summary["expected_failed_guess_switch_signal"][color] = (
                 failed_guess_switch_signal_sum / len(sample_cards)
+            )
+            summary["expected_post_hit_failure_recovery_bonus"][color] = (
+                post_hit_failure_recovery_bonus_sum / len(sample_cards)
+            )
+            summary["expected_post_hit_failed_switch_bonus"][color] = (
+                post_hit_failed_switch_bonus_sum / len(sample_cards)
             )
             summary["expected_win_probability"][color] = (
                 win_probability_sum / len(sample_cards)
@@ -5999,6 +6021,28 @@ class GameController:
             )
             for color in CARD_COLORS
         }
+        draw_rollout_post_hit_failure_recovery_pressure = {
+            color: clamp(
+                (
+                    draw_rollout["expected_post_hit_failure_recovery_bonus"][color]
+                    - draw_rollout["expected_post_hit_failure_recovery_bonus"]["W" if color == "B" else "B"]
+                ) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            )
+            for color in CARD_COLORS
+        }
+        draw_rollout_post_hit_failed_switch_pressure = {
+            color: clamp(
+                (
+                    draw_rollout["expected_post_hit_failed_switch_bonus"][color]
+                    - draw_rollout["expected_post_hit_failed_switch_bonus"]["W" if color == "B" else "B"]
+                ) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            )
+            for color in CARD_COLORS
+        }
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -6105,6 +6149,8 @@ class GameController:
                     + (0.10 * draw_rollout_continue_margin_pressure[color])
                     + (0.08 * draw_rollout_failure_collapse_pressure[color])
                     + (0.08 * draw_rollout_failed_switch_pressure[color])
+                    + (0.08 * draw_rollout_post_hit_failure_recovery_pressure[color])
+                    + (0.06 * draw_rollout_post_hit_failed_switch_pressure[color])
                 )
             )
             for color in CARD_COLORS
@@ -6178,6 +6224,22 @@ class GameController:
                     - draw_rollout_failed_switch_pressure["W"]
                 )
             ),
+            "draw_rollout_post_hit_failure_recovery_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout_post_hit_failure_recovery_pressure["B"]
+                    - draw_rollout_post_hit_failure_recovery_pressure["W"]
+                )
+            ),
+            "draw_rollout_post_hit_failed_switch_pressure": (
+                draw_rollout_activation_scale
+                * 0.06
+                * abs(
+                    draw_rollout_post_hit_failed_switch_pressure["B"]
+                    - draw_rollout_post_hit_failed_switch_pressure["W"]
+                )
+            ),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
             "target_entropy_pressure": abs(
@@ -6246,6 +6308,10 @@ class GameController:
             "draw_rollout_expected_failed_guess_switch_bonus_white": draw_rollout["expected_failed_guess_switch_bonus"]["W"],
             "draw_rollout_expected_failed_guess_switch_signal_black": draw_rollout["expected_failed_guess_switch_signal"]["B"],
             "draw_rollout_expected_failed_guess_switch_signal_white": draw_rollout["expected_failed_guess_switch_signal"]["W"],
+            "draw_rollout_expected_post_hit_failure_recovery_bonus_black": draw_rollout["expected_post_hit_failure_recovery_bonus"]["B"],
+            "draw_rollout_expected_post_hit_failure_recovery_bonus_white": draw_rollout["expected_post_hit_failure_recovery_bonus"]["W"],
+            "draw_rollout_expected_post_hit_failed_switch_bonus_black": draw_rollout["expected_post_hit_failed_switch_bonus"]["B"],
+            "draw_rollout_expected_post_hit_failed_switch_bonus_white": draw_rollout["expected_post_hit_failed_switch_bonus"]["W"],
             "draw_rollout_continuation_value_pressure_black": draw_rollout["continuation_value_pressure"]["B"],
             "draw_rollout_continuation_value_pressure_white": draw_rollout["continuation_value_pressure"]["W"],
             "draw_rollout_continuation_likelihood_pressure_black": draw_rollout["continuation_likelihood_pressure"]["B"],
@@ -6264,6 +6330,10 @@ class GameController:
             "draw_rollout_failure_collapse_pressure_white": draw_rollout_failure_collapse_pressure["W"],
             "draw_rollout_failed_switch_pressure_black": draw_rollout_failed_switch_pressure["B"],
             "draw_rollout_failed_switch_pressure_white": draw_rollout_failed_switch_pressure["W"],
+            "draw_rollout_post_hit_failure_recovery_pressure_black": draw_rollout_post_hit_failure_recovery_pressure["B"],
+            "draw_rollout_post_hit_failure_recovery_pressure_white": draw_rollout_post_hit_failure_recovery_pressure["W"],
+            "draw_rollout_post_hit_failed_switch_pressure_black": draw_rollout_post_hit_failed_switch_pressure["B"],
+            "draw_rollout_post_hit_failed_switch_pressure_white": draw_rollout_post_hit_failed_switch_pressure["W"],
             "draw_rollout_expected_win_probability_black": draw_rollout["expected_win_probability"]["B"],
             "draw_rollout_expected_win_probability_white": draw_rollout["expected_win_probability"]["W"],
             "draw_rollout_expected_attackability_after_hit_black": draw_rollout["expected_attackability_after_hit"]["B"],
