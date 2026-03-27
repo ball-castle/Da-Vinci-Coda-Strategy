@@ -1971,6 +1971,8 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_TOP_K_SUPPORT = 0.18
     STOP_MARGIN_LOW_ATTACKABILITY = 0.18
     STOP_MARGIN_BEHAVIOR_ROLLOUT = 0.16
+    STOP_MARGIN_SELF_EXPOSURE = 0.18
+    STOP_MARGIN_NEW_DRAWN_EXPOSURE = 0.22
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     POST_HIT_GAP_REFERENCE = 0.22
@@ -2133,6 +2135,8 @@ class DaVinciDecisionEngine:
                 "best_post_hit_top_k_continue_margin": 0.0,
                 "best_post_hit_top_k_expected_support_ratio": 0.0,
                 "best_post_hit_top_k_support_ratio": 0.0,
+                "best_self_public_exposure": 0.0,
+                "best_self_newly_drawn_exposure": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -2260,6 +2264,8 @@ class DaVinciDecisionEngine:
             "best_post_hit_top_k_continue_margin": best_move.get("post_hit_top_k_continue_margin", 0.0),
             "best_post_hit_top_k_expected_support_ratio": best_move.get("post_hit_top_k_expected_support_ratio", 0.0),
             "best_post_hit_top_k_support_ratio": best_move.get("post_hit_top_k_support_ratio", 0.0),
+            "best_self_public_exposure": best_move.get("self_public_exposure", 0.0),
+            "best_self_newly_drawn_exposure": best_move.get("self_newly_drawn_exposure", 0.0),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -4012,6 +4018,16 @@ class DaVinciDecisionEngine:
             threshold += self.STOP_MARGIN_SHORT_HAND
 
         if best_move is not None:
+            threshold += self.STOP_MARGIN_SELF_EXPOSURE * clamp(
+                float(best_move.get("self_public_exposure", 0.0)),
+                0.0,
+                1.0,
+            )
+            threshold += self.STOP_MARGIN_NEW_DRAWN_EXPOSURE * clamp(
+                float(best_move.get("self_newly_drawn_exposure", 0.0)),
+                0.0,
+                1.0,
+            )
             if best_move["win_probability"] < 0.5:
                 threshold += self.STOP_MARGIN_LOW_CONFIDENCE * (0.5 - best_move["win_probability"]) / 0.5
             if best_move.get("continuation_likelihood", 0.0) < 0.5:
