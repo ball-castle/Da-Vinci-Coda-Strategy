@@ -708,6 +708,93 @@ class StopThresholdTests(unittest.TestCase):
             stable_moves[0]["expected_value"],
         )
 
+    def test_evaluate_all_moves_rewards_failed_guess_switch_continuity(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 8): 0.62, ("W", 9): 0.38},
+            },
+            "side": {
+                0: {("W", 4): 0.62, ("W", 5): 0.38},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+            "side": {0: 0},
+        }
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        )
+
+        moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=game_state,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+        stable_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=GameState(
+                self_player_id="me",
+                target_player_id="opp",
+                players=game_state.players,
+                actions=[],
+            ),
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        side_move = next(move for move in moves if move["target_player_id"] == "side")
+        opp_move = next(move for move in moves if move["target_player_id"] == "opp")
+        stable_side_move = next(
+            move for move in stable_moves if move["target_player_id"] == "side"
+        )
+
+        self.assertGreater(side_move["failed_guess_switch_continuity_signal"], 0.0)
+        self.assertGreater(side_move["failed_guess_switch_bonus"], 0.0)
+        self.assertEqual(opp_move["failed_guess_switch_continuity_signal"], 0.0)
+        self.assertGreater(side_move["expected_value"], stable_side_move["expected_value"])
+
     def test_choose_best_move_raises_stop_threshold_for_self_exposure(self):
         engine = DaVinciDecisionEngine()
         fragile_moves = [

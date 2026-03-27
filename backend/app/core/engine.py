@@ -2290,10 +2290,53 @@ class DaVinciDecisionEngine:
     FAILED_GUESS_SLOT_COLLAPSE_VALUE_BONUS = 0.28
     FAILED_GUESS_NEIGHBOR_COLLAPSE_VALUE_BONUS = 0.12
     FAILED_GUESS_PLAYER_COLLAPSE_VALUE_BONUS = 0.10
+    FAILED_GUESS_SWITCH_CONTINUITY_VALUE_BONUS = 0.18
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
         return self.MISS_BASE + self.MISS_ENDGAME_MULTIPLIER * exposure
+
+    def _recent_failed_guess_switch_continuity_signal(
+        self,
+        game_state: Optional[GameState],
+        acting_player_id: Optional[str],
+        target_player_id: str,
+        guessed_card: Card,
+    ) -> float:
+        if game_state is None or acting_player_id is None:
+            return 0.0
+
+        previous_failed_action: Optional[GuessAction] = None
+        for action in reversed(getattr(game_state, "actions", ())):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+            if getattr(action, "guesser_id", None) != acting_player_id:
+                continue
+            if getattr(action, "result", False):
+                continue
+            if action.guessed_card() is None:
+                continue
+            previous_failed_action = action
+            break
+
+        if previous_failed_action is None:
+            return 0.0
+        if getattr(previous_failed_action, "target_player_id", None) == target_player_id:
+            return 0.0
+
+        previous_card = previous_failed_action.guessed_card()
+        if previous_card is None or previous_card[0] != guessed_card[0]:
+            return 0.0
+
+        previous_value = numeric_card_value(previous_card)
+        current_value = numeric_card_value(guessed_card)
+        if previous_value is None or current_value is None:
+            return 0.0
+
+        delta = abs(previous_value - current_value)
+        if delta > 2:
+            return 0.0
+        return clamp(1.0 - (0.35 * delta), 0.0, 1.0)
 
     def evaluate_all_moves(
         self,
@@ -2805,6 +2848,14 @@ class DaVinciDecisionEngine:
                 game_state,
                 player_id,
             )
+        failed_guess_switch_continuity_signal = (
+            self._recent_failed_guess_switch_continuity_signal(
+                game_state,
+                acting_player_id,
+                player_id,
+                card,
+            )
+        )
         structural_risk_factor = risk_factor * (
             1.0
             + (self.SELF_EXPOSURE_RISK_SCALE * float(self_exposure_profile["total_exposure"]))
@@ -2824,7 +2875,18 @@ class DaVinciDecisionEngine:
                 * max(0.0, failed_guess_player_pressure - failed_guess_slot_pressure)
             )
         ) * max(probability, attackability_after_hit, 0.25)
-        immediate_expected_value = hit_reward - miss_penalty + info_bonus + failure_collapse_bonus
+        failed_guess_switch_bonus = (
+            self.FAILED_GUESS_SWITCH_CONTINUITY_VALUE_BONUS
+            * failed_guess_switch_continuity_signal
+            * max(probability, attackability_after_hit, 0.25)
+        )
+        immediate_expected_value = (
+            hit_reward
+            - miss_penalty
+            + info_bonus
+            + failure_collapse_bonus
+            + failed_guess_switch_bonus
+        )
         expected_value = immediate_expected_value + continuation_value
         if (
             behavior_guidance_profile is not None
@@ -2939,6 +3001,8 @@ class DaVinciDecisionEngine:
             "failed_guess_neighbor_pressure": failed_guess_neighbor_pressure,
             "failed_guess_player_pressure": failed_guess_player_pressure,
             "failure_collapse_bonus": failure_collapse_bonus,
+            "failed_guess_switch_continuity_signal": failed_guess_switch_continuity_signal,
+            "failed_guess_switch_bonus": failed_guess_switch_bonus,
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
@@ -2952,6 +3016,8 @@ class DaVinciDecisionEngine:
                 "failed_guess_neighbor_pressure": failed_guess_neighbor_pressure,
                 "failed_guess_player_pressure": failed_guess_player_pressure,
                 "failure_collapse_bonus": failure_collapse_bonus,
+                "failed_guess_switch_continuity_signal": failed_guess_switch_continuity_signal,
+                "failed_guess_switch_bonus": failed_guess_switch_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
                 "post_hit_continuation_value": post_hit_continuation_value,
