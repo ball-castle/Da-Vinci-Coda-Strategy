@@ -900,6 +900,80 @@ class StopThresholdTests(unittest.TestCase):
             quiet_moves[0]["expected_value"],
         )
 
+    def test_evaluate_all_moves_rewards_target_finish_chain(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+            "spread": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+            "spread": {0: 0},
+        }
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+                "spread": PlayerState(
+                    player_id="spread",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=game_state,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        finish_move = next(move for move in moves if move["target_player_id"] == "opp")
+        spread_move = next(move for move in moves if move["target_player_id"] == "spread")
+
+        self.assertGreater(
+            finish_move["target_finish_chain_signal"],
+            spread_move["target_finish_chain_signal"],
+        )
+        self.assertGreater(
+            finish_move["target_finish_chain_bonus"],
+            spread_move["target_finish_chain_bonus"],
+        )
+        self.assertGreater(
+            finish_move["expected_value"],
+            spread_move["expected_value"],
+        )
+
     def test_evaluate_all_moves_rewards_failed_guess_switch_continuity(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()

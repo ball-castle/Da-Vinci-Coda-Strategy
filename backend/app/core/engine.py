@@ -2599,6 +2599,8 @@ class DaVinciDecisionEngine:
     JOINT_COLLAPSE_CONTINUATION_SCALE = 0.08
     PUBLIC_REVEAL_BRIDGE_VALUE_BONUS = 0.18
     PUBLIC_REVEAL_BRIDGE_CONTINUATION_SCALE = 0.06
+    TARGET_FINISH_CHAIN_VALUE_BONUS = 0.26
+    TARGET_FINISH_CHAIN_CONTINUATION_SCALE = 0.10
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -2832,6 +2834,9 @@ class DaVinciDecisionEngine:
                 "best_joint_collapse_signal": 0.0,
                 "best_joint_collapse_bonus": 0.0,
                 "best_joint_collapse_continuation_bonus": 0.0,
+                "best_target_finish_chain_signal": 0.0,
+                "best_target_finish_chain_bonus": 0.0,
+                "best_target_finish_chain_continuation_bonus": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -2997,6 +3002,12 @@ class DaVinciDecisionEngine:
                 "joint_collapse_continuation_bonus",
                 0.0,
             ),
+            "best_target_finish_chain_signal": best_move.get("target_finish_chain_signal", 0.0),
+            "best_target_finish_chain_bonus": best_move.get("target_finish_chain_bonus", 0.0),
+            "best_target_finish_chain_continuation_bonus": best_move.get(
+                "target_finish_chain_continuation_bonus",
+                0.0,
+            ),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -3074,6 +3085,9 @@ class DaVinciDecisionEngine:
         public_reveal_bridge_signal = 0.0
         public_reveal_bridge_bonus = 0.0
         public_reveal_bridge_continuation_bonus = 0.0
+        target_finish_chain_signal = 0.0
+        target_finish_chain_bonus = 0.0
+        target_finish_chain_continuation_bonus = 0.0
         continuation_exposure_gate = 1.0
         behavior_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
         behavior_guidance_support = 0.0
@@ -3305,6 +3319,15 @@ class DaVinciDecisionEngine:
                 player_id,
                 card,
             )
+            target_finish_chain_signal = clamp(
+                behavior_model._player_finish_pressure(
+                    game_state,
+                    player_id,
+                    exclude_slot=slot_key(player_id, slot_index),
+                ),
+                0.0,
+                1.0,
+            )
         structural_risk_factor = risk_factor * (
             1.0
             + (self.SELF_EXPOSURE_RISK_SCALE * float(self_exposure_profile["total_exposure"]))
@@ -3362,6 +3385,17 @@ class DaVinciDecisionEngine:
             * max(continuation_likelihood, attackability_after_hit, 0.25)
         )
         continuation_value += public_reveal_bridge_continuation_bonus
+        target_finish_chain_bonus = (
+            self.TARGET_FINISH_CHAIN_VALUE_BONUS
+            * target_finish_chain_signal
+            * max(probability, attackability_after_hit, continuation_likelihood, 0.25)
+        )
+        target_finish_chain_continuation_bonus = (
+            self.TARGET_FINISH_CHAIN_CONTINUATION_SCALE
+            * target_finish_chain_signal
+            * max(continuation_likelihood, attackability_after_hit, 0.25)
+        )
+        continuation_value += target_finish_chain_continuation_bonus
         immediate_expected_value = (
             hit_reward
             - miss_penalty
@@ -3371,6 +3405,7 @@ class DaVinciDecisionEngine:
             + target_attack_window_bonus
             + joint_collapse_bonus
             + public_reveal_bridge_bonus
+            + target_finish_chain_bonus
         )
         expected_value = immediate_expected_value + continuation_value
         if (
@@ -3500,6 +3535,9 @@ class DaVinciDecisionEngine:
             "public_reveal_bridge_signal": public_reveal_bridge_signal,
             "public_reveal_bridge_bonus": public_reveal_bridge_bonus,
             "public_reveal_bridge_continuation_bonus": public_reveal_bridge_continuation_bonus,
+            "target_finish_chain_signal": target_finish_chain_signal,
+            "target_finish_chain_bonus": target_finish_chain_bonus,
+            "target_finish_chain_continuation_bonus": target_finish_chain_continuation_bonus,
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
@@ -3524,6 +3562,9 @@ class DaVinciDecisionEngine:
                 "public_reveal_bridge_signal": public_reveal_bridge_signal,
                 "public_reveal_bridge_bonus": public_reveal_bridge_bonus,
                 "public_reveal_bridge_continuation_bonus": public_reveal_bridge_continuation_bonus,
+                "target_finish_chain_signal": target_finish_chain_signal,
+                "target_finish_chain_bonus": target_finish_chain_bonus,
+                "target_finish_chain_continuation_bonus": target_finish_chain_continuation_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
                 "post_hit_continuation_value": post_hit_continuation_value,
