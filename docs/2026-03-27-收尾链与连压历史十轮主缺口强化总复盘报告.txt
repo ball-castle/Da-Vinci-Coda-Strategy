@@ -1,0 +1,132 @@
+2026-03-27 收尾链与连压历史十轮主缺口强化总复盘报告
+
+一、这十轮的主目标
+
+这一批十轮的核心，不是继续补 explanation，而是把“命中后收尾链”和“同一目标连压历史”真正做成共享主信号。
+
+对应 VinCi.txt 里的主缺口，主要补了三件事：
+
+1. 命中一张之后，模型要能判断目标是不是进入了可收口状态，而不是只看单步 EV
+2. 最近连续压同一个目标，不能只体现在局部 heuristic，要进入 guess / continue / draw 的共享评分
+3. 行为似然里的 continue/换目标逻辑，要更接近一个能工作的 `P(action | state)`，而不是只靠最后一步动作
+
+
+二、十轮核心推进
+
+第 1 轮 `c45ef1c reward target finish chains in move scoring`
+- `target_finish_chain_signal` 正式进入候选动作评分
+- 命中后如果目标只剩极少暗牌，会直接提高 immediate value 和 continuation value
+
+第 2 轮 `fa6be37 use finish chains in continue boundaries`
+- 收尾链不再只是 move bonus
+- 它开始直接进入 continue boundary，影响 stop / continue 的窄边界翻转
+
+第 3 轮 `e3db2b0 feed finish chain rollout into draw advice`
+- draw rollout 开始显式聚合 `target_finish_chain`
+- 抽黑/抽白建议第一次正式感知“摸完后是否更容易把目标收干净”
+
+第 4 轮 `44d057d use finish chain in behavior target and continue scoring`
+- 行为似然侧也开始认可：命中后进入收尾链，是更合理的 target selection 和 continue 行为
+- 这一步把目标 3 和目标 4 的信号进一步接近
+
+第 5 轮 `10e8dd2 add matrix finish-chain prior to continue likelihood`
+- `estimate_continue_likelihood` 不再只看 attackability
+- 概率矩阵本身开始直接提供“命中后目标是否进入 finish chain”的先验
+
+第 6 轮 `49c737e add recent target chain pressure to move scoring`
+- 新增统一 `target_chain_signal`
+- 最近连续被压的目标，会在候选动作评分里获得额外 value / continuation 加成
+
+第 7 轮 `b29c5b3 feed recent target chain into continue boundaries`
+- `target_chain_signal` 继续进入 continue boundary
+- 现在不只是“当前动作值高”，而是“当前压制链是否值得继续”也能推高 continue_score
+
+第 8 轮 `c3b932c model same-target pressure in behavioral likelihood`
+- 行为似然开始显式建模“这个猜牌者是否正在连续压同一个人”
+- 这让 target selection 和 continue 行为的解释更接近真实玩家
+
+第 9 轮 `8e4badb feed recent target chain into draw rollout advice`
+- draw rollout 也开始聚合 `target_chain_signal`
+- 抽牌建议开始读“摸完之后是否更容易顺着当前压制链继续打”
+
+第 10 轮 `22dd2ba blend target-chain history into continue likelihood`
+- `estimate_continue_likelihood` 再进一步
+- 除了矩阵结构，它现在还会直接读取该玩家最近在同一目标上的成功连压历史
+
+
+三、这一批完成后的能力变化
+
+这批做完之后，模型最大的变化不是“又多了几个字段”，而是围绕一个目标的压制链终于跨模块打通了。
+
+1. 命中之后的继续判断更像真实博弈
+- 现在 continue 不再只看“还有没有下一张好猜”
+- 它会看目标是不是已经进入收尾链
+- 也会看自己是不是已经在这个目标上形成了连续压制历史
+
+2. 猜牌排序更会利用局部胜势
+- 最近被连续击中的目标，会更容易在候选动作里被继续追击
+- 这使得 guess ranking 不再是孤立点判断，而开始带有连压上下文
+
+3. 抽牌建议更贴近后续攻击路线
+- draw rollout 已经能看到 finish chain 和 target chain
+- 抽黑/抽白不再只是“摸了以后牌型更平衡”，而会提前考虑“摸了以后能不能顺着现在的压制线继续打”
+
+4. 行为反推更接近可用模型
+- 行为似然开始同时读取：finish chain、same-target pressure、continue history
+- 这让目标 4 虽然还没完全成型，但已经明显比纯局部 heuristic 更像一个联合动作模型
+
+
+四、对五个目标的直接影响
+
+目标 1 摸黑还是摸白
+- 收益主要来自 draw rollout 接入 finish chain 和 target chain
+- 抽牌建议更会为后续压制链服务
+
+目标 2 猜谁猜哪张猜几
+- 收尾链和同目标连压，已经进入候选动作值
+- 猜牌排序更愿意持续利用已经形成的优势目标
+
+目标 3 猜对后继续还是停
+- 这一批提升仍然最大
+- continue / stop 现在同时看：attackability、finish chain、target chain、history chain
+
+目标 4 通过别人行为反推他的牌
+- 行为似然不再只看最近一步是不是重复目标
+- 已经开始看连续压制历史和命中后的可收口结构
+
+目标 5 综合成完整算法
+- guess / continue / draw / behavior 四条线共享的主信号明显更多
+- 这一批把“局部强 heuristic”继续往“共享状态驱动的闭环策略”推进了一段
+
+
+五、验证结果
+
+验证命令：
+python -m unittest discover -s backend/tests -p "test*.py"
+
+最终结果：
+153 / 153 通过
+
+
+六、本批价值判断
+
+这一批十轮最大的价值，是把“收尾链”和“同目标连压历史”从分散的小 bonus，推进成了真正会跨模块传播的主信号。
+
+现在模型已经更像下面这种决策体：
+
+1. 一旦某个目标被压进窄边界，不会轻易松手
+2. 命中后的继续判断，会显式看这个目标是不是已经进入可收口状态
+3. 抽牌建议会提前为这种收口链和连压链做布局
+4. 行为反推也开始认可这种连压链是理性的动作模式
+
+这比继续补 summary/debug，更贴近 VinCi.txt 当前最重要的主干能力。
+
+
+七、下一步建议
+
+停在 20 轮后，下一批如果继续，优先级建议仍然是主缺口：
+
+1. 把 joint belief / 公共坍缩传播再做硬一点，不只停留在局部 target pressure
+2. 继续往更完整的 `P(action | state)` 走，把 target chain / finish chain 和 value selection 真正联合起来
+3. 给 draw / guess / continue 建更系统的 benchmark，不然强度变化还不够可量化
+4. 如果要继续冲评分，优先补目标 4 和目标 5，而不是再回 explanation 链

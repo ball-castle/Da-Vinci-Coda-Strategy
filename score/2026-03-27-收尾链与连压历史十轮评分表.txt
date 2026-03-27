@@ -1,0 +1,70 @@
+2026-03-27 收尾链与连压历史十轮评分表
+
+一、当前总评分
+
+如果只报一个数，我现在给：
+74%
+
+更准确地看：
+
+- 按“已经是一个可用、可持续迭代的策略引擎”算：88%
+- 按 VinCi.txt 里的最终目标算：74%
+
+
+二、相比上一份评分的变化
+
+上一份评分是 72%。
+
+这次上调到 74%，主要不是因为字段更全，而是因为“命中后收尾”和“同目标连压历史”已经真正进入四条主线：
+
+1. guess ranking
+2. continue / stop
+3. draw rollout / draw color advice
+4. behavior likelihood
+
+这两分主要加在：
+
+- 目标 1 的实战联动性
+- 目标 3 的继续停手真实性
+- 目标 4 的行为建模可信度
+- 目标 5 的闭环完整度
+
+
+三、五个目标分项
+
+- 摸黑还是摸白：8.3 / 10
+- 猜谁猜哪张猜几：8.6 / 10
+- 猜对后继续还是停：8.8 / 10
+- 通过别人行为反推他的牌：7.2 / 10
+- 综合成完整算法：7.5 / 10
+
+
+四、这批十轮的加分点
+
+- `target_finish_chain_signal` 已经从 move scoring 扩展到 continue boundary、draw rollout、behavior likelihood、matrix continue prior
+- `target_chain_signal` 已经从候选动作评分扩展到 continue boundary、draw advice、behavior likelihood
+- `estimate_continue_likelihood` 不再只看 attackability，也开始读取 finish-chain prior 和 same-target chain history
+- 行为似然里“为什么继续盯着一个人打”已经比之前更像真实玩家逻辑
+
+
+五、为什么还没有更高
+
+现在还没有上到 76% 以上，主要还是因为这些主缺口还在：
+
+- `P(action | state)` 仍然不是更完整的联合动作模型，value selection / target selection / continue 还没完全统一
+- 公共信息坍缩虽然更强了，但全场联合传播还不够硬
+- 当前仍然主要是结构化 heuristic + rollout，搜索层还没真正上来
+- benchmark 体系虽然回归越来越稳，但“强多少”还缺更系统的量化
+
+
+六、结论
+
+这批十轮之后，模型已经不只是会利用“当前最好猜的点”，而是开始持续利用：
+
+1. 目标是否进入收尾链
+2. 当前是否已经形成同目标连压历史
+3. 摸牌是否能为这条连压链继续服务
+
+一句话总结：
+
+`模型已经从“会利用单点优势”，推进到“会维护并延续局部胜势链”。`
