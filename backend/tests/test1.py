@@ -1512,6 +1512,71 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(collapsed_pressure, settled_pressure)
 
+    def test_player_attackability_rewards_global_public_collapse(self):
+        model = BehavioralLikelihoodModel()
+
+        collapse_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=5, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="B",
+                    guessed_value=6,
+                    result=True,
+                    revealed_player_id="side",
+                    revealed_slot_index=1,
+                    revealed_color="B",
+                    revealed_value=6,
+                ),
+            ],
+        )
+        quiet_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=collapse_world.players,
+            actions=[],
+        )
+
+        hypothesis = {"opp": {1: ("W", 2)}}
+
+        collapse_pressure = model._player_attackability(
+            collapse_world,
+            hypothesis,
+            "opp",
+        )
+        quiet_pressure = model._player_attackability(
+            quiet_world,
+            hypothesis,
+            "opp",
+        )
+
+        self.assertGreater(collapse_pressure, quiet_pressure)
+
     def test_slot_attack_window_pressure_prefers_tight_reveal_window(self):
         model = BehavioralLikelihoodModel()
 

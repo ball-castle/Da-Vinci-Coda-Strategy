@@ -185,6 +185,7 @@ class BehavioralLikelihoodModel:
     PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
     PLAYER_RECENT_FAILED_GUESS_BONUS = 0.10
     PLAYER_ATTACK_WINDOW_BONUS = 0.14
+    PLAYER_GLOBAL_COLLAPSE_BONUS = 0.10
 
     TARGET_SLOT_BEST_MATCH_BONUS = 1.08
     TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
@@ -1614,12 +1615,14 @@ class BehavioralLikelihoodModel:
             player_id,
             exclude_slot=exclude_slot,
         )
+        global_collapse_pressure = self._global_public_collapse_pressure(game_state)
         recent_public_reveal = self._recent_public_reveal_pressure(game_state, player_id)
         recent_failed_guess = self._recent_failed_guess_pressure(game_state, player_id)
         return best * (
             1.0
             + (self.PLAYER_FINISH_PRESSURE_BONUS * finish_pressure)
             + (self.PLAYER_ATTACK_WINDOW_BONUS * attack_window_pressure)
+            + (self.PLAYER_GLOBAL_COLLAPSE_BONUS * global_collapse_pressure)
             + (self.PLAYER_RECENT_PUBLIC_REVEAL_BONUS * recent_public_reveal)
             + (self.PLAYER_RECENT_FAILED_GUESS_BONUS * recent_failed_guess)
         )
@@ -1694,6 +1697,23 @@ class BehavioralLikelihoodModel:
             if recency_weight < 0.2:
                 break
         return clamp(reveal_score, 0.0, 1.0)
+
+    def _global_public_collapse_pressure(
+        self,
+        game_state: GameState,
+    ) -> float:
+        collapse_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            if action.revealed_card() is not None:
+                collapse_score += recency_weight
+            elif getattr(action, "action_type", None) == "guess" and not getattr(action, "result", False):
+                if action.guessed_card() is not None:
+                    collapse_score += 0.55 * recency_weight
+            recency_weight *= 0.7
+            if recency_weight < 0.2:
+                break
+        return clamp(collapse_score, 0.0, 1.0)
 
     def _recent_failed_guess_pressure(
         self,
