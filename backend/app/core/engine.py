@@ -6076,6 +6076,9 @@ class GameController:
             "expected_public_reveal_bridge_signal": {"B": 0.0, "W": 0.0},
             "expected_public_reveal_bridge_bonus": {"B": 0.0, "W": 0.0},
             "expected_public_reveal_bridge_continuation_bonus": {"B": 0.0, "W": 0.0},
+            "expected_target_chain_signal": {"B": 0.0, "W": 0.0},
+            "expected_target_chain_bonus": {"B": 0.0, "W": 0.0},
+            "expected_target_chain_continuation_bonus": {"B": 0.0, "W": 0.0},
             "expected_target_finish_chain_signal": {"B": 0.0, "W": 0.0},
             "expected_target_finish_chain_bonus": {"B": 0.0, "W": 0.0},
             "expected_target_finish_chain_continuation_bonus": {"B": 0.0, "W": 0.0},
@@ -6148,6 +6151,9 @@ class GameController:
             public_reveal_bridge_signal_sum = 0.0
             public_reveal_bridge_bonus_sum = 0.0
             public_reveal_bridge_continuation_bonus_sum = 0.0
+            target_chain_signal_sum = 0.0
+            target_chain_bonus_sum = 0.0
+            target_chain_continuation_bonus_sum = 0.0
             target_finish_chain_signal_sum = 0.0
             target_finish_chain_bonus_sum = 0.0
             target_finish_chain_continuation_bonus_sum = 0.0
@@ -6253,6 +6259,18 @@ class GameController:
                 public_reveal_bridge_continuation_bonus_sum += float(
                     simulated_decision.get(
                         "best_public_reveal_bridge_continuation_bonus",
+                        0.0,
+                    )
+                )
+                target_chain_signal_sum += float(
+                    simulated_decision.get("best_target_chain_signal", 0.0)
+                )
+                target_chain_bonus_sum += float(
+                    simulated_decision.get("best_target_chain_bonus", 0.0)
+                )
+                target_chain_continuation_bonus_sum += float(
+                    simulated_decision.get(
+                        "best_target_chain_continuation_bonus",
                         0.0,
                     )
                 )
@@ -6405,6 +6423,15 @@ class GameController:
             )
             summary["expected_public_reveal_bridge_continuation_bonus"][color] = (
                 public_reveal_bridge_continuation_bonus_sum / len(sample_cards)
+            )
+            summary["expected_target_chain_signal"][color] = (
+                target_chain_signal_sum / len(sample_cards)
+            )
+            summary["expected_target_chain_bonus"][color] = (
+                target_chain_bonus_sum / len(sample_cards)
+            )
+            summary["expected_target_chain_continuation_bonus"][color] = (
+                target_chain_continuation_bonus_sum / len(sample_cards)
             )
             summary["expected_target_finish_chain_signal"][color] = (
                 target_finish_chain_signal_sum / len(sample_cards)
@@ -6566,6 +6593,18 @@ class GameController:
         public_reveal_bridge_continuation_bonus_gap = (
             summary["expected_public_reveal_bridge_continuation_bonus"]["B"]
             - summary["expected_public_reveal_bridge_continuation_bonus"]["W"]
+        )
+        target_chain_signal_gap = (
+            summary["expected_target_chain_signal"]["B"]
+            - summary["expected_target_chain_signal"]["W"]
+        )
+        target_chain_bonus_gap = (
+            summary["expected_target_chain_bonus"]["B"]
+            - summary["expected_target_chain_bonus"]["W"]
+        )
+        target_chain_continuation_bonus_gap = (
+            summary["expected_target_chain_continuation_bonus"]["B"]
+            - summary["expected_target_chain_continuation_bonus"]["W"]
         )
         target_finish_chain_signal_gap = (
             summary["expected_target_finish_chain_signal"]["B"]
@@ -6760,6 +6799,36 @@ class GameController:
         summary["target_finish_chain_signal_pressure"] = {
             "B": clamp(target_finish_chain_signal_gap, -1.0, 1.0),
             "W": clamp(-target_finish_chain_signal_gap, -1.0, 1.0),
+        }
+        summary["target_chain_signal_pressure"] = {
+            "B": clamp(target_chain_signal_gap, -1.0, 1.0),
+            "W": clamp(-target_chain_signal_gap, -1.0, 1.0),
+        }
+        summary["target_chain_bonus_pressure"] = {
+            "B": clamp(
+                target_chain_bonus_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-target_chain_bonus_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["target_chain_continuation_pressure"] = {
+            "B": clamp(
+                target_chain_continuation_bonus_gap
+                / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-target_chain_continuation_bonus_gap)
+                / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
         }
         summary["target_finish_chain_bonus_pressure"] = {
             "B": clamp(
@@ -7189,6 +7258,9 @@ class GameController:
                     + (0.08 * draw_rollout["public_reveal_bridge_signal_pressure"][color])
                     + (0.08 * draw_rollout["public_reveal_bridge_bonus_pressure"][color])
                     + (0.06 * draw_rollout["public_reveal_bridge_continuation_pressure"][color])
+                    + (0.08 * draw_rollout["target_chain_signal_pressure"][color])
+                    + (0.10 * draw_rollout["target_chain_bonus_pressure"][color])
+                    + (0.08 * draw_rollout["target_chain_continuation_pressure"][color])
                     + (0.08 * draw_rollout["target_finish_chain_signal_pressure"][color])
                     + (0.10 * draw_rollout["target_finish_chain_bonus_pressure"][color])
                     + (0.08 * draw_rollout["target_finish_chain_continuation_pressure"][color])
@@ -7353,6 +7425,30 @@ class GameController:
                     - draw_rollout["public_reveal_bridge_continuation_pressure"]["W"]
                 )
             ),
+            "draw_rollout_target_chain_signal_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout["target_chain_signal_pressure"]["B"]
+                    - draw_rollout["target_chain_signal_pressure"]["W"]
+                )
+            ),
+            "draw_rollout_target_chain_bonus_pressure": (
+                draw_rollout_activation_scale
+                * 0.10
+                * abs(
+                    draw_rollout["target_chain_bonus_pressure"]["B"]
+                    - draw_rollout["target_chain_bonus_pressure"]["W"]
+                )
+            ),
+            "draw_rollout_target_chain_continuation_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout["target_chain_continuation_pressure"]["B"]
+                    - draw_rollout["target_chain_continuation_pressure"]["W"]
+                )
+            ),
             "draw_rollout_target_finish_chain_signal_pressure": (
                 draw_rollout_activation_scale
                 * 0.08
@@ -7455,6 +7551,12 @@ class GameController:
             "draw_rollout_expected_target_attack_window_bonus_white": draw_rollout["expected_target_attack_window_bonus"]["W"],
             "draw_rollout_expected_target_attack_window_continuation_bonus_black": draw_rollout["expected_target_attack_window_continuation_bonus"]["B"],
             "draw_rollout_expected_target_attack_window_continuation_bonus_white": draw_rollout["expected_target_attack_window_continuation_bonus"]["W"],
+            "draw_rollout_expected_target_chain_signal_black": draw_rollout["expected_target_chain_signal"]["B"],
+            "draw_rollout_expected_target_chain_signal_white": draw_rollout["expected_target_chain_signal"]["W"],
+            "draw_rollout_expected_target_chain_bonus_black": draw_rollout["expected_target_chain_bonus"]["B"],
+            "draw_rollout_expected_target_chain_bonus_white": draw_rollout["expected_target_chain_bonus"]["W"],
+            "draw_rollout_expected_target_chain_continuation_bonus_black": draw_rollout["expected_target_chain_continuation_bonus"]["B"],
+            "draw_rollout_expected_target_chain_continuation_bonus_white": draw_rollout["expected_target_chain_continuation_bonus"]["W"],
             "draw_rollout_expected_target_finish_chain_signal_black": draw_rollout["expected_target_finish_chain_signal"]["B"],
             "draw_rollout_expected_target_finish_chain_signal_white": draw_rollout["expected_target_finish_chain_signal"]["W"],
             "draw_rollout_expected_target_finish_chain_bonus_black": draw_rollout["expected_target_finish_chain_bonus"]["B"],
@@ -7501,6 +7603,12 @@ class GameController:
             "draw_rollout_target_attack_window_bonus_pressure_white": draw_rollout["target_attack_window_bonus_pressure"]["W"],
             "draw_rollout_target_attack_window_continuation_pressure_black": draw_rollout["target_attack_window_continuation_pressure"]["B"],
             "draw_rollout_target_attack_window_continuation_pressure_white": draw_rollout["target_attack_window_continuation_pressure"]["W"],
+            "draw_rollout_target_chain_signal_pressure_black": draw_rollout["target_chain_signal_pressure"]["B"],
+            "draw_rollout_target_chain_signal_pressure_white": draw_rollout["target_chain_signal_pressure"]["W"],
+            "draw_rollout_target_chain_bonus_pressure_black": draw_rollout["target_chain_bonus_pressure"]["B"],
+            "draw_rollout_target_chain_bonus_pressure_white": draw_rollout["target_chain_bonus_pressure"]["W"],
+            "draw_rollout_target_chain_continuation_pressure_black": draw_rollout["target_chain_continuation_pressure"]["B"],
+            "draw_rollout_target_chain_continuation_pressure_white": draw_rollout["target_chain_continuation_pressure"]["W"],
             "draw_rollout_target_finish_chain_signal_pressure_black": draw_rollout["target_finish_chain_signal_pressure"]["B"],
             "draw_rollout_target_finish_chain_signal_pressure_white": draw_rollout["target_finish_chain_signal_pressure"]["W"],
             "draw_rollout_target_finish_chain_bonus_pressure_black": draw_rollout["target_finish_chain_bonus_pressure"]["B"],
