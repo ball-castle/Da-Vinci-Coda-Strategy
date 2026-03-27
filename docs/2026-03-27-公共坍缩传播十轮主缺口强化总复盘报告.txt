@@ -1,0 +1,153 @@
+2026-03-27 公共坍缩传播十轮主缺口强化总复盘报告
+
+一、这十轮的主目标
+
+这批十轮的任务非常明确：
+
+不是继续补局部解释，也不是继续堆单点 heuristics，
+而是把 `failed guess / public reveal` 这些公共事件，真正推进成会跨层传播的主信号。
+
+VinCi.txt 和 remaining optimizations 里反复强调的主缺口是：
+
+1. 公共信息坍缩
+2. 动作证据充分利用
+3. 更完整的全场联合推理
+
+这批十轮就是围绕这三点做的。
+
+
+二、十轮核心推进
+
+第 1 轮 `7116c50 apply global collapse pressure to player attackability`
+- 近期公共 reveal / failed guess 不再只影响当前那一张牌
+- 现在它们会先汇总成全场 collapse density，再回灌到 player attackability
+
+第 2 轮 `5a00ade reward collapse streaks in target selection`
+- target 选择开始区分“一次坍缩”和“连续坍缩”
+- 同一目标最近连续被压缩时，会更像理性玩家优先继续盯住的目标
+
+第 3 轮 `7eaa044 feed joint collapse pressure into move value`
+- 公共坍缩正式进入 move value
+- 现在最近的 reveal / failed guess 不只是解释证据，而是直接改变某个猜测值不值得出手
+
+第 4 轮 `0bdb449 use joint collapse support in continue boundaries`
+- `joint collapse` 从 move 级 bonus 推进到 continue / stop 边界
+- 全场公共信息正在快速收紧时，继续一手会获得明确支持
+
+第 5 轮 `f505bb9 feed joint collapse rollout into draw color advice`
+- draw rollout 开始汇总 `joint collapse`
+- 摸黑/摸白建议已经能预判“摸完哪种颜色更容易接住公共坍缩带来的窗口”
+
+第 6 轮 `eb92351 bridge recent public reveals into move scoring`
+- 新增 public reveal bridge
+- 别人刚翻出的同色相邻数值，开始直接抬升当前猜测的价值
+
+第 7 轮 `f2aa5a9 bridge public reveal chains into behavior and move value`
+- 这条 bridge 逻辑不再只在主决策里存在
+- 行为似然层也开始认为“沿着最近公开桥继续猜”是合理动作
+
+第 8 轮 `9483561 blend joint collapse into behavior continue decisions`
+- continue / stop 的行为似然开始读取 joint collapse
+- 这意味着 `P(action | state)` 已经不再只看单目标 attackability，而是开始看全场信息态势
+
+第 9 轮 `1d29703 feed public reveal bridge rollout into draw advice`
+- draw rollout 继续补齐 public reveal bridge
+- 摸牌建议开始真正为“公开桥接后的下一手”做准备
+
+第 10 轮 `ab24fdd use public reveal bridges in continue boundaries`
+- public reveal bridge 最后进入 continue / stop 边界
+- 这让公共 reveal 终于形成完整闭环：
+  - 影响猜牌
+  - 影响继续停手
+  - 影响摸牌颜色建议
+
+
+三、这一批完成后的能力变化
+
+这批做完后，项目最大的变化不是“多了几个字段”，而是：
+
+公共事件第一次真正具有了跨层传播能力。
+
+现在一条 failed guess 或 reveal，已经可以通过下面几条链路影响决策：
+
+1. 直接压缩 attackability
+2. 改变 target player 选择
+3. 改变具体 move value
+4. 改变 continue / stop 边界
+5. 改变 draw rollout 和 draw color advice
+6. 改变行为似然里“这个动作像不像理性玩家”
+
+也就是说，这批真正补的是：
+
+- 事件到状态的传播
+- 状态到决策的传播
+- 状态到行为似然的传播
+
+这比继续打磨 explanation 更接近强推理引擎。
+
+
+四、对五个目标的直接影响
+
+目标 1 摸黑还是摸白
+- draw rollout 已经开始考虑 public collapse / reveal bridge
+- 摸牌建议不再只是静态颜色平衡，而是开始为下一手公共窗口布局
+
+目标 2 猜谁猜哪张猜几
+- 提升明显
+- 目标选择、猜测排序、桥接追击都已经开始读取公共坍缩传播
+
+目标 3 猜对后继续还是停
+- 本批也有直接提升
+- joint collapse 和 public reveal bridge 都已经进入 continue boundary
+
+目标 4 通过别人行为反推他的牌
+- 这批是主要加分项
+- 行为似然现在更像完整 `P(action | state)` 的前半段，因为公共事件开始进入 target / continue 的合理性判断
+
+目标 5 综合成完整算法
+- 三条主线的共享信号明显增多
+- 项目开始从“很多局部好点子”走向“共享事件驱动的整体闭环”
+
+
+五、验证结果
+
+验证命令：
+python -m unittest discover -s backend/tests -p "test*.py"
+
+最终结果：
+139 / 139 通过
+
+
+六、本批价值判断
+
+如果说上一批“失败恢复与攻击窗口”补的是命中和猜错之后的局部收益链，
+那这一批补的是：
+
+公共信息一旦变化，整套系统怎么一起跟着变化。
+
+这是从局部强 heuristic 走向更强联合推理的关键一步。
+
+这批之后，模型已经不再只是：
+
+- 某张牌概率高就去猜
+- 某次命中后 margin 大就继续
+
+而是开始真正处理：
+
+- 最近全场发生了什么公开事件
+- 这些事件把哪类目标继续压紧了
+- 哪条颜色链、哪条 bridge、哪类 collapse 还值得接力
+
+
+七、下一步建议
+
+这批已经把“公共坍缩传播”做出了第一层闭环，第二批更值得继续补的是：
+
+1. 把 attack window / finish chain 再做成更强的多目标联动，而不只是一跳窗口
+2. 把 target switching 从局部 continuity 推进成更强的 cross-player chain
+3. 把 draw / guess / continue 共享的 bridge / collapse / window 信号继续统一
+4. 开始补更系统的 benchmark，分别衡量：
+   - 误激进继续
+   - 误保守停手
+   - 误选目标
+   - 误选颜色

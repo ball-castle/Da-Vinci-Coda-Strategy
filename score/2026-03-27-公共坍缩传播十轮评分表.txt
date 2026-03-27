@@ -1,0 +1,65 @@
+2026-03-27 公共坍缩传播十轮评分表
+
+一、当前总评分
+
+如果只报一个数，我现在给：
+74%
+
+更准确地看：
+
+- 按“已经是一个可用、可持续迭代的策略引擎”算：87%
+- 按 VinCi.txt 里的最终目标算：74%
+
+
+二、相比上一份评分的变化
+
+上一份评分是 72%。
+
+这次上调到 74%，核心原因不是某个单项暴涨，
+而是“公共事件驱动的传播能力”终于有了比较清晰的闭环。
+
+主要加分点：
+
+1. public reveal / failed guess 已经不再只停留在局部解释
+2. 它们会同时进入 guess ranking、continue boundary、draw rollout、behavior likelihood
+3. 项目的共享主信号比上一批更多，整体一致性更强
+
+
+三、五个目标分项
+
+- 摸黑还是摸白：8.2 / 10
+- 猜谁猜哪张猜几：8.7 / 10
+- 猜对后继续还是停：8.8 / 10
+- 通过别人行为反推他的牌：7.3 / 10
+- 综合成完整算法：7.6 / 10
+
+
+四、这批十轮的加分点
+
+- `global collapse pressure` 已经进入 attackability
+- `collapse streak` 已经进入 target selection
+- `joint collapse` 已经进入 move value、continue boundary、draw rollout、behavior continue
+- `public reveal bridge` 已经进入 move value、behavior likelihood、draw rollout、continue boundary
+
+这意味着模型开始具备一种更强的统一能力：
+
+`同一个公共事件，会被不同模块用不同方式消费，但方向基本一致。`
+
+
+五、为什么还没有更高
+
+现在还没有上到 76% 到 78% 以上，主要是因为这些主缺口还在：
+
+- 全场联合 belief 还是偏结构化近似，不是更强的 joint state
+- `P(action | state)` 仍然是高质量 heuristic，还不是更完整的联合动作似然
+- draw / guess / continue 虽然更统一了，但 benchmark 体系还不够硬
+- 还没有真正进入更深层的回合内 rollout / 搜索
+
+
+六、结论
+
+这批十轮最大的价值，是让模型开始真正“看见公共事件的后效应”。
+
+一句话总结：
+
+`项目已经从局部强决策器，明显往共享公共信号驱动的联合策略系统推进。`
