@@ -2287,6 +2287,9 @@ class DaVinciDecisionEngine:
     SELF_EXPOSURE_NEW_DRAWN_BONUS = 1.18
     SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS = 1.08
     SELF_EXPOSURE_DOUBLE_COLOR_ANCHOR_BONUS = 1.12
+    FAILED_GUESS_SLOT_COLLAPSE_VALUE_BONUS = 0.28
+    FAILED_GUESS_NEIGHBOR_COLLAPSE_VALUE_BONUS = 0.12
+    FAILED_GUESS_PLAYER_COLLAPSE_VALUE_BONUS = 0.10
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -2782,6 +2785,26 @@ class DaVinciDecisionEngine:
             "finish_fragility": 0.0,
             "hidden_count": 0.0,
         }
+        failed_guess_slot_pressure = 0.0
+        failed_guess_neighbor_pressure = 0.0
+        failed_guess_player_pressure = 0.0
+        if game_state is not None:
+            failed_guess_slot_pressure = behavior_model._recent_failed_guess_pressure(
+                game_state,
+                player_id,
+                slot_index,
+            )
+            failed_guess_neighbor_pressure = (
+                behavior_model._recent_failed_guess_neighbor_pressure(
+                    game_state,
+                    player_id,
+                    slot_index,
+                )
+            )
+            failed_guess_player_pressure = behavior_model._recent_failed_guess_pressure(
+                game_state,
+                player_id,
+            )
         structural_risk_factor = risk_factor * (
             1.0
             + (self.SELF_EXPOSURE_RISK_SCALE * float(self_exposure_profile["total_exposure"]))
@@ -2790,7 +2813,18 @@ class DaVinciDecisionEngine:
         hit_reward = probability * self.HIT_REWARD
         miss_penalty = (1.0 - probability) * structural_risk_factor
         info_bonus = info_gain * self.INFORMATION_GAIN_WEIGHT
-        immediate_expected_value = hit_reward - miss_penalty + info_bonus
+        failure_collapse_bonus = (
+            (self.FAILED_GUESS_SLOT_COLLAPSE_VALUE_BONUS * failed_guess_slot_pressure)
+            + (
+                self.FAILED_GUESS_NEIGHBOR_COLLAPSE_VALUE_BONUS
+                * failed_guess_neighbor_pressure
+            )
+            + (
+                self.FAILED_GUESS_PLAYER_COLLAPSE_VALUE_BONUS
+                * max(0.0, failed_guess_player_pressure - failed_guess_slot_pressure)
+            )
+        ) * max(probability, attackability_after_hit, 0.25)
+        immediate_expected_value = hit_reward - miss_penalty + info_bonus + failure_collapse_bonus
         expected_value = immediate_expected_value + continuation_value
         if (
             behavior_guidance_profile is not None
@@ -2901,6 +2935,10 @@ class DaVinciDecisionEngine:
             "self_average_slot_exposure": float(self_exposure_profile["average_slot_exposure"]),
             "self_finish_fragility": float(self_exposure_profile["finish_fragility"]),
             "continuation_exposure_gate": continuation_exposure_gate,
+            "failed_guess_slot_pressure": failed_guess_slot_pressure,
+            "failed_guess_neighbor_pressure": failed_guess_neighbor_pressure,
+            "failed_guess_player_pressure": failed_guess_player_pressure,
+            "failure_collapse_bonus": failure_collapse_bonus,
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
@@ -2910,6 +2948,10 @@ class DaVinciDecisionEngine:
                 "self_finish_fragility": float(self_exposure_profile["finish_fragility"]),
                 "continuation_exposure_gate": continuation_exposure_gate,
                 "information_gain_bonus": info_bonus,
+                "failed_guess_slot_pressure": failed_guess_slot_pressure,
+                "failed_guess_neighbor_pressure": failed_guess_neighbor_pressure,
+                "failed_guess_player_pressure": failed_guess_player_pressure,
+                "failure_collapse_bonus": failure_collapse_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
                 "post_hit_continuation_value": post_hit_continuation_value,
