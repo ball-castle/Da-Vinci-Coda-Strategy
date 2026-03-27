@@ -2301,6 +2301,9 @@ class GameControllerOutputTests(unittest.TestCase):
             "expected_self_finish_fragility": {"B": 0.10, "W": 0.38},
             "expected_stop_threshold": {"B": 0.42, "W": 0.96},
             "expected_continue_margin": {"B": 0.48, "W": -0.12},
+            "expected_failure_collapse_bonus": {"B": 0.24, "W": 0.08},
+            "expected_failed_guess_switch_bonus": {"B": 0.18, "W": 0.04},
+            "expected_failed_guess_switch_signal": {"B": 0.70, "W": 0.20},
             "expected_win_probability": {"B": 0.0, "W": 0.0},
             "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
             "target_retention_ratio": {"B": 0.0, "W": 0.0},
@@ -2378,6 +2381,14 @@ class GameControllerOutputTests(unittest.TestCase):
             draw_summary["draw_rollout_continue_margin_pressure_black"],
             draw_summary["draw_rollout_continue_margin_pressure_white"],
         )
+        self.assertGreater(
+            draw_summary["draw_rollout_failure_collapse_pressure_black"],
+            draw_summary["draw_rollout_failure_collapse_pressure_white"],
+        )
+        self.assertGreater(
+            draw_summary["draw_rollout_failed_switch_pressure_black"],
+            draw_summary["draw_rollout_failed_switch_pressure_white"],
+        )
         self.assertEqual(
             draw_summary["draw_rollout_expected_self_public_exposure_black"],
             0.18,
@@ -2393,6 +2404,10 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertEqual(
             draw_summary["draw_rollout_expected_continue_margin_white"],
             -0.12,
+        )
+        self.assertEqual(
+            draw_summary["draw_rollout_expected_failed_guess_switch_signal_black"],
+            0.70,
         )
 
     def test_fixed_controller_case_runner_covers_public_reveal_collapse(self):
