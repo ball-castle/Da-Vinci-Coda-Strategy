@@ -184,6 +184,7 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_COLLAPSE_STREAK_BONUS = 1.05
     TARGET_PLAYER_PUBLIC_BRIDGE_BONUS = 1.04
     TARGET_PLAYER_FINISH_CHAIN_BONUS = 1.08
+    TARGET_PLAYER_RECENT_TARGET_CHAIN_BONUS = 1.06
     PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
     PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
     PLAYER_RECENT_FAILED_GUESS_BONUS = 0.10
@@ -232,8 +233,10 @@ class BehavioralLikelihoodModel:
     STOP_TARGET_FOLLOWUP_PENALTY = 0.94
     CONTINUE_TARGET_FINISH_BONUS = 1.05
     CONTINUE_TARGET_FINISH_CHAIN_BONUS = 1.12
+    CONTINUE_TARGET_CHAIN_BONUS = 1.08
     STOP_TARGET_FINISH_PENALTY = 0.96
     STOP_TARGET_FINISH_CHAIN_PENALTY = 0.92
+    STOP_TARGET_CHAIN_PENALTY = 0.94
     CONTINUE_SELF_EXPOSURE_PENALTY = 0.93
     CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY = 0.91
     CONTINUE_FINISH_FRAGILITY_PENALTY = 0.92
@@ -682,6 +685,16 @@ class BehavioralLikelihoodModel:
                 (self.TARGET_PLAYER_FINISH_CHAIN_BONUS - 1.0)
                 * finish_chain_signal
             )
+        target_chain_pressure = self._recent_target_chain_pressure(
+            game_state,
+            guesser_id=signal.guesser_id,
+            target_player_id=signal.target_player_id,
+        )
+        if target_chain_pressure > 0.0:
+            weight *= 1.0 + (
+                (self.TARGET_PLAYER_RECENT_TARGET_CHAIN_BONUS - 1.0)
+                * target_chain_pressure
+            )
 
         previous_signal = self._previous_guess_signal(game_state, signal)
         if previous_signal is not None and previous_signal.target_player_id == signal.target_player_id:
@@ -725,6 +738,33 @@ class BehavioralLikelihoodModel:
         if previous_value is None or current_value is None:
             return False
         return abs(previous_value - current_value) <= 2
+
+    def _recent_target_chain_pressure(
+        self,
+        game_state: GameState,
+        *,
+        guesser_id: str,
+        target_player_id: str,
+    ) -> float:
+        chain_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+            if getattr(action, "guesser_id", None) != guesser_id:
+                continue
+            if getattr(action, "target_player_id", None) != target_player_id:
+                continue
+            if getattr(action, "result", False):
+                chain_score += 0.65 * recency_weight
+                if getattr(action, "continued_turn", None) is True:
+                    chain_score += 0.20 * recency_weight
+            if getattr(action, "revealed_player_id", None) == target_player_id:
+                chain_score += 0.35 * recency_weight
+            recency_weight *= 0.62
+            if recency_weight < 0.15:
+                break
+        return clamp(chain_score, 0.0, 1.0)
 
     def _score_target_slot_selection(
         self,
@@ -1385,6 +1425,11 @@ class BehavioralLikelihoodModel:
             signal.target_player_id,
             signal.target_slot_index,
         )
+        target_chain_pressure = self._recent_target_chain_pressure(
+            game_state,
+            guesser_id=signal.guesser_id,
+            target_player_id=signal.target_player_id,
+        )
         joint_collapse_signal = self._continue_joint_collapse_signal(
             game_state,
             signal,
@@ -1414,6 +1459,10 @@ class BehavioralLikelihoodModel:
             weight *= 1.0 + (
                 (self.CONTINUE_TARGET_FINISH_CHAIN_BONUS - 1.0)
                 * target_finish_chain_signal
+            )
+            weight *= 1.0 + (
+                (self.CONTINUE_TARGET_CHAIN_BONUS - 1.0)
+                * target_chain_pressure
             )
             weight *= 1.0 + (
                 (self.CONTINUE_FAILURE_RECOVERY_BONUS - 1.0)
@@ -1449,6 +1498,10 @@ class BehavioralLikelihoodModel:
         weight *= 1.0 - (
             (1.0 - self.STOP_TARGET_FINISH_CHAIN_PENALTY)
             * target_finish_chain_signal
+        )
+        weight *= 1.0 - (
+            (1.0 - self.STOP_TARGET_CHAIN_PENALTY)
+            * target_chain_pressure
         )
         weight *= 1.0 - (
             (1.0 - self.STOP_FAILURE_RECOVERY_PENALTY)
