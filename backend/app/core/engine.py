@@ -1981,6 +1981,8 @@ class DaVinciDecisionEngine:
     CONTINUATION_TOP_K_BLEND = 0.38
     LOW_CONFIDENCE_GUARD_MARGIN = 0.22
     WEAK_EDGE_GUARD_MARGIN = 0.18
+    SELF_EXPOSURE_GUARD_REFERENCE = 0.40
+    SELF_EXPOSURE_GUARD_MARGIN = 0.20
     ATTACKABILITY_REFERENCE = BehavioralLikelihoodModel.ATTACKABILITY_TIGHT_THRESHOLD
     DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER = 1.0
     DEFAULT_BEHAVIOR_MATCH_MULTIPLIER = 1.0
@@ -2205,6 +2207,7 @@ class DaVinciDecisionEngine:
             continue_margin=decision_snapshot["continue_margin"],
             low_confidence_guard=decision_snapshot["low_confidence_guard"],
             weak_edge_guard=decision_snapshot["weak_edge_guard"],
+            self_exposure_guard=decision_snapshot["self_exposure_guard"],
         )
 
         decision_summary = {
@@ -3625,11 +3628,19 @@ class DaVinciDecisionEngine:
             and best_gap < 0.10
             and continue_margin < self.WEAK_EDGE_GUARD_MARGIN
         )
+        self_exposure_guard = (
+            max(
+                best_move.get("self_public_exposure", 0.0),
+                best_move.get("self_newly_drawn_exposure", 0.0),
+            ) >= self.SELF_EXPOSURE_GUARD_REFERENCE
+            and continue_margin < self.SELF_EXPOSURE_GUARD_MARGIN
+        )
 
         should_continue = (
             continue_margin > 0.0
             and not low_confidence_guard
             and not weak_edge_guard
+            and not self_exposure_guard
         )
         return {
             "should_continue": should_continue,
@@ -3647,6 +3658,7 @@ class DaVinciDecisionEngine:
             "behavior_match_context_focus": behavior_match_context_focus,
             "low_confidence_guard": low_confidence_guard,
             "weak_edge_guard": weak_edge_guard,
+            "self_exposure_guard": self_exposure_guard,
             "decision_score_breakdown": {
                 "base_stop_threshold": float(
                     (stop_threshold_breakdown or {}).get("base_stop_threshold", stop_threshold)
@@ -3670,6 +3682,14 @@ class DaVinciDecisionEngine:
                     (stop_threshold_breakdown or {}).get("weak_continuation_threshold", 0.0)
                 ),
                 "total_stop_threshold": stop_threshold,
+                "self_exposure_guard_signal": (
+                    max(
+                        best_move.get("self_public_exposure", 0.0),
+                        best_move.get("self_newly_drawn_exposure", 0.0),
+                    )
+                    if self_exposure_guard
+                    else 0.0
+                ),
                 "edge_pressure": edge_pressure,
                 "rollout_pressure": rollout_pressure,
                 "fragile_rollout_pressure": fragile_rollout_pressure,
@@ -4134,6 +4154,7 @@ class DaVinciDecisionEngine:
         continue_margin: float,
         low_confidence_guard: bool,
         weak_edge_guard: bool,
+        self_exposure_guard: bool,
     ) -> str:
         if should_continue:
             if best_move.get("continuation_value", 0.0) > 0.0:
@@ -4146,6 +4167,8 @@ class DaVinciDecisionEngine:
             return "当前属于高暴露局面，命中率与续压潜力都偏弱，建议停手。"
         if weak_edge_guard:
             return "最佳动作与次优动作差距过小，当前进攻边际优势不足，建议停手。"
+        if self_exposure_guard:
+            return "当前自手牌公开结构已经偏尖，继续进攻的自曝风险过高，建议停手。"
         if stop_score > stop_threshold:
             return (
                 f"继续评分 {continue_score:.2f} 仍低于停手评分 {stop_score:.2f}；"
