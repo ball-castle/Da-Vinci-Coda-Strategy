@@ -2140,6 +2140,8 @@ class DaVinciDecisionEngine:
     WEAK_EDGE_GUARD_MARGIN = 0.18
     SELF_EXPOSURE_GUARD_REFERENCE = 0.40
     SELF_EXPOSURE_GUARD_MARGIN = 0.20
+    LOW_CONFIDENCE_SELF_EXPOSURE_BOOST = 0.10
+    WEAK_EDGE_SELF_EXPOSURE_BOOST = 0.08
     ATTACKABILITY_REFERENCE = BehavioralLikelihoodModel.ATTACKABILITY_TIGHT_THRESHOLD
     DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER = 1.0
     DEFAULT_BEHAVIOR_MATCH_MULTIPLIER = 1.0
@@ -3800,17 +3802,29 @@ class DaVinciDecisionEngine:
         )
         continue_score += behavior_match_decision_structure_adjustment
         continue_margin = continue_score - stop_score
+        self_exposure_level = max(
+            best_move.get("self_public_exposure", 0.0),
+            best_move.get("self_newly_drawn_exposure", 0.0),
+        )
+        low_confidence_guard_margin = (
+            self.LOW_CONFIDENCE_GUARD_MARGIN
+            + (self.LOW_CONFIDENCE_SELF_EXPOSURE_BOOST * self_exposure_level)
+        )
+        weak_edge_guard_margin = (
+            self.WEAK_EDGE_GUARD_MARGIN
+            + (self.WEAK_EDGE_SELF_EXPOSURE_BOOST * self_exposure_level)
+        )
 
         low_confidence_guard = (
             my_hidden_count <= 2
             and best_move["win_probability"] < 0.45
             and best_move.get("continuation_likelihood", 0.0) < 0.55
-            and continue_margin < self.LOW_CONFIDENCE_GUARD_MARGIN
+            and continue_margin < low_confidence_guard_margin
         )
         weak_edge_guard = (
             second_move is not None
             and best_gap < 0.10
-            and continue_margin < self.WEAK_EDGE_GUARD_MARGIN
+            and continue_margin < weak_edge_guard_margin
         )
         self_exposure_guard = (
             max(
@@ -3843,6 +3857,8 @@ class DaVinciDecisionEngine:
             "low_confidence_guard": low_confidence_guard,
             "weak_edge_guard": weak_edge_guard,
             "self_exposure_guard": self_exposure_guard,
+            "low_confidence_guard_margin": low_confidence_guard_margin,
+            "weak_edge_guard_margin": weak_edge_guard_margin,
             "decision_score_breakdown": {
                 "base_stop_threshold": float(
                     (stop_threshold_breakdown or {}).get("base_stop_threshold", stop_threshold)
@@ -3874,6 +3890,8 @@ class DaVinciDecisionEngine:
                     if self_exposure_guard
                     else 0.0
                 ),
+                "low_confidence_guard_margin": low_confidence_guard_margin,
+                "weak_edge_guard_margin": weak_edge_guard_margin,
                 "edge_pressure": edge_pressure,
                 "rollout_pressure": rollout_pressure,
                 "fragile_rollout_pressure": fragile_rollout_pressure,

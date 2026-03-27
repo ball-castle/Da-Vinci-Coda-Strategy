@@ -928,6 +928,65 @@ class StopThresholdTests(unittest.TestCase):
             protected_moves[0]["continuation_value"],
         )
 
+    def test_choose_best_move_expands_low_confidence_guard_under_self_exposure(self):
+        engine = DaVinciDecisionEngine()
+        fragile_moves = [
+            {
+                "expected_value": 0.96,
+                "immediate_expected_value": 0.96,
+                "win_probability": 0.44,
+                "continuation_value": 0.12,
+                "continuation_likelihood": 0.54,
+                "attackability_after_hit": 0.70,
+                "post_hit_continue_score": 0.0,
+                "post_hit_stop_score": 0.0,
+                "post_hit_continue_margin": 0.0,
+                "post_hit_best_gap": 0.26,
+                "post_hit_top_k_continue_margin": 0.0,
+                "post_hit_top_k_support_ratio": 0.0,
+                "self_public_exposure": 0.52,
+                "self_newly_drawn_exposure": 0.48,
+                "self_finish_fragility": 0.14,
+            },
+        ]
+        stable_moves = [
+            {
+                "expected_value": 0.96,
+                "immediate_expected_value": 0.96,
+                "win_probability": 0.44,
+                "continuation_value": 0.12,
+                "continuation_likelihood": 0.54,
+                "attackability_after_hit": 0.70,
+                "post_hit_continue_score": 0.0,
+                "post_hit_stop_score": 0.0,
+                "post_hit_continue_margin": 0.0,
+                "post_hit_best_gap": 0.26,
+                "post_hit_top_k_continue_margin": 0.0,
+                "post_hit_top_k_support_ratio": 0.0,
+                "self_public_exposure": 0.04,
+                "self_newly_drawn_exposure": 0.02,
+                "self_finish_fragility": 0.02,
+            },
+        ]
+
+        fragile_best, fragile_summary = engine.choose_best_move(
+            fragile_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        stable_best, stable_summary = engine.choose_best_move(
+            stable_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNone(fragile_best)
+        self.assertIsNotNone(stable_best)
+        self.assertGreater(
+            fragile_summary["decision_score_breakdown"]["low_confidence_guard_margin"],
+            stable_summary["decision_score_breakdown"]["low_confidence_guard_margin"],
+        )
+
     def test_evaluate_all_moves_uses_behavior_match_bonus_in_ranking(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()
