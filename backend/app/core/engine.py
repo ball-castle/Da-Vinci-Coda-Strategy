@@ -2154,6 +2154,8 @@ class DaVinciDecisionEngine:
     BEHAVIOR_MATCH_DECISION_NET_STRUCTURE_SCALE = 0.50
     POST_HIT_BEHAVIOR_SUPPORT_SCALE = 0.08
     POST_HIT_BEHAVIOR_SUPPORT_REFERENCE = 0.20
+    CONTINUATION_SELF_EXPOSURE_DRAG = 0.26
+    CONTINUATION_FINISH_FRAGILITY_DRAG = 0.22
     SELF_EXPOSURE_SECONDARY_BLEND = 0.35
     SELF_EXPOSURE_RISK_SCALE = 0.28
     SELF_NEW_DRAWN_RISK_SCALE = 0.34
@@ -2504,6 +2506,7 @@ class DaVinciDecisionEngine:
         post_hit_behavior_fragility_signal = 0.0
         post_hit_behavior_support_strength = 0.0
         post_hit_behavior_fragility_strength = 0.0
+        continuation_exposure_gate = 1.0
         behavior_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
         behavior_guidance_support = 0.0
         behavior_guidance_stable_ratio = 0.0
@@ -2528,6 +2531,14 @@ class DaVinciDecisionEngine:
                 "reason": "neutral",
                 "weight": 1.0,
             },
+        }
+        self_exposure_profile = self_exposure_profile or {
+            "total_exposure": 0.0,
+            "max_slot_exposure": 0.0,
+            "newly_drawn_exposure": 0.0,
+            "average_slot_exposure": 0.0,
+            "finish_fragility": 0.0,
+            "hidden_count": 0.0,
         }
 
         success_matrix = self._success_posterior(full_probability_matrix, player_id, slot_index, card)
@@ -2603,6 +2614,20 @@ class DaVinciDecisionEngine:
                     * post_hit_gap_adjustment
                 )
                 continuation_value = probability * post_hit_continuation_value
+                continuation_exposure_gate = clamp(
+                    1.0
+                    - (
+                        self.CONTINUATION_SELF_EXPOSURE_DRAG
+                        * float(self_exposure_profile["total_exposure"])
+                    )
+                    - (
+                        self.CONTINUATION_FINISH_FRAGILITY_DRAG
+                        * float(self_exposure_profile["finish_fragility"])
+                    ),
+                    0.45,
+                    1.0,
+                )
+                continuation_value *= continuation_exposure_gate
                 post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
                     best_move={
                         "post_hit_stop_score": post_hit_stop_score,
@@ -2751,6 +2776,7 @@ class DaVinciDecisionEngine:
             "self_newly_drawn_exposure": float(self_exposure_profile["newly_drawn_exposure"]),
             "self_average_slot_exposure": float(self_exposure_profile["average_slot_exposure"]),
             "self_finish_fragility": float(self_exposure_profile["finish_fragility"]),
+            "continuation_exposure_gate": continuation_exposure_gate,
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
@@ -2758,6 +2784,7 @@ class DaVinciDecisionEngine:
                 "self_public_exposure": float(self_exposure_profile["total_exposure"]),
                 "self_newly_drawn_exposure": float(self_exposure_profile["newly_drawn_exposure"]),
                 "self_finish_fragility": float(self_exposure_profile["finish_fragility"]),
+                "continuation_exposure_gate": continuation_exposure_gate,
                 "information_gain_bonus": info_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,

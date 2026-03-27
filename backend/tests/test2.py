@@ -829,6 +829,105 @@ class StopThresholdTests(unittest.TestCase):
         )
         self.assertIn("自曝风险过高", summary["stop_reason"])
 
+    def test_evaluate_all_moves_damps_continuation_value_under_self_exposure(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+                1: {("B", 5): 0.78, ("B", 6): 0.22},
+            },
+            "side": {
+                0: {("B", 3): 0.81, ("B", 4): 0.19},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0, 1: 1},
+            "side": {0: 0},
+        }
+        exposed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=1, is_revealed=False, is_newly_drawn=True),
+                        CardSlot(slot_index=2, color="B", value=2, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+        )
+        protected_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False, is_newly_drawn=True),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+        )
+
+        exposed_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=exposed_world,
+            blocked_slots=set(),
+            rollout_depth=1,
+        )
+        protected_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=protected_world,
+            blocked_slots=set(),
+            rollout_depth=1,
+        )
+
+        self.assertLess(
+            exposed_moves[0]["continuation_exposure_gate"],
+            protected_moves[0]["continuation_exposure_gate"],
+        )
+        self.assertLess(
+            exposed_moves[0]["continuation_value"],
+            protected_moves[0]["continuation_value"],
+        )
+
     def test_evaluate_all_moves_uses_behavior_match_bonus_in_ranking(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()
