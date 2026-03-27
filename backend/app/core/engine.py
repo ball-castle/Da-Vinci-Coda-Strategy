@@ -183,6 +183,7 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_RECENT_COLLAPSE_BONUS = 1.04
     TARGET_PLAYER_COLLAPSE_STREAK_BONUS = 1.05
     TARGET_PLAYER_PUBLIC_BRIDGE_BONUS = 1.04
+    TARGET_PLAYER_FINISH_CHAIN_BONUS = 1.08
     PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
     PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
     PLAYER_RECENT_FAILED_GUESS_BONUS = 0.10
@@ -230,7 +231,9 @@ class BehavioralLikelihoodModel:
     CONTINUE_TARGET_FOLLOWUP_BONUS = 1.06
     STOP_TARGET_FOLLOWUP_PENALTY = 0.94
     CONTINUE_TARGET_FINISH_BONUS = 1.05
+    CONTINUE_TARGET_FINISH_CHAIN_BONUS = 1.12
     STOP_TARGET_FINISH_PENALTY = 0.96
+    STOP_TARGET_FINISH_CHAIN_PENALTY = 0.92
     CONTINUE_SELF_EXPOSURE_PENALTY = 0.93
     CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY = 0.91
     CONTINUE_FINISH_FRAGILITY_PENALTY = 0.92
@@ -633,6 +636,16 @@ class BehavioralLikelihoodModel:
             weight *= 1.0 + (
                 (self.TARGET_PLAYER_PUBLIC_BRIDGE_BONUS - 1.0)
                 * public_bridge_signal
+            )
+        finish_chain_signal = self._slot_finish_chain_pressure_after_hit(
+            game_state,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
+        if finish_chain_signal > 0.0:
+            weight *= 1.0 + (
+                (self.TARGET_PLAYER_FINISH_CHAIN_BONUS - 1.0)
+                * finish_chain_signal
             )
 
         previous_signal = self._previous_guess_signal(game_state, signal)
@@ -1332,6 +1345,11 @@ class BehavioralLikelihoodModel:
             hypothesis_by_player,
             signal,
         )
+        target_finish_chain_signal = self._slot_finish_chain_pressure_after_hit(
+            game_state,
+            signal.target_player_id,
+            signal.target_slot_index,
+        )
         joint_collapse_signal = self._continue_joint_collapse_signal(
             game_state,
             signal,
@@ -1358,6 +1376,10 @@ class BehavioralLikelihoodModel:
                 weight *= self.CONTINUE_TARGET_FOLLOWUP_BONUS
             if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
                 weight *= self.CONTINUE_TARGET_FINISH_BONUS
+            weight *= 1.0 + (
+                (self.CONTINUE_TARGET_FINISH_CHAIN_BONUS - 1.0)
+                * target_finish_chain_signal
+            )
             weight *= 1.0 + (
                 (self.CONTINUE_FAILURE_RECOVERY_BONUS - 1.0)
                 * failure_recovery_signal
@@ -1389,6 +1411,10 @@ class BehavioralLikelihoodModel:
             weight *= self.STOP_TARGET_FOLLOWUP_PENALTY
         if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
             weight *= self.STOP_TARGET_FINISH_PENALTY
+        weight *= 1.0 - (
+            (1.0 - self.STOP_TARGET_FINISH_CHAIN_PENALTY)
+            * target_finish_chain_signal
+        )
         weight *= 1.0 - (
             (1.0 - self.STOP_FAILURE_RECOVERY_PENALTY)
             * failure_recovery_signal
@@ -1624,6 +1650,22 @@ class BehavioralLikelihoodModel:
             if slot.known_card() is None:
                 hidden_count += 1
         return hidden_count
+
+    def _slot_finish_chain_pressure_after_hit(
+        self,
+        game_state: GameState,
+        player_id: str,
+        slot_index: int,
+    ) -> float:
+        return clamp(
+            self._player_finish_pressure(
+                game_state,
+                player_id,
+                exclude_slot=slot_key(player_id, slot_index),
+            ),
+            0.0,
+            1.0,
+        )
 
     def _player_attackability(
         self,

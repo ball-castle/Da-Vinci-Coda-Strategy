@@ -16,7 +16,7 @@ from tests.fixed_controller_cases import (
     assert_slot_candidate_set,
     run_controller_case,
 )
-from app.core.engine import BehavioralLikelihoodModel, GameController
+from app.core.engine import BehavioralLikelihoodModel, GameController, GuessSignal
 from app.core.state import CardSlot, GameState, GuessAction, PlayerState
 
 
@@ -849,6 +849,144 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertLess(recovery_weight, stable_weight)
 
+    def test_continue_decision_rewards_target_finish_chain_window(self):
+        model = BehavioralLikelihoodModel()
+
+        world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+        finish_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("W", 5),
+            result=True,
+            continued_turn=True,
+        )
+        spread_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="side",
+            target_slot_index=0,
+            guessed_card=("W", 8),
+            result=True,
+            continued_turn=True,
+        )
+        hypothesis = {"opp": {0: ("W", 5)}, "side": {0: ("W", 8)}}
+
+        model.estimate_attackability = lambda *args, **kwargs: 0.82
+        model._player_attackability = lambda *args, **kwargs: 0.76
+        model._public_hand_exposure_profile = lambda *args, **kwargs: {
+            "total_exposure": 0.0,
+            "newly_drawn_exposure": 0.0,
+            "finish_fragility": 0.0,
+        }
+        model._continue_failure_recovery_signal = lambda *args, **kwargs: 0.0
+        model._continue_joint_collapse_signal = lambda *args, **kwargs: 0.0
+        model._remaining_hidden_on_target_after_hit = lambda *args, **kwargs: 2
+        model._slot_finish_chain_pressure_after_hit = (
+            lambda _game_state, player_id, _slot_index: 1.0 if player_id == "opp" else 0.0
+        )
+
+        finish_weight = model._score_continue_decision(
+            world,
+            hypothesis,
+            finish_signal,
+        )
+        spread_weight = model._score_continue_decision(
+            world,
+            hypothesis,
+            spread_signal,
+        )
+
+        self.assertGreater(finish_weight, spread_weight)
+
+    def test_stop_decision_penalizes_target_finish_chain_window(self):
+        model = BehavioralLikelihoodModel()
+
+        world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+        finish_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("W", 5),
+            result=True,
+            continued_turn=False,
+        )
+        spread_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="side",
+            target_slot_index=0,
+            guessed_card=("W", 8),
+            result=True,
+            continued_turn=False,
+        )
+        hypothesis = {"opp": {0: ("W", 5)}, "side": {0: ("W", 8)}}
+
+        model.estimate_attackability = lambda *args, **kwargs: 0.34
+        model._player_attackability = lambda *args, **kwargs: 0.28
+        model._public_hand_exposure_profile = lambda *args, **kwargs: {
+            "total_exposure": 0.0,
+            "newly_drawn_exposure": 0.0,
+            "finish_fragility": 0.0,
+        }
+        model._continue_failure_recovery_signal = lambda *args, **kwargs: 0.0
+        model._continue_joint_collapse_signal = lambda *args, **kwargs: 0.0
+        model._remaining_hidden_on_target_after_hit = lambda *args, **kwargs: 2
+        model._slot_finish_chain_pressure_after_hit = (
+            lambda _game_state, player_id, _slot_index: 1.0 if player_id == "opp" else 0.0
+        )
+
+        finish_weight = model._score_continue_decision(
+            world,
+            hypothesis,
+            finish_signal,
+        )
+        spread_weight = model._score_continue_decision(
+            world,
+            hypothesis,
+            spread_signal,
+        )
+
+        self.assertLess(finish_weight, spread_weight)
+
     def test_continue_decision_rewards_joint_collapse_window(self):
         model = BehavioralLikelihoodModel()
 
@@ -1670,6 +1808,74 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
         )
 
         self.assertGreater(reveal_neighbor_score, settled_neighbor_score)
+
+    def test_target_player_selection_prefers_post_hit_finish_chain_target(self):
+        model = BehavioralLikelihoodModel()
+
+        world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color="B", value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+        finish_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("B", 4),
+            result=False,
+            continued_turn=None,
+        )
+        spread_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="side",
+            target_slot_index=0,
+            guessed_card=("W", 8),
+            result=False,
+            continued_turn=None,
+        )
+        hypothesis = {"opp": {0: ("B", 4)}, "side": {0: ("W", 8)}}
+
+        model._player_attackability = (
+            lambda _game_state, _hypothesis, player_id, **kwargs: 0.60
+            if player_id in {"opp", "side"}
+            else 0.0
+        )
+        model._recent_public_reveal_pressure = lambda *args, **kwargs: 0.0
+        model._recent_player_collapse_streak_pressure = lambda *args, **kwargs: 0.0
+        model._recent_public_bridge_signal_for_guess = lambda *args, **kwargs: 0.0
+        model._slot_finish_chain_pressure_after_hit = (
+            lambda _game_state, player_id, _slot_index: 1.0 if player_id == "opp" else 0.0
+        )
+        model._previous_guess_signal = lambda *args, **kwargs: None
+
+        finish_score = model._score_target_player_selection(
+            world,
+            hypothesis,
+            finish_signal,
+        )
+        spread_score = model._score_target_player_selection(
+            world,
+            hypothesis,
+            spread_signal,
+        )
+
+        self.assertGreater(finish_score, spread_score)
 
     def test_target_slot_selection_prefers_slot_next_to_recent_failed_guess_collapse(self):
         model = BehavioralLikelihoodModel()
