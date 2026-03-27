@@ -1992,6 +1992,13 @@ class DaVinciDecisionEngine:
     BEHAVIOR_MATCH_DECISION_NET_STRUCTURE_SCALE = 0.50
     POST_HIT_BEHAVIOR_SUPPORT_SCALE = 0.08
     POST_HIT_BEHAVIOR_SUPPORT_REFERENCE = 0.20
+    SELF_EXPOSURE_SECONDARY_BLEND = 0.35
+    SELF_EXPOSURE_RISK_SCALE = 0.28
+    SELF_NEW_DRAWN_RISK_SCALE = 0.34
+    SELF_EXPOSURE_COLOR_BONUS = 1.12
+    SELF_EXPOSURE_NARROW_BONUS = 1.06
+    SELF_EXPOSURE_EDGE_BONUS = 1.08
+    SELF_EXPOSURE_NEW_DRAWN_BONUS = 1.18
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -2013,6 +2020,7 @@ class DaVinciDecisionEngine:
         rollout_depth: int = 1,
     ) -> Tuple[List[Dict[str, Any]], float]:
         risk_factor = self.calculate_risk_factor(my_hidden_count)
+        self_exposure_profile = self._public_self_exposure_profile(game_state)
         blocked_slots = blocked_slots or set()
         moves: List[Dict[str, Any]] = []
 
@@ -2045,6 +2053,7 @@ class DaVinciDecisionEngine:
                         behavior_guidance_profile=behavior_guidance_profile,
                         game_state=game_state,
                         behavior_map_hypothesis=behavior_map_hypothesis,
+                        self_exposure_profile=self_exposure_profile,
                         rollout_depth=rollout_depth,
                     )
                     moves.append(move)
@@ -2280,6 +2289,7 @@ class DaVinciDecisionEngine:
         behavior_guidance_profile: Optional[Dict[str, float]],
         game_state: Optional[GameState],
         behavior_map_hypothesis: Optional[Dict[str, Dict[int, Card]]],
+        self_exposure_profile: Optional[Dict[str, float]],
         rollout_depth: int,
     ) -> Dict[str, Any]:
         info_gain = self._expected_slot_entropy_reduction(slot_distribution, card)
@@ -2436,8 +2446,20 @@ class DaVinciDecisionEngine:
                 post_hit_behavior_support_strength = post_hit_behavior_support_breakdown["support_strength"]
                 post_hit_behavior_fragility_strength = post_hit_behavior_support_breakdown["fragility_strength"]
 
+        self_exposure_profile = self_exposure_profile or {
+            "total_exposure": 0.0,
+            "max_slot_exposure": 0.0,
+            "newly_drawn_exposure": 0.0,
+            "average_slot_exposure": 0.0,
+            "hidden_count": 0.0,
+        }
+        structural_risk_factor = risk_factor * (
+            1.0
+            + (self.SELF_EXPOSURE_RISK_SCALE * float(self_exposure_profile["total_exposure"]))
+            + (self.SELF_NEW_DRAWN_RISK_SCALE * float(self_exposure_profile["newly_drawn_exposure"]))
+        )
         hit_reward = probability * self.HIT_REWARD
-        miss_penalty = (1.0 - probability) * risk_factor
+        miss_penalty = (1.0 - probability) * structural_risk_factor
         info_bonus = info_gain * self.INFORMATION_GAIN_WEIGHT
         immediate_expected_value = hit_reward - miss_penalty + info_bonus
         expected_value = immediate_expected_value + continuation_value
@@ -2543,9 +2565,17 @@ class DaVinciDecisionEngine:
             "history_continue_rate": history_continue_rate,
             "hit_reward": hit_reward,
             "miss_penalty": miss_penalty,
+            "structural_risk_factor": structural_risk_factor,
+            "self_public_exposure": float(self_exposure_profile["total_exposure"]),
+            "self_max_slot_exposure": float(self_exposure_profile["max_slot_exposure"]),
+            "self_newly_drawn_exposure": float(self_exposure_profile["newly_drawn_exposure"]),
+            "self_average_slot_exposure": float(self_exposure_profile["average_slot_exposure"]),
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
+                "structural_risk_factor": structural_risk_factor,
+                "self_public_exposure": float(self_exposure_profile["total_exposure"]),
+                "self_newly_drawn_exposure": float(self_exposure_profile["newly_drawn_exposure"]),
                 "information_gain_bonus": info_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
@@ -4096,6 +4126,122 @@ class DaVinciDecisionEngine:
         miss_distribution = normalize_card_distribution(miss_distribution)
         after_miss = self._entropy(miss_distribution.values())
         return before - ((1.0 - hit_probability) * after_miss)
+
+    def _public_self_exposure_profile(
+        self,
+        game_state: Optional[GameState],
+    ) -> Dict[str, float]:
+        if game_state is None:
+            return {
+                "total_exposure": 0.0,
+                "max_slot_exposure": 0.0,
+                "newly_drawn_exposure": 0.0,
+                "average_slot_exposure": 0.0,
+                "hidden_count": 0.0,
+            }
+
+        self_slots = game_state.self_player().ordered_slots()
+        slot_exposures: List[float] = []
+        newly_drawn_exposure = 0.0
+        for slot in self_slots:
+            if slot.is_revealed:
+                continue
+            slot_exposure = self._public_self_slot_exposure(self_slots, slot.slot_index)
+            slot_exposures.append(slot_exposure)
+            if slot.is_newly_drawn:
+                newly_drawn_exposure = max(newly_drawn_exposure, slot_exposure)
+
+        if not slot_exposures:
+            return {
+                "total_exposure": 0.0,
+                "max_slot_exposure": 0.0,
+                "newly_drawn_exposure": 0.0,
+                "average_slot_exposure": 0.0,
+                "hidden_count": 0.0,
+            }
+
+        slot_exposures.sort(reverse=True)
+        total_exposure = slot_exposures[0]
+        if len(slot_exposures) >= 2:
+            total_exposure += self.SELF_EXPOSURE_SECONDARY_BLEND * slot_exposures[1]
+        return {
+            "total_exposure": total_exposure,
+            "max_slot_exposure": slot_exposures[0],
+            "newly_drawn_exposure": newly_drawn_exposure,
+            "average_slot_exposure": sum(slot_exposures) / float(len(slot_exposures)),
+            "hidden_count": float(len(slot_exposures)),
+        }
+
+    def _public_self_slot_exposure(
+        self,
+        self_slots: Sequence[CardSlot],
+        slot_index: int,
+    ) -> float:
+        slot_by_index = {slot.slot_index: slot for slot in self_slots}
+        slot = slot_by_index.get(slot_index)
+        if slot is None or slot.is_revealed:
+            return 0.0
+
+        low, high, width = self._public_self_slot_interval(self_slots, slot_index)
+        exposure = (
+            self.SELF_EXPOSURE_COLOR_BONUS
+            if getattr(slot, "color", None) is not None
+            else 1.0
+        ) / max(1.0, float(width + 1))
+        if low is not None and high is not None and width <= 2:
+            exposure *= self.SELF_EXPOSURE_NARROW_BONUS
+        if (
+            getattr(slot, "color", None) is not None
+            and (
+                (low is None and high is not None and high <= 4)
+                or (high is None and low is not None and low >= (MAX_CARD_VALUE - 4))
+            )
+        ):
+            exposure *= self.SELF_EXPOSURE_EDGE_BONUS
+        if slot.is_newly_drawn:
+            exposure *= self.SELF_EXPOSURE_NEW_DRAWN_BONUS
+        return exposure
+
+    def _public_self_slot_interval(
+        self,
+        self_slots: Sequence[CardSlot],
+        slot_index: int,
+    ) -> Tuple[Optional[int], Optional[int], int]:
+        ordered_slots = sorted(self_slots, key=lambda slot: slot.slot_index)
+        index_by_slot = {slot.slot_index: idx for idx, slot in enumerate(ordered_slots)}
+        order_index = index_by_slot.get(slot_index)
+        if order_index is None:
+            return None, None, MAX_CARD_VALUE
+
+        lower: Optional[int] = None
+        upper: Optional[int] = None
+
+        cursor = order_index - 1
+        while cursor >= 0:
+            left_slot = ordered_slots[cursor]
+            if left_slot.is_revealed:
+                left_value = numeric_card_value(left_slot.known_card())
+                if left_value is not None:
+                    lower = left_value
+                    break
+            cursor -= 1
+
+        cursor = order_index + 1
+        while cursor < len(ordered_slots):
+            right_slot = ordered_slots[cursor]
+            if right_slot.is_revealed:
+                right_value = numeric_card_value(right_slot.known_card())
+                if right_value is not None:
+                    upper = right_value
+                    break
+            cursor += 1
+
+        effective_low = 0 if lower is None else lower
+        effective_high = MAX_CARD_VALUE if upper is None else upper
+        if effective_high < effective_low:
+            effective_high = effective_low
+        width = max(0, effective_high - effective_low)
+        return lower, upper, width
 
     def _entropy(self, probabilities: Iterable[float]) -> float:
         entropy = 0.0

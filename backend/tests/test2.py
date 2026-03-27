@@ -525,6 +525,94 @@ class StopThresholdTests(unittest.TestCase):
             damped_moves[0]["behavior_guidance_support"],
         )
 
+    def test_evaluate_all_moves_penalizes_publicly_exposed_self_hand(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+        }
+        narrow_self_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=1, is_revealed=False, is_newly_drawn=True),
+                        CardSlot(slot_index=2, color="B", value=2, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+        )
+        wide_self_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False, is_newly_drawn=True),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+        )
+
+        narrow_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=narrow_self_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+        wide_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=wide_self_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        self.assertGreater(
+            narrow_moves[0]["self_public_exposure"],
+            wide_moves[0]["self_public_exposure"],
+        )
+        self.assertGreater(
+            narrow_moves[0]["self_newly_drawn_exposure"],
+            wide_moves[0]["self_newly_drawn_exposure"],
+        )
+        self.assertGreater(
+            narrow_moves[0]["miss_penalty"],
+            wide_moves[0]["miss_penalty"],
+        )
+        self.assertLess(
+            narrow_moves[0]["expected_value"],
+            wide_moves[0]["expected_value"],
+        )
+
     def test_evaluate_all_moves_uses_behavior_match_bonus_in_ranking(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()
