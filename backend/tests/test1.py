@@ -21,6 +21,25 @@ from app.core.state import CardSlot, GameState, GuessAction, PlayerState
 
 
 class BehavioralLikelihoodModelTests(unittest.TestCase):
+    def test_public_slot_exposure_rewards_same_color_anchors(self):
+        model = BehavioralLikelihoodModel()
+
+        same_color_slots = [
+            CardSlot(slot_index=0, color="W", value=2, is_revealed=True),
+            CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+            CardSlot(slot_index=2, color="W", value=4, is_revealed=True),
+        ]
+        mixed_color_slots = [
+            CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+            CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+            CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+        ]
+
+        self.assertGreater(
+            model._public_slot_exposure(same_color_slots, 1),
+            model._public_slot_exposure(mixed_color_slots, 1),
+        )
+
     def test_failed_guess_prefers_interval_consistent_world(self):
         game_state = GameState(
             self_player_id="me",
@@ -2099,6 +2118,141 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
 
 class GameControllerOutputTests(unittest.TestCase):
+    def test_controller_simulated_draw_inserts_card_into_sorted_self_order(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=False),
+                        CardSlot(slot_index=1, color="W", value=2, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=6, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+
+        simulated_state = GameController(game_state)._simulated_draw_game_state(("B", 3))
+        ordered_cards = [
+            slot.known_card() for slot in simulated_state.self_player().ordered_slots()
+        ]
+        newly_drawn_slots = [
+            slot for slot in simulated_state.self_player().ordered_slots() if slot.is_newly_drawn
+        ]
+
+        self.assertEqual(ordered_cards, [("B", 0), ("W", 2), ("B", 3), ("B", 6)])
+        self.assertEqual(len(newly_drawn_slots), 1)
+        self.assertEqual(newly_drawn_slots[0].slot_index, 2)
+        self.assertEqual(newly_drawn_slots[0].known_card(), ("B", 3))
+
+    def test_controller_draw_color_summary_uses_post_draw_self_exposure_rollout(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=False),
+                        CardSlot(slot_index=1, color="W", value=4, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+        controller = GameController(game_state)
+        controller._draw_rollout_summary = lambda: {
+            "expected_best_value": {"B": 0.0, "W": 0.0},
+            "expected_immediate_value": {"B": 0.0, "W": 0.0},
+            "expected_continuation_value": {"B": 0.0, "W": 0.0},
+            "expected_continuation_likelihood": {"B": 0.0, "W": 0.0},
+            "expected_self_public_exposure": {"B": 0.18, "W": 0.46},
+            "expected_self_newly_drawn_exposure": {"B": 0.12, "W": 0.34},
+            "expected_win_probability": {"B": 0.0, "W": 0.0},
+            "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
+            "target_retention_ratio": {"B": 0.0, "W": 0.0},
+            "color_alignment_ratio": {"B": 0.0, "W": 0.0},
+            "expected_best_gap": {"B": 0.0, "W": 0.0},
+            "active_opening_ratio": {"B": 0.0, "W": 0.0},
+            "best_value_stddev": {"B": 0.0, "W": 0.0},
+            "win_probability_stddev": {"B": 0.0, "W": 0.0},
+            "best_value_floor": {"B": 0.0, "W": 0.0},
+            "win_probability_floor": {"B": 0.0, "W": 0.0},
+            "expected_information_gain": {"B": 0.0, "W": 0.0},
+            "information_gain_floor": {"B": 0.0, "W": 0.0},
+            "value_pressure": {"B": 0.0, "W": 0.0},
+            "immediate_value_pressure": {"B": 0.0, "W": 0.0},
+            "continuation_value_pressure": {"B": 0.0, "W": 0.0},
+            "continuation_likelihood_pressure": {"B": 0.0, "W": 0.0},
+            "win_probability_pressure": {"B": 0.0, "W": 0.0},
+            "attackability_pressure": {"B": 0.0, "W": 0.0},
+            "target_retention_pressure": {"B": 0.0, "W": 0.0},
+            "color_alignment_pressure": {"B": 0.0, "W": 0.0},
+            "best_gap_pressure": {"B": 0.0, "W": 0.0},
+            "active_opening_pressure": {"B": 0.0, "W": 0.0},
+            "best_value_stability_pressure": {"B": 0.0, "W": 0.0},
+            "win_probability_stability_pressure": {"B": 0.0, "W": 0.0},
+            "best_value_floor_pressure": {"B": 0.0, "W": 0.0},
+            "win_probability_floor_pressure": {"B": 0.0, "W": 0.0},
+            "information_gain_pressure": {"B": 0.0, "W": 0.0},
+            "information_gain_floor_pressure": {"B": 0.0, "W": 0.0},
+            "opening_plan": {
+                "B": {
+                    "target_player_id": None,
+                    "target_slot_index": None,
+                    "guess_card": None,
+                    "support_ratio": 0.0,
+                    "guess_support_ratio": 0.0,
+                    "expected_value": 0.0,
+                    "win_probability": 0.0,
+                    "information_gain": 0.0,
+                    "continuation_likelihood": 0.0,
+                },
+                "W": {
+                    "target_player_id": None,
+                    "target_slot_index": None,
+                    "guess_card": None,
+                    "support_ratio": 0.0,
+                    "guess_support_ratio": 0.0,
+                    "expected_value": 0.0,
+                    "win_probability": 0.0,
+                    "information_gain": 0.0,
+                    "continuation_likelihood": 0.0,
+                },
+            },
+            "sample_count": {"B": 1.0, "W": 1.0},
+        }
+
+        draw_summary = controller._build_draw_color_summary()
+
+        self.assertGreater(
+            draw_summary["draw_rollout_self_exposure_pressure_black"],
+            draw_summary["draw_rollout_self_exposure_pressure_white"],
+        )
+        self.assertGreater(
+            draw_summary["draw_rollout_new_drawn_exposure_pressure_black"],
+            draw_summary["draw_rollout_new_drawn_exposure_pressure_white"],
+        )
+        self.assertEqual(
+            draw_summary["draw_rollout_expected_self_public_exposure_black"],
+            0.18,
+        )
+        self.assertEqual(
+            draw_summary["draw_rollout_expected_self_public_exposure_white"],
+            0.46,
+        )
+
     def test_fixed_controller_case_runner_covers_public_reveal_collapse(self):
         game_state = GameState(
             self_player_id="me",

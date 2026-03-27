@@ -421,6 +421,25 @@ class ContinuationLikelihoodTests(unittest.TestCase):
 
 
 class StopThresholdTests(unittest.TestCase):
+    def test_public_self_slot_exposure_rewards_same_color_anchors(self):
+        engine = DaVinciDecisionEngine()
+
+        same_color_slots = [
+            CardSlot(slot_index=0, color="W", value=2, is_revealed=True),
+            CardSlot(slot_index=1, color="W", value=3, is_revealed=False),
+            CardSlot(slot_index=2, color="W", value=4, is_revealed=True),
+        ]
+        mixed_color_slots = [
+            CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+            CardSlot(slot_index=1, color="W", value=3, is_revealed=False),
+            CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+        ]
+
+        self.assertGreater(
+            engine._public_self_slot_exposure(same_color_slots, 1),
+            engine._public_self_slot_exposure(mixed_color_slots, 1),
+        )
+
     def test_fixed_decision_case_runner_covers_strong_continue_edge(self):
         case = FixedDecisionCase(
             name="strong_continue_edge",

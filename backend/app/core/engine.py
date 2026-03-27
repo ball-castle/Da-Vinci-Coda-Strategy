@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import log2, sqrt
 from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -231,6 +231,8 @@ class BehavioralLikelihoodModel:
     STOP_FINISH_FRAGILITY_BONUS = 1.06
     PUBLIC_SELF_EXPOSURE_SECONDARY_BLEND = 0.35
     PUBLIC_SELF_EXPOSURE_FINISH_REFERENCE = 3.0
+    PUBLIC_SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS = 1.08
+    PUBLIC_SELF_EXPOSURE_DOUBLE_COLOR_ANCHOR_BONUS = 1.12
 
     ATTACKABILITY_TIGHT_THRESHOLD = 0.34
     CONTINUATION_PRIOR_BASE = 0.52
@@ -1408,9 +1410,54 @@ class BehavioralLikelihoodModel:
             )
         ):
             exposure *= 1.08
+        anchor_match_count = self._public_slot_same_color_anchor_count(
+            public_slots,
+            slot_index,
+            getattr(slot, "color", None),
+        )
+        if anchor_match_count >= 2:
+            exposure *= self.PUBLIC_SELF_EXPOSURE_DOUBLE_COLOR_ANCHOR_BONUS
+        elif anchor_match_count == 1:
+            exposure *= self.PUBLIC_SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS
         if slot.is_newly_drawn:
             exposure *= 1.18
         return exposure
+
+    def _public_slot_same_color_anchor_count(
+        self,
+        public_slots: Sequence[CardSlot],
+        slot_index: int,
+        slot_color: Optional[str],
+    ) -> int:
+        if slot_color not in CARD_COLORS:
+            return 0
+
+        ordered_slots = sorted(public_slots, key=lambda slot: slot.slot_index)
+        index_by_slot = {slot.slot_index: idx for idx, slot in enumerate(ordered_slots)}
+        order_index = index_by_slot.get(slot_index)
+        if order_index is None:
+            return 0
+
+        same_color_anchor_count = 0
+        cursor = order_index - 1
+        while cursor >= 0:
+            left_slot = ordered_slots[cursor]
+            if left_slot.is_revealed and left_slot.color in CARD_COLORS:
+                if left_slot.color == slot_color:
+                    same_color_anchor_count += 1
+                break
+            cursor -= 1
+
+        cursor = order_index + 1
+        while cursor < len(ordered_slots):
+            right_slot = ordered_slots[cursor]
+            if right_slot.is_revealed and right_slot.color in CARD_COLORS:
+                if right_slot.color == slot_color:
+                    same_color_anchor_count += 1
+                break
+            cursor += 1
+
+        return same_color_anchor_count
 
     def _public_slot_interval(
         self,
@@ -2166,6 +2213,8 @@ class DaVinciDecisionEngine:
     SELF_EXPOSURE_NARROW_BONUS = 1.06
     SELF_EXPOSURE_EDGE_BONUS = 1.08
     SELF_EXPOSURE_NEW_DRAWN_BONUS = 1.18
+    SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS = 1.08
+    SELF_EXPOSURE_DOUBLE_COLOR_ANCHOR_BONUS = 1.12
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -4541,9 +4590,54 @@ class DaVinciDecisionEngine:
             )
         ):
             exposure *= self.SELF_EXPOSURE_EDGE_BONUS
+        anchor_match_count = self._public_self_slot_same_color_anchor_count(
+            self_slots,
+            slot_index,
+            getattr(slot, "color", None),
+        )
+        if anchor_match_count >= 2:
+            exposure *= self.SELF_EXPOSURE_DOUBLE_COLOR_ANCHOR_BONUS
+        elif anchor_match_count == 1:
+            exposure *= self.SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS
         if slot.is_newly_drawn:
             exposure *= self.SELF_EXPOSURE_NEW_DRAWN_BONUS
         return exposure
+
+    def _public_self_slot_same_color_anchor_count(
+        self,
+        self_slots: Sequence[CardSlot],
+        slot_index: int,
+        slot_color: Optional[str],
+    ) -> int:
+        if slot_color not in CARD_COLORS:
+            return 0
+
+        ordered_slots = sorted(self_slots, key=lambda slot: slot.slot_index)
+        index_by_slot = {slot.slot_index: idx for idx, slot in enumerate(ordered_slots)}
+        order_index = index_by_slot.get(slot_index)
+        if order_index is None:
+            return 0
+
+        same_color_anchor_count = 0
+        cursor = order_index - 1
+        while cursor >= 0:
+            left_slot = ordered_slots[cursor]
+            if left_slot.is_revealed and left_slot.color in CARD_COLORS:
+                if left_slot.color == slot_color:
+                    same_color_anchor_count += 1
+                break
+            cursor -= 1
+
+        cursor = order_index + 1
+        while cursor < len(ordered_slots):
+            right_slot = ordered_slots[cursor]
+            if right_slot.is_revealed and right_slot.color in CARD_COLORS:
+                if right_slot.color == slot_color:
+                    same_color_anchor_count += 1
+                break
+            cursor += 1
+
+        return same_color_anchor_count
 
     def _public_self_slot_interval(
         self,
@@ -4941,19 +5035,34 @@ class GameController:
 
     def _simulated_draw_game_state(self, drawn_card: Card) -> GameState:
         self_player = self.game_state.self_player()
-        next_slot_index = (
-            max((slot.slot_index for slot in self_player.slots), default=-1) + 1
-        )
-        simulated_self_slots = list(self_player.slots)
+        simulated_self_slots = [
+            replace(slot, is_newly_drawn=False) for slot in self_player.ordered_slots()
+        ]
         simulated_self_slots.append(
             CardSlot(
-                slot_index=next_slot_index,
+                slot_index=-1,
                 color=drawn_card[0],
                 value=drawn_card[1],
                 is_revealed=False,
                 is_newly_drawn=True,
             )
         )
+        simulated_self_slots = [
+            replace(slot, slot_index=slot_index)
+            for slot_index, slot in enumerate(
+                sorted(
+                    simulated_self_slots,
+                    key=lambda slot: card_sort_key(
+                        slot.known_card()
+                        if slot.known_card() is not None
+                        else (
+                            slot.color if slot.color in CARD_COLORS else "B",
+                            slot.value if slot.value is not None else JOKER,
+                        )
+                    ),
+                )
+            )
+        ]
         simulated_players = dict(self.game_state.players)
         simulated_players[self.game_state.self_player_id] = PlayerState(
             player_id=self.game_state.self_player_id,
@@ -4972,6 +5081,8 @@ class GameController:
             "expected_immediate_value": {"B": 0.0, "W": 0.0},
             "expected_continuation_value": {"B": 0.0, "W": 0.0},
             "expected_continuation_likelihood": {"B": 0.0, "W": 0.0},
+            "expected_self_public_exposure": {"B": 0.0, "W": 0.0},
+            "expected_self_newly_drawn_exposure": {"B": 0.0, "W": 0.0},
             "expected_win_probability": {"B": 0.0, "W": 0.0},
             "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
             "target_retention_ratio": {"B": 0.0, "W": 0.0},
@@ -5022,6 +5133,8 @@ class GameController:
             immediate_value_sum = 0.0
             continuation_value_sum = 0.0
             continuation_likelihood_sum = 0.0
+            self_public_exposure_sum = 0.0
+            self_newly_drawn_exposure_sum = 0.0
             win_probability_sum = 0.0
             attackability_sum = 0.0
             target_retention_count = 0.0
@@ -5057,6 +5170,12 @@ class GameController:
                 )
                 continuation_likelihood_sum += float(
                     simulated_decision.get("best_continuation_likelihood", 0.0)
+                )
+                self_public_exposure_sum += float(
+                    simulated_decision.get("best_self_public_exposure", 0.0)
+                )
+                self_newly_drawn_exposure_sum += float(
+                    simulated_decision.get("best_self_newly_drawn_exposure", 0.0)
                 )
                 win_probability_sum += sampled_win_probability
                 attackability_sum += float(
@@ -5138,6 +5257,12 @@ class GameController:
             )
             summary["expected_continuation_likelihood"][color] = (
                 continuation_likelihood_sum / len(sample_cards)
+            )
+            summary["expected_self_public_exposure"][color] = (
+                self_public_exposure_sum / len(sample_cards)
+            )
+            summary["expected_self_newly_drawn_exposure"][color] = (
+                self_newly_drawn_exposure_sum / len(sample_cards)
             )
             summary["expected_win_probability"][color] = (
                 win_probability_sum / len(sample_cards)
@@ -5541,6 +5666,20 @@ class GameController:
         recent_self_exposure_pressure = self._recent_self_exposure_pressure()
         target_attack_window_factor = self._target_attack_window_factor()
         draw_rollout = self._draw_rollout_summary()
+        draw_rollout_self_exposure_pressure = {
+            color: (
+                draw_rollout["expected_self_public_exposure"]["W" if color == "B" else "B"]
+                - draw_rollout["expected_self_public_exposure"][color]
+            )
+            for color in CARD_COLORS
+        }
+        draw_rollout_new_drawn_exposure_pressure = {
+            color: (
+                draw_rollout["expected_self_newly_drawn_exposure"]["W" if color == "B" else "B"]
+                - draw_rollout["expected_self_newly_drawn_exposure"][color]
+            )
+            for color in CARD_COLORS
+        }
         target_hidden_color_mass = {"B": 0.0, "W": 0.0}
         target_hidden_positions = 0.0
         target_player_id = getattr(self.game_state, "target_player_id", None)
@@ -5640,6 +5779,8 @@ class GameController:
                     + (0.06 * draw_rollout["win_probability_floor_pressure"][color])
                     + (0.08 * draw_rollout["information_gain_pressure"][color])
                     + (0.05 * draw_rollout["information_gain_floor_pressure"][color])
+                    + (0.08 * draw_rollout_self_exposure_pressure[color])
+                    + (0.06 * draw_rollout_new_drawn_exposure_pressure[color])
                 )
             )
             for color in CARD_COLORS
@@ -5656,6 +5797,14 @@ class GameController:
             "recent_self_exposure_pressure": abs(
                 recent_self_exposure_pressure["B"]
                 - recent_self_exposure_pressure["W"]
+            ),
+            "draw_rollout_self_exposure_pressure": abs(
+                draw_rollout_self_exposure_pressure["B"]
+                - draw_rollout_self_exposure_pressure["W"]
+            ),
+            "draw_rollout_new_drawn_exposure_pressure": abs(
+                draw_rollout_new_drawn_exposure_pressure["B"]
+                - draw_rollout_new_drawn_exposure_pressure["W"]
             ),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
@@ -5709,10 +5858,18 @@ class GameController:
             "draw_rollout_expected_continuation_value_white": draw_rollout["expected_continuation_value"]["W"],
             "draw_rollout_expected_continuation_likelihood_black": draw_rollout["expected_continuation_likelihood"]["B"],
             "draw_rollout_expected_continuation_likelihood_white": draw_rollout["expected_continuation_likelihood"]["W"],
+            "draw_rollout_expected_self_public_exposure_black": draw_rollout["expected_self_public_exposure"]["B"],
+            "draw_rollout_expected_self_public_exposure_white": draw_rollout["expected_self_public_exposure"]["W"],
+            "draw_rollout_expected_self_newly_drawn_exposure_black": draw_rollout["expected_self_newly_drawn_exposure"]["B"],
+            "draw_rollout_expected_self_newly_drawn_exposure_white": draw_rollout["expected_self_newly_drawn_exposure"]["W"],
             "draw_rollout_continuation_value_pressure_black": draw_rollout["continuation_value_pressure"]["B"],
             "draw_rollout_continuation_value_pressure_white": draw_rollout["continuation_value_pressure"]["W"],
             "draw_rollout_continuation_likelihood_pressure_black": draw_rollout["continuation_likelihood_pressure"]["B"],
             "draw_rollout_continuation_likelihood_pressure_white": draw_rollout["continuation_likelihood_pressure"]["W"],
+            "draw_rollout_self_exposure_pressure_black": draw_rollout_self_exposure_pressure["B"],
+            "draw_rollout_self_exposure_pressure_white": draw_rollout_self_exposure_pressure["W"],
+            "draw_rollout_new_drawn_exposure_pressure_black": draw_rollout_new_drawn_exposure_pressure["B"],
+            "draw_rollout_new_drawn_exposure_pressure_white": draw_rollout_new_drawn_exposure_pressure["W"],
             "draw_rollout_expected_win_probability_black": draw_rollout["expected_win_probability"]["B"],
             "draw_rollout_expected_win_probability_white": draw_rollout["expected_win_probability"]["W"],
             "draw_rollout_expected_attackability_after_hit_black": draw_rollout["expected_attackability_after_hit"]["B"],
