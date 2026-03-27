@@ -1,0 +1,121 @@
+2026-03-27 结构化自曝风险十轮强化总复盘报告
+
+一、这十轮的主目标
+
+这批十轮的主目标，是把“猜错会暴露自己”这件事从一个粗粒度的 `my_hidden_count` 风险，推进成真正结构化的自曝风险模型。
+
+上一批已经把“命中后能不能连续追击”补强了，但那套逻辑仍然有一个明显缺口：
+
+1. 能继续追，不等于值得继续追
+2. 自己的手牌如果已经很尖、很短、刚摸的新牌很危险，理性玩家会更保守
+3. 如果模型只会看 target attackability，不会看 self exposure，就会在很多边界 case 上过于激进
+
+所以这十轮的方向是：
+
+1. 建立 public self exposure profile
+2. 把 exposure 真正写进 miss penalty / stop threshold / continue guard
+3. 再把这套风险继续回灌到行为似然与 continuation value
+
+
+二、十轮核心推进
+
+第 1 轮 `aa86172 apply public self exposure to move risk`
+- 建立公开自手牌暴露 profile
+- 用 revealed anchor、slot width、edge pin、newly drawn 估计 public exposure
+- 直接把 exposure 写进 move 级 miss penalty 和 expected value
+
+第 2 轮 `09820a5 raise stop threshold under self exposure`
+- stop threshold 不再只看 hidden count、命中率和 continuation
+- self_public_exposure / self_newly_drawn_exposure 正式进入停手阈值
+
+第 3 轮 `6e23e68 model finish fragility on exposed self hand`
+- 从 self exposure 里拆出 `finish_fragility`
+- 让“整手牌已进入残局脆弱区”的状态单独成一个风险信号
+
+第 4 轮 `914b11b surface self exposure threshold breakdown`
+- stop threshold 从黑盒总值改成结构化 breakdown
+- 现在可以明确看到：
+  - short_hand_threshold
+  - self_exposure_threshold
+  - newly_drawn_threshold
+  - finish_fragility_threshold
+
+第 5 轮 `5ed5960 guard continue decisions under self exposure`
+- 新增 `self_exposure_guard`
+- 一些本来勉强正收益、但公开自曝风险过高的 continue 案例，会被直接拦下来
+
+第 6 轮 `eff4584 blend public self exposure into behavior likelihood`
+- 把 public self exposure 接进 `BehavioralLikelihoodModel._score_continue_decision`
+- 行为模型不再只会判断“能不能追”，也开始判断“这种局面继续追是否像理性玩家”
+
+第 7 轮 `551f91d reward stopping under public finish fragility`
+- 在行为似然里继续强化 finish fragility
+- 让残局下“主动收手”更像自然行为，而不是被当成弱动作
+
+第 8 轮 `91da3c5 dampen continuation value under self exposure`
+- post-hit continuation value 新增 exposure gate
+- 即使 target chain 很好，如果当前自手牌很脆，continuation value 也会被压低
+
+第 9 轮 `97247b6 expand low-confidence guard under self exposure`
+- low-confidence guard / weak-edge margin 开始随 self exposure 膨胀
+- 让高暴露局面下的边界 continue 更早被判停
+
+第 10 轮 `9973797 boost edge pressure under self exposure`
+- 当 best gap 很小、且 self exposure 高时，edge pressure 会被继续放大
+- 专门杀掉“只是比第二名略好一点，但自己已经很危险”的勉强追击
+
+
+三、这一批完成后的能力变化
+
+做完这十轮后，项目在“猜对后继续还是停”这条线上，已经从单纯的收益判断推进成了更像真实玩家风险管理的结构：
+
+1. move 级别会显式估算 public self exposure
+2. miss penalty 已经不再是统一常数，而会随自手牌结构变化
+3. stop threshold 已经有结构化拆解，不再只给一个总分
+4. continue guard 会直接拦截高自曝的边界进攻
+5. 行为似然层也已经开始认为“高自曝时停手更合理”
+6. continuation value 自身也会被 self exposure 压缩，避免和 stop 逻辑互相打架
+
+换句话说，这一批不是在补解释字段，而是在补：
+
+- 继续的收益
+- 停手的必要性
+- 自己被反打的代价
+
+这三者之间真正的平衡。
+
+
+四、验证结果
+
+验证命令：
+python -m unittest discover -s backend/tests -p "test*.py"
+
+最终结果：
+112 / 112 通过
+
+
+五、本批价值判断
+
+这批十轮是逻辑主线推进，而且属于对核心目标 3 的直接增强。
+
+它真正强化的是：
+
+1. “猜对后继续还是停”不再偏激进
+2. 结构化自曝风险正式进入主决策
+3. 行为似然和决策层在 stop / continue 上更一致
+
+和前一批“连续追击链”相比，这一批补的是另一半：
+
+- 上一批回答“为什么值得追”
+- 这一批回答“什么时候明明能追，但也不该追”
+
+两批合起来，才更接近一个真正可用的 continuation 决策器。
+
+
+六、下一步建议
+
+这批已经把自曝风险主骨架补上了，下一步更值得继续做的是：
+
+1. 把失败后暴露的公共信息坍缩继续往全场传播做硬
+2. 把 failed guess 之后的 target switching / draw pressure / next-turn vulnerability 进一步联动
+3. 用固定 benchmark 把“激进误继续”和“保守误停手”分成两类单独评测
