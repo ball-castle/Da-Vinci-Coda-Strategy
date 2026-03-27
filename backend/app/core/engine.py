@@ -235,10 +235,12 @@ class BehavioralLikelihoodModel:
     CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY = 0.91
     CONTINUE_FINISH_FRAGILITY_PENALTY = 0.92
     CONTINUE_FAILURE_RECOVERY_BONUS = 1.05
+    CONTINUE_JOINT_COLLAPSE_BONUS = 1.04
     STOP_SELF_EXPOSURE_BONUS = 1.05
     STOP_NEW_DRAWN_EXPOSURE_BONUS = 1.07
     STOP_FINISH_FRAGILITY_BONUS = 1.06
     STOP_FAILURE_RECOVERY_PENALTY = 0.95
+    STOP_JOINT_COLLAPSE_PENALTY = 0.96
     PUBLIC_SELF_EXPOSURE_SECONDARY_BLEND = 0.35
     PUBLIC_SELF_EXPOSURE_FINISH_REFERENCE = 3.0
     PUBLIC_SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS = 1.08
@@ -1330,6 +1332,10 @@ class BehavioralLikelihoodModel:
             hypothesis_by_player,
             signal,
         )
+        joint_collapse_signal = self._continue_joint_collapse_signal(
+            game_state,
+            signal,
+        )
         if signal.continued_turn:
             weight = (
                 self.CONTINUE_HIGH_ATTACKABILITY_BONUS
@@ -1355,6 +1361,10 @@ class BehavioralLikelihoodModel:
             weight *= 1.0 + (
                 (self.CONTINUE_FAILURE_RECOVERY_BONUS - 1.0)
                 * failure_recovery_signal
+            )
+            weight *= 1.0 + (
+                (self.CONTINUE_JOINT_COLLAPSE_BONUS - 1.0)
+                * joint_collapse_signal
             )
             return weight
 
@@ -1382,6 +1392,10 @@ class BehavioralLikelihoodModel:
         weight *= 1.0 - (
             (1.0 - self.STOP_FAILURE_RECOVERY_PENALTY)
             * failure_recovery_signal
+        )
+        weight *= 1.0 - (
+            (1.0 - self.STOP_JOINT_COLLAPSE_PENALTY)
+            * joint_collapse_signal
         )
         return weight
 
@@ -1415,6 +1429,22 @@ class BehavioralLikelihoodModel:
                 attackability * failed_guess_pressure,
             )
         return clamp(best_recovery_signal, 0.0, 1.0)
+
+    def _continue_joint_collapse_signal(
+        self,
+        game_state: GameState,
+        signal: GuessSignal,
+    ) -> float:
+        target_collapse = self._recent_player_collapse_streak_pressure(
+            game_state,
+            signal.target_player_id,
+        )
+        global_collapse = self._global_public_collapse_pressure(game_state)
+        return clamp(
+            (0.60 * target_collapse) + (0.40 * global_collapse),
+            0.0,
+            1.0,
+        )
 
     def _public_hand_exposure_profile(
         self,
