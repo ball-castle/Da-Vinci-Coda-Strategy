@@ -2550,6 +2550,7 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_FAILURE_RECOVERY = 0.12
     STOP_MARGIN_ATTACK_WINDOW = 0.10
     STOP_MARGIN_JOINT_COLLAPSE = 0.08
+    STOP_MARGIN_PUBLIC_BRIDGE = 0.06
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     FAILURE_RECOVERY_REFERENCE = 0.30
@@ -2871,6 +2872,7 @@ class DaVinciDecisionEngine:
                     "failure_recovery_pressure": 0.0,
                     "attack_window_support": 0.0,
                     "joint_collapse_support": 0.0,
+                    "public_reveal_bridge_support": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -4559,6 +4561,11 @@ class DaVinciDecisionEngine:
             * float(best_move.get("joint_collapse_signal", 0.0))
         )
         continue_score += joint_collapse_support
+        public_reveal_bridge_support = (
+            self.STOP_MARGIN_PUBLIC_BRIDGE
+            * float(best_move.get("public_reveal_bridge_signal", 0.0))
+        )
+        continue_score += public_reveal_bridge_support
         post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
             best_move=best_move,
         )
@@ -4684,6 +4691,7 @@ class DaVinciDecisionEngine:
                 "failure_recovery_pressure": failure_recovery_pressure,
                 "attack_window_support": attack_window_support,
                 "joint_collapse_support": joint_collapse_support,
+                "public_reveal_bridge_support": public_reveal_bridge_support,
             },
         }
 
