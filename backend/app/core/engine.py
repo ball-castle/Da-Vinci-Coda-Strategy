@@ -5817,6 +5817,9 @@ class GameController:
             "expected_joint_collapse_signal": {"B": 0.0, "W": 0.0},
             "expected_joint_collapse_bonus": {"B": 0.0, "W": 0.0},
             "expected_joint_collapse_continuation_bonus": {"B": 0.0, "W": 0.0},
+            "expected_public_reveal_bridge_signal": {"B": 0.0, "W": 0.0},
+            "expected_public_reveal_bridge_bonus": {"B": 0.0, "W": 0.0},
+            "expected_public_reveal_bridge_continuation_bonus": {"B": 0.0, "W": 0.0},
             "expected_win_probability": {"B": 0.0, "W": 0.0},
             "expected_attackability_after_hit": {"B": 0.0, "W": 0.0},
             "target_retention_ratio": {"B": 0.0, "W": 0.0},
@@ -5883,6 +5886,9 @@ class GameController:
             joint_collapse_signal_sum = 0.0
             joint_collapse_bonus_sum = 0.0
             joint_collapse_continuation_bonus_sum = 0.0
+            public_reveal_bridge_signal_sum = 0.0
+            public_reveal_bridge_bonus_sum = 0.0
+            public_reveal_bridge_continuation_bonus_sum = 0.0
             win_probability_sum = 0.0
             attackability_sum = 0.0
             target_retention_count = 0.0
@@ -5973,6 +5979,18 @@ class GameController:
                 joint_collapse_continuation_bonus_sum += float(
                     simulated_decision.get(
                         "best_joint_collapse_continuation_bonus",
+                        0.0,
+                    )
+                )
+                public_reveal_bridge_signal_sum += float(
+                    simulated_decision.get("best_public_reveal_bridge_signal", 0.0)
+                )
+                public_reveal_bridge_bonus_sum += float(
+                    simulated_decision.get("best_public_reveal_bridge_bonus", 0.0)
+                )
+                public_reveal_bridge_continuation_bonus_sum += float(
+                    simulated_decision.get(
+                        "best_public_reveal_bridge_continuation_bonus",
                         0.0,
                     )
                 )
@@ -6104,6 +6122,15 @@ class GameController:
             )
             summary["expected_joint_collapse_continuation_bonus"][color] = (
                 joint_collapse_continuation_bonus_sum / len(sample_cards)
+            )
+            summary["expected_public_reveal_bridge_signal"][color] = (
+                public_reveal_bridge_signal_sum / len(sample_cards)
+            )
+            summary["expected_public_reveal_bridge_bonus"][color] = (
+                public_reveal_bridge_bonus_sum / len(sample_cards)
+            )
+            summary["expected_public_reveal_bridge_continuation_bonus"][color] = (
+                public_reveal_bridge_continuation_bonus_sum / len(sample_cards)
             )
             summary["expected_win_probability"][color] = (
                 win_probability_sum / len(sample_cards)
@@ -6244,6 +6271,18 @@ class GameController:
         joint_collapse_continuation_bonus_gap = (
             summary["expected_joint_collapse_continuation_bonus"]["B"]
             - summary["expected_joint_collapse_continuation_bonus"]["W"]
+        )
+        public_reveal_bridge_signal_gap = (
+            summary["expected_public_reveal_bridge_signal"]["B"]
+            - summary["expected_public_reveal_bridge_signal"]["W"]
+        )
+        public_reveal_bridge_bonus_gap = (
+            summary["expected_public_reveal_bridge_bonus"]["B"]
+            - summary["expected_public_reveal_bridge_bonus"]["W"]
+        )
+        public_reveal_bridge_continuation_bonus_gap = (
+            summary["expected_public_reveal_bridge_continuation_bonus"]["B"]
+            - summary["expected_public_reveal_bridge_continuation_bonus"]["W"]
         )
         attackability_gap = (
             summary["expected_attackability_after_hit"]["B"]
@@ -6388,6 +6427,36 @@ class GameController:
             ),
             "W": clamp(
                 (-joint_collapse_continuation_bonus_gap)
+                / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["public_reveal_bridge_signal_pressure"] = {
+            "B": clamp(public_reveal_bridge_signal_gap, -1.0, 1.0),
+            "W": clamp(-public_reveal_bridge_signal_gap, -1.0, 1.0),
+        }
+        summary["public_reveal_bridge_bonus_pressure"] = {
+            "B": clamp(
+                public_reveal_bridge_bonus_gap / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-public_reveal_bridge_bonus_gap) / self.DRAW_ROLLOUT_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+        }
+        summary["public_reveal_bridge_continuation_pressure"] = {
+            "B": clamp(
+                public_reveal_bridge_continuation_bonus_gap
+                / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
+                -1.0,
+                1.0,
+            ),
+            "W": clamp(
+                (-public_reveal_bridge_continuation_bonus_gap)
                 / self.DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE,
                 -1.0,
                 1.0,
@@ -6792,6 +6861,9 @@ class GameController:
                     + (0.08 * draw_rollout["joint_collapse_signal_pressure"][color])
                     + (0.10 * draw_rollout["joint_collapse_bonus_pressure"][color])
                     + (0.08 * draw_rollout["joint_collapse_continuation_pressure"][color])
+                    + (0.08 * draw_rollout["public_reveal_bridge_signal_pressure"][color])
+                    + (0.08 * draw_rollout["public_reveal_bridge_bonus_pressure"][color])
+                    + (0.06 * draw_rollout["public_reveal_bridge_continuation_pressure"][color])
                 )
             )
             for color in CARD_COLORS
@@ -6929,6 +7001,30 @@ class GameController:
                     - draw_rollout["joint_collapse_continuation_pressure"]["W"]
                 )
             ),
+            "draw_rollout_public_reveal_bridge_signal_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout["public_reveal_bridge_signal_pressure"]["B"]
+                    - draw_rollout["public_reveal_bridge_signal_pressure"]["W"]
+                )
+            ),
+            "draw_rollout_public_reveal_bridge_bonus_pressure": (
+                draw_rollout_activation_scale
+                * 0.08
+                * abs(
+                    draw_rollout["public_reveal_bridge_bonus_pressure"]["B"]
+                    - draw_rollout["public_reveal_bridge_bonus_pressure"]["W"]
+                )
+            ),
+            "draw_rollout_public_reveal_bridge_continuation_pressure": (
+                draw_rollout_activation_scale
+                * 0.06
+                * abs(
+                    draw_rollout["public_reveal_bridge_continuation_pressure"]["B"]
+                    - draw_rollout["public_reveal_bridge_continuation_pressure"]["W"]
+                )
+            ),
             "offense_pressure": abs(offense_pressure["B"] - offense_pressure["W"]),
             "entropy_pressure": abs(entropy_pressure["B"] - entropy_pressure["W"]),
             "target_entropy_pressure": abs(
@@ -7013,6 +7109,12 @@ class GameController:
             "draw_rollout_expected_joint_collapse_bonus_white": draw_rollout["expected_joint_collapse_bonus"]["W"],
             "draw_rollout_expected_joint_collapse_continuation_bonus_black": draw_rollout["expected_joint_collapse_continuation_bonus"]["B"],
             "draw_rollout_expected_joint_collapse_continuation_bonus_white": draw_rollout["expected_joint_collapse_continuation_bonus"]["W"],
+            "draw_rollout_expected_public_reveal_bridge_signal_black": draw_rollout["expected_public_reveal_bridge_signal"]["B"],
+            "draw_rollout_expected_public_reveal_bridge_signal_white": draw_rollout["expected_public_reveal_bridge_signal"]["W"],
+            "draw_rollout_expected_public_reveal_bridge_bonus_black": draw_rollout["expected_public_reveal_bridge_bonus"]["B"],
+            "draw_rollout_expected_public_reveal_bridge_bonus_white": draw_rollout["expected_public_reveal_bridge_bonus"]["W"],
+            "draw_rollout_expected_public_reveal_bridge_continuation_bonus_black": draw_rollout["expected_public_reveal_bridge_continuation_bonus"]["B"],
+            "draw_rollout_expected_public_reveal_bridge_continuation_bonus_white": draw_rollout["expected_public_reveal_bridge_continuation_bonus"]["W"],
             "draw_rollout_continuation_value_pressure_black": draw_rollout["continuation_value_pressure"]["B"],
             "draw_rollout_continuation_value_pressure_white": draw_rollout["continuation_value_pressure"]["W"],
             "draw_rollout_continuation_likelihood_pressure_black": draw_rollout["continuation_likelihood_pressure"]["B"],
@@ -7047,6 +7149,12 @@ class GameController:
             "draw_rollout_joint_collapse_bonus_pressure_white": draw_rollout["joint_collapse_bonus_pressure"]["W"],
             "draw_rollout_joint_collapse_continuation_pressure_black": draw_rollout["joint_collapse_continuation_pressure"]["B"],
             "draw_rollout_joint_collapse_continuation_pressure_white": draw_rollout["joint_collapse_continuation_pressure"]["W"],
+            "draw_rollout_public_reveal_bridge_signal_pressure_black": draw_rollout["public_reveal_bridge_signal_pressure"]["B"],
+            "draw_rollout_public_reveal_bridge_signal_pressure_white": draw_rollout["public_reveal_bridge_signal_pressure"]["W"],
+            "draw_rollout_public_reveal_bridge_bonus_pressure_black": draw_rollout["public_reveal_bridge_bonus_pressure"]["B"],
+            "draw_rollout_public_reveal_bridge_bonus_pressure_white": draw_rollout["public_reveal_bridge_bonus_pressure"]["W"],
+            "draw_rollout_public_reveal_bridge_continuation_pressure_black": draw_rollout["public_reveal_bridge_continuation_pressure"]["B"],
+            "draw_rollout_public_reveal_bridge_continuation_pressure_white": draw_rollout["public_reveal_bridge_continuation_pressure"]["W"],
             "draw_rollout_expected_win_probability_black": draw_rollout["expected_win_probability"]["B"],
             "draw_rollout_expected_win_probability_white": draw_rollout["expected_win_probability"]["W"],
             "draw_rollout_expected_attackability_after_hit_black": draw_rollout["expected_attackability_after_hit"]["B"],
