@@ -2276,6 +2276,7 @@ class DaVinciDecisionEngine:
     BEHAVIOR_MATCH_DECISION_NET_STRUCTURE_SCALE = 0.50
     POST_HIT_BEHAVIOR_SUPPORT_SCALE = 0.08
     POST_HIT_BEHAVIOR_SUPPORT_REFERENCE = 0.20
+    POST_HIT_FAILURE_RECOVERY_SCALE = 0.65
     CONTINUATION_SELF_EXPOSURE_DRAG = 0.26
     CONTINUATION_FINISH_FRAGILITY_DRAG = 0.22
     SELF_EXPOSURE_SECONDARY_BLEND = 0.35
@@ -2685,6 +2686,9 @@ class DaVinciDecisionEngine:
         post_hit_behavior_fragility_signal = 0.0
         post_hit_behavior_support_strength = 0.0
         post_hit_behavior_fragility_strength = 0.0
+        post_hit_failure_recovery_bonus = 0.0
+        post_hit_failed_switch_bonus = 0.0
+        post_hit_failed_switch_signal = 0.0
         continuation_exposure_gate = 1.0
         behavior_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
         behavior_guidance_support = 0.0
@@ -2777,6 +2781,9 @@ class DaVinciDecisionEngine:
                 post_hit_top_k_expected_support_ratio = post_hit_rollout["top_k_expected_support_ratio"]
                 post_hit_top_k_support_ratio = post_hit_rollout["top_k_support_ratio"]
                 post_hit_top_k_positive_count = post_hit_rollout["top_k_positive_count"]
+                post_hit_failure_recovery_bonus = post_hit_rollout["failure_recovery_bonus"]
+                post_hit_failed_switch_bonus = post_hit_rollout["failed_switch_bonus"]
+                post_hit_failed_switch_signal = post_hit_rollout["failed_switch_signal"]
                 if post_hit_continue_margin > 0.0 and post_hit_best_gap < self.POST_HIT_GAP_REFERENCE:
                     post_hit_gap_adjustment = max(
                         0.35,
@@ -2791,6 +2798,13 @@ class DaVinciDecisionEngine:
                     * continuation_likelihood
                     * max(0.0, rollout_margin_basis)
                     * post_hit_gap_adjustment
+                )
+                post_hit_continuation_value += (
+                    self.POST_HIT_FAILURE_RECOVERY_SCALE
+                    * (
+                        post_hit_failure_recovery_bonus
+                        + post_hit_failed_switch_bonus
+                    )
                 )
                 continuation_value = probability * post_hit_continuation_value
                 continuation_exposure_gate = clamp(
@@ -2991,6 +3005,9 @@ class DaVinciDecisionEngine:
             "post_hit_behavior_fragility_signal": post_hit_behavior_fragility_signal,
             "post_hit_behavior_support_strength": post_hit_behavior_support_strength,
             "post_hit_behavior_fragility_strength": post_hit_behavior_fragility_strength,
+            "post_hit_failure_recovery_bonus": post_hit_failure_recovery_bonus,
+            "post_hit_failed_switch_bonus": post_hit_failed_switch_bonus,
+            "post_hit_failed_switch_signal": post_hit_failed_switch_signal,
             "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
             "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
             "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
@@ -3065,6 +3082,9 @@ class DaVinciDecisionEngine:
                 "post_hit_behavior_fragility_signal": post_hit_behavior_fragility_signal,
                 "post_hit_behavior_support_strength": post_hit_behavior_support_strength,
                 "post_hit_behavior_fragility_strength": post_hit_behavior_fragility_strength,
+                "post_hit_failure_recovery_bonus": post_hit_failure_recovery_bonus,
+                "post_hit_failed_switch_bonus": post_hit_failed_switch_bonus,
+                "post_hit_failed_switch_signal": post_hit_failed_switch_signal,
                 "post_hit_top_k_expected_continue_margin": post_hit_top_k_expected_continue_margin,
                 "post_hit_top_k_continue_margin": post_hit_top_k_continue_margin,
                 "post_hit_top_k_expected_support_ratio": post_hit_top_k_expected_support_ratio,
@@ -3187,6 +3207,12 @@ class DaVinciDecisionEngine:
             "stop_score": stop_score,
             "continue_margin": next_summary.get("continue_margin", 0.0),
             "best_gap": next_summary.get("best_gap", 0.0),
+            "failure_recovery_bonus": next_summary.get("best_failure_collapse_bonus", 0.0),
+            "failed_switch_bonus": next_summary.get("best_failed_guess_switch_bonus", 0.0),
+            "failed_switch_signal": next_summary.get(
+                "best_failed_guess_switch_continuity_signal",
+                0.0,
+            ),
             "behavior_guidance_multiplier": float(
                 (post_hit_behavior_guidance_profile or {}).get(
                     "guidance_multiplier",

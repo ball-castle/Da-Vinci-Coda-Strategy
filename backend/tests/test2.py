@@ -1110,6 +1110,93 @@ class StopThresholdTests(unittest.TestCase):
             protected_moves[0]["continuation_value"],
         )
 
+    def test_evaluate_all_moves_uses_post_hit_failure_recovery_in_continuation(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+            "side": {
+                0: {("W", 4): 0.74, ("W", 5): 0.26},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+            "side": {0: 0},
+        }
+        collapsed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="side",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=3,
+                    result=False,
+                ),
+            ],
+        )
+        stable_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=collapsed_world.players,
+            actions=[],
+        )
+
+        collapsed_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=collapsed_world,
+            blocked_slots=set(),
+            rollout_depth=1,
+        )
+        stable_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=stable_world,
+            blocked_slots=set(),
+            rollout_depth=1,
+        )
+
+        collapsed_opp_move = next(
+            move for move in collapsed_moves if move["target_player_id"] == "opp"
+        )
+        stable_opp_move = next(
+            move for move in stable_moves if move["target_player_id"] == "opp"
+        )
+
+        self.assertGreater(collapsed_opp_move["post_hit_failure_recovery_bonus"], 0.0)
+        self.assertGreater(collapsed_opp_move["continuation_value"], stable_opp_move["continuation_value"])
+
     def test_choose_best_move_expands_low_confidence_guard_under_self_exposure(self):
         engine = DaVinciDecisionEngine()
         fragile_moves = [
