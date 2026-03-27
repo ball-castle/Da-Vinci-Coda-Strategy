@@ -1175,6 +1175,62 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(reveal_neighbor_score, settled_neighbor_score)
 
+    def test_target_slot_selection_prefers_slot_next_to_recent_failed_guess_collapse(self):
+        model = BehavioralLikelihoodModel()
+
+        collapsed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                        CardSlot(slot_index=3, color="W", value=8, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="opp",
+                    target_slot_index=2,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        )
+        settled_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=collapsed_world.players,
+            actions=[],
+        )
+
+        hypothesis = {"opp": {1: ("W", 2), 2: ("B", 6)}}
+
+        collapsed_score = model._slot_attackability(
+            collapsed_world,
+            hypothesis,
+            "opp",
+            1,
+        )
+        settled_score = model._slot_attackability(
+            settled_world,
+            hypothesis,
+            "opp",
+            1,
+        )
+
+        self.assertGreater(collapsed_score, settled_score)
+
     def test_player_attackability_rewards_secondary_live_slot(self):
         model = BehavioralLikelihoodModel()
 
@@ -1230,6 +1286,69 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
         )
 
         self.assertGreater(clustered_pressure, isolated_pressure)
+
+    def test_player_attackability_rewards_recent_failed_guess_collapse(self):
+        model = BehavioralLikelihoodModel()
+
+        collapsed_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=4, is_revealed=True),
+                        CardSlot(slot_index=3, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=4, color="B", value=7, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="opp",
+                    target_slot_index=3,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        )
+        settled_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=collapsed_world.players,
+            actions=[],
+        )
+
+        hypothesis = {"opp": {1: ("W", 2), 3: ("W", 5)}}
+
+        collapsed_pressure = model._player_attackability(
+            collapsed_world,
+            hypothesis,
+            "opp",
+        )
+        settled_pressure = model._player_attackability(
+            settled_world,
+            hypothesis,
+            "opp",
+        )
+
+        self.assertGreater(collapsed_pressure, settled_pressure)
 
     def test_target_player_selection_rewards_switch_after_failed_target_when_new_target_is_tighter(self):
         model = BehavioralLikelihoodModel()

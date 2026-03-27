@@ -183,6 +183,7 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_RECENT_COLLAPSE_BONUS = 1.04
     PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
     PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
+    PLAYER_RECENT_FAILED_GUESS_BONUS = 0.10
 
     TARGET_SLOT_BEST_MATCH_BONUS = 1.08
     TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
@@ -192,6 +193,7 @@ class BehavioralLikelihoodModel:
     TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS = 1.03
     SLOT_EDGE_PRESSURE_BONUS = 1.05
     SLOT_RECENT_REVEAL_NEIGHBOR_BONUS = 1.06
+    SLOT_FAILURE_NEIGHBOR_ATTACK_BONUS = 1.04
     PLAYER_SECONDARY_ATTACKABILITY_BLEND = 0.20
     PLAYER_FINISH_PRESSURE_BONUS = 0.26
     MATRIX_SECONDARY_ATTACKABILITY_BLEND = 0.22
@@ -1549,10 +1551,12 @@ class BehavioralLikelihoodModel:
             exclude_slot=exclude_slot,
         )
         recent_public_reveal = self._recent_public_reveal_pressure(game_state, player_id)
+        recent_failed_guess = self._recent_failed_guess_pressure(game_state, player_id)
         return best * (
             1.0
             + (self.PLAYER_FINISH_PRESSURE_BONUS * finish_pressure)
             + (self.PLAYER_RECENT_PUBLIC_REVEAL_BONUS * recent_public_reveal)
+            + (self.PLAYER_RECENT_FAILED_GUESS_BONUS * recent_failed_guess)
         )
 
     def _player_finish_pressure(
@@ -1590,6 +1594,39 @@ class BehavioralLikelihoodModel:
             if recency_weight < 0.2:
                 break
         return clamp(reveal_score, 0.0, 1.0)
+
+    def _recent_failed_guess_pressure(
+        self,
+        game_state: GameState,
+        player_id: str,
+        slot_index: Optional[int] = None,
+    ) -> float:
+        failure_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+            if getattr(action, "result", False):
+                recency_weight *= 0.6
+                if recency_weight < 0.2:
+                    break
+                continue
+            if getattr(action, "target_player_id", None) != player_id:
+                recency_weight *= 0.6
+                if recency_weight < 0.2:
+                    break
+                continue
+            if slot_index is not None and getattr(action, "target_slot_index", None) != slot_index:
+                recency_weight *= 0.6
+                if recency_weight < 0.2:
+                    break
+                continue
+            if action.guessed_card() is not None:
+                failure_score += recency_weight
+            recency_weight *= 0.6
+            if recency_weight < 0.2:
+                break
+        return clamp(failure_score, 0.0, 1.0)
 
     def _slot_attackability(
         self,
@@ -1637,6 +1674,16 @@ class BehavioralLikelihoodModel:
                 (self.SLOT_RECENT_REVEAL_NEIGHBOR_BONUS - 1.0)
                 * reveal_neighbor_pressure
             )
+        failed_guess_neighbor_pressure = self._recent_failed_guess_neighbor_pressure(
+            game_state,
+            player_id,
+            slot_index,
+        )
+        if failed_guess_neighbor_pressure > 0.0:
+            confidence *= 1.0 + (
+                (self.SLOT_FAILURE_NEIGHBOR_ATTACK_BONUS - 1.0)
+                * failed_guess_neighbor_pressure
+            )
         return confidence
 
     def _recent_reveal_neighbor_pressure(
@@ -1661,6 +1708,31 @@ class BehavioralLikelihoodModel:
             if recency_weight < 0.2:
                 break
         return clamp(reveal_score, 0.0, 1.0)
+
+    def _recent_failed_guess_neighbor_pressure(
+        self,
+        game_state: GameState,
+        player_id: str,
+        slot_index: int,
+    ) -> float:
+        failure_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+            failed_slot_index = getattr(action, "target_slot_index", None)
+            if (
+                not getattr(action, "result", False)
+                and getattr(action, "target_player_id", None) == player_id
+                and isinstance(failed_slot_index, int)
+                and abs(failed_slot_index - slot_index) == 1
+                and action.guessed_card() is not None
+            ):
+                failure_score += recency_weight
+            recency_weight *= 0.6
+            if recency_weight < 0.2:
+                break
+        return clamp(failure_score, 0.0, 1.0)
 
     def _previous_guess_signal(
         self,
