@@ -2157,6 +2157,99 @@ class StopThresholdTests(unittest.TestCase):
             stable_summary["continue_margin"],
         )
 
+    def test_choose_best_move_uses_expectimax_support(self):
+        engine = DaVinciDecisionEngine()
+        expectimax_moves = [
+            {
+                "expected_value": 0.71,
+                "immediate_expected_value": 0.71,
+                "win_probability": 0.57,
+                "continuation_value": 0.14,
+                "continuation_likelihood": 0.60,
+                "attackability_after_hit": 0.72,
+                "post_hit_continue_score": 0.26,
+                "post_hit_stop_score": 0.18,
+                "post_hit_continue_margin": 0.08,
+                "post_hit_best_gap": 0.30,
+                "post_hit_top_k_continue_margin": 0.06,
+                "post_hit_top_k_expected_continue_margin": 0.06,
+                "post_hit_top_k_support_ratio": 1.0,
+                "post_hit_top_k_expected_support_ratio": 1.0,
+                "post_hit_expectimax_value": 0.94,
+                "post_hit_expectimax_margin": 0.22,
+                "post_hit_expectimax_support_ratio": 1.0,
+                "post_hit_expectimax_signal": 0.88,
+                "strategy_objective_core": 0.83,
+                "strategy_objective": 0.83,
+                "self_public_exposure": 0.05,
+                "self_newly_drawn_exposure": 0.02,
+                "self_finish_fragility": 0.02,
+            },
+        ]
+        stable_moves = [
+            {
+                **expectimax_moves[0],
+                "post_hit_expectimax_value": 0.0,
+                "post_hit_expectimax_margin": 0.0,
+                "post_hit_expectimax_support_ratio": 0.0,
+                "post_hit_expectimax_signal": 0.0,
+            },
+        ]
+
+        expectimax_best, expectimax_summary = engine.choose_best_move(
+            expectimax_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        stable_best, stable_summary = engine.choose_best_move(
+            stable_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(expectimax_best)
+        self.assertIsNotNone(stable_best)
+        self.assertGreater(
+            expectimax_summary["decision_score_breakdown"]["expectimax_support"],
+            0.0,
+        )
+        self.assertGreater(
+            expectimax_summary["continue_margin"],
+            stable_summary["continue_margin"],
+        )
+
+    def test_choose_best_move_uses_strategy_objective_core_as_continue_support(self):
+        engine = DaVinciDecisionEngine()
+        objective_move = {
+            "expected_value": 0.64,
+            "win_probability": 0.55,
+            "continuation_value": 0.12,
+            "continuation_likelihood": 0.59,
+            "attackability_after_hit": 0.68,
+            "strategy_objective_core": 0.82,
+            "strategy_objective": 0.82,
+            "post_hit_continue_score": 0.0,
+            "post_hit_stop_score": 0.0,
+            "post_hit_continue_margin": 0.0,
+            "post_hit_best_gap": 0.0,
+            "self_public_exposure": 0.04,
+            "self_newly_drawn_exposure": 0.02,
+            "self_finish_fragility": 0.02,
+        }
+
+        best_move, summary = engine.choose_best_move(
+            [objective_move],
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(best_move)
+        self.assertEqual(
+            summary["decision_score_breakdown"]["strategy_objective_support"],
+            0.82,
+        )
+        self.assertEqual(summary["best_strategy_objective_core"], 0.82)
+
     def test_choose_best_move_boosts_edge_pressure_under_self_exposure(self):
         engine = DaVinciDecisionEngine()
         fragile_moves = [

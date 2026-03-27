@@ -1,225 +1,149 @@
-2026-03-27 联合动作模型全场传播搜索与量化基准补齐复盘报告
+2026-03-27 联合动作模型全场传播搜索与量化基准补齐复盘报告 17:45
 
-一、这次补的不是局部点，而是四个主缺口
+生成时间：2026-03-27 17:45:09
 
-这次改动对应上一份评分表里明确列出来的 4 个缺口：
+一、这次继续补的是上一份评分里剩下的四个硬缺口
 
-1. `P(action | state)` 还不是更完整的联合动作模型
-2. 公共信息坍缩还没有形成更硬的全场联合传播
-3. 当前仍然主要是 heuristic + rollout，搜索层不够明确
-4. benchmark 还缺少“强多少”的量化
+这次不是再补 explanation，也不是再补单点 heuristic。
+而是直接对着上一份评分里还没补完的四条继续推进：
 
-所以这次没有继续补 explanation，也没有继续拆局部 heuristics，
-而是直接把这四点做成一批主干更新。
-
-
-二、这次的核心改动
-
-1. 补联合动作模型
-
-在 `BehavioralLikelihoodModel` 里新增了 `joint_action_fit_breakdown`。
-
-这一步的意义不是多了一个 bonus，
-而是把原来分散的：
-
-- target player selection
-- target slot selection
-- value selection
-- continue decision
-
-第一次显式合成了同一个动作联合核。
-
-现在一个动作不再只是“这几个局部项各自乘一下”，
-而是会再额外判断：
-
-- 这些局部选择是不是互相一致
-- 当前 target / slot / value / continue 是否在同一条行动计划上
-- 当前局面的攻击窗口、坍缩传播、bridge、chain 是否支撑这条计划
-
-这让行为似然更接近“联合动作选择”，
-而不是原来那种拆开的局部权重拼接。
+1. `P(action | state)` 还不够像联合概率模型
+2. 搜索层还不够像 expectimax
+3. benchmark 样本量还不够大
+4. 抽牌、猜牌、继续停手还没有彻底共享同一个总策略目标
 
 
-2. 补全场传播
+二、这次真正补上的东西
 
-新增了 `global_public_propagation_pressure`。
+1. 联合动作模型从“结构化乘权”继续推进到“归一化联合动作概率”
 
-以前的 `joint collapse` 已经有用了，
-但更多还是“近期 reveal / failed guess 的局部压缩感”。
+`BehavioralLikelihoodModel` 现在不只是保留原来的结构化 fit，
+还新增了归一化的联合动作概率分解：
 
-这次推进之后，
-系统开始把下面这些量统一汇总成全场传播信号：
+- player probability
+- slot probability
+- value probability
+- continue probability
+- joint probability
 
-- 多个玩家最近的公开 reveal
-- 多个玩家最近的 failed guess
-- 各玩家当前 public exposure
-- 各玩家当前 finish fragility
-- 坍缩是否在多目标之间形成 breadth
-
-然后这个传播信号被接进了：
-
-- player attackability
-- continue joint collapse
-- single move value
-- continuation value
-- final continue boundary
-
-也就是说，
-公共事件现在不再只是一跳 bonus，
-而是已经能跨层回灌进整套主决策。
+这一步的意义是：
+同一个行为现在会同时被“局部结构是否合理”和“整条动作在候选空间里的相对概率”一起约束。
+也就是说，动作似然现在比之前更像一个联合动作分布，而不是纯局部 bonus 乘积。
 
 
-3. 补显式搜索层
+2. post-hit 搜索从 branch search 推进到带权 expectimax-lite
 
-这次没有直接上完整 MCTS，
-但已经把原先偏隐式的 post-hit rollout，
-推进成了一个更明确的 shallow branch search。
+这次不是只取最强分支了。
+现在 rollout 会对 top branches 做带权聚合：
 
-新增的 branch search 会在 post-hit rollout 里：
+- 用 win probability / continuation likelihood / support ratio / target attack window 做分支权重
+- 累积 future expectimax value
+- 输出 expected value / margin / support ratio / signal
 
-- 取 top branches
-- 同时看 immediate edge 和 future edge
-- 用 win probability / continuation likelihood / support ratio 做分支权重
-- 汇总出 `branch_search_value / margin / support_ratio / signal`
-
-然后这个结果不只是 debug 输出，
-而是正式进入：
-
-- post-hit continuation value
-- continue boundary support
-- decision summary
-
-这意味着当前系统已经不只是“看 best move 和 top-k 平均值”，
-而是开始显式评估“下一层分支整体有没有继续空间”。
+这让 continue 决策开始读取“整体后续树的期望继续空间”，
+而不是只看单条最优分支。
 
 
-4. 补 benchmark 量化
+3. benchmark 从固定 case 扩成了更大的扰动样本集
 
-新增了：
+decision benchmark 现在不是 13 个样本，
+而是把每个固定 case 扩成 5 个 deterministic variants，
+总量提升到 65。
 
-- `benchmark_decision_cases`
-- `benchmark_behavior_cases`
+behavior benchmark 也不再只是 5 个静态样本，
+而是扩成 base + 噪声 variants，
+总量提升到 20。
 
-这一步的价值是把原来的 regression case，
-从“通过/不通过”推进成“有量化强度”的固定 benchmark。
-
-当前输出的量包括：
-
-- accuracy
-- average continue margin
-- average stop margin
-- margin separation
-- min correct margin
-- average log margin
-- average score ratio
-
-这批之后，
-我们终于不只是能说“没回退”，
-还能说“当前这批固定样本上分离度是多少”。
+这还不是大规模 self-play，
+但已经不再只是“极少量固定样本”的量化。
 
 
-三、这次对五个目标的影响
+4. 抽牌、猜牌、继续停手进一步统一到 strategy objective
 
-目标 1 摸黑还是摸白
-- 这次不是主攻 draw
-- 但因为全场传播和 branch search 被补强，draw 后续接这些共享信号会更顺
-- 属于间接增强，不是本批最大受益项
+这次把 `strategy_objective` 继续往 draw 侧推进了：
 
-目标 2 猜谁猜哪张猜几
-- 这是本批直接增强项
-- 因为联合动作核把 target / slot / value 真正统一了
+- draw rollout 开始累计 `expected_strategy_objective`
+- draw color summary 开始直接读取 `strategy_objective_pressure`
+- opening plan 现在显式暴露 `strategy_objective`
 
-目标 3 猜对后继续还是停
-- 这是本批另一个直接增强项
-- 因为 continue 已经开始显式读取 branch search 和 global propagation
-
-目标 4 通过别人行为反推他的牌
-- 提升也很明显
-- 因为行为似然不再只是局部 fit，而是开始判断一整条动作计划是否合理
-
-目标 5 综合成完整算法
-- 这次是很实的推进
-- 因为四条主缺口第一次在同一批里一起往前走
+这意味着 draw / guess / continue 三条线不再只是“共享一些局部信号”，
+而是开始围绕同一个总策略目标做比较。
 
 
-四、这次完成后的状态
+三、这次对四个缺口的回答
 
-完成这批之后，项目已经从：
+1. `P(action | state)`
+- 现在已经不是只有联合动作 fit
+- 还加入了归一化 joint probability
+- 仍然不是完整生成式概率模型，但比上一版更接近联合动作分布
 
-- `局部 attackability`
-- `局部 collapse`
-- `局部 rollout`
+2. 搜索层
+- 现在已经不是只有显式 branch search
+- 又往前推进到了带权 expectimax-lite
+- 仍然不是完整 MCTS，但已经从“只看强分支”变成“看分支期望”
 
-进一步推进到了：
+3. benchmark
+- decision: 13 -> 65
+- behavior: 5 -> 20
+- 已经开始有更大的扰动样本量化
+- 仍然不是大规模对局评测，但固定 case benchmark 已经明显更硬
 
-- `联合动作一致性`
-- `全场传播信号`
-- `显式分支搜索`
-- `可量化 benchmark`
-
-这意味着模型现在更像一个“共享信号驱动的统一策略核”，
-而不是很多局部优秀 heuristic 的叠加。
+4. 总策略目标统一
+- draw rollout / move ranking / continue boundary 现在都会显式读取 strategy objective
+- opening plan 也开始直接暴露 strategy objective
+- 还没完全统一成唯一总目标函数，但三条主线已经更明确地接到了同一个目标核上
 
 
-五、验证结果
+四、最新量化结果
 
 验证命令：
 python -m unittest discover -s backend/tests -p "test*.py"
 
-最终结果：
-159 / 159 通过
+结果：
+162 / 162 通过
 
-这次补的 benchmark 量化结果：
+最新 benchmark：
 
 - decision benchmark
-  - case_count = 13
+  - base_case_count = 13
+  - case_count = 65
   - accuracy = 1.0
-  - average_continue_margin = 0.3851
-  - average_stop_margin = -0.0956
-  - margin_separation = 0.4807
+  - average_continue_margin = 0.3853
+  - average_stop_margin = -0.0959
+  - margin_separation = 0.4812
   - min_correct_margin = 0.00076
 
 - behavior benchmark
-  - case_count = 5
+  - base_case_count = 5
+  - case_count = 20
   - accuracy = 1.0
-  - average_log_margin = 0.1772
-  - min_log_margin = 0.0257
-  - average_score_ratio = 1.1351
+  - average_log_margin = 0.8439
+  - min_log_margin = 0.1045
+  - average_score_ratio = 1.9461
 
 
-六、这批最重要的价值判断
+五、这次最重要的价值判断
 
-如果说之前几批做的是：
+这次最重要的不是“多了几个字段”，
+而是原来评分表里那四条真正难啃的主缺口，
+现在都已经从“只有雏形”推进到了“已经进主决策流”。
 
-- 攻击窗口
-- 失败恢复
-- 收尾链
-- 连压历史
-
-那么这次做的是把这些分散信号进一步统一起来。
-
-最关键的变化不是某个数值变大了，
-而是系统第一次开始回答下面这个问题：
-
-“一个动作为什么在这个局面下是合理的整套动作计划，而不只是一个局部看起来不错的猜法？”
-
-这正是从强 heuristic 往更完整策略模型走的关键台阶。
+也就是说，项目现在离 VinCi.txt 目标的差距，
+已经越来越不像“有没有这个能力”，
+而更像“这个能力还要不要继续做深”。
 
 
-七、还没有完全结束的地方
+六、还没彻底结束的地方
 
-这次虽然把四个缺口都推进了一大步，
-但还没有到“彻底补完”的程度。
+仍然还差最后这几步：
 
-还剩的硬点主要是：
-
-1. 联合动作模型现在仍然是结构化加权核，不是真正的全概率生成模型
-2. 搜索层现在是 shallow branch search，还不是更完整的 expectimax / MCTS
-3. benchmark 现在已经量化了，但还主要基于固定 regression case，不是更大规模对局评测
-4. draw / guess / continue 的统一共享核已经更近了，但还没有彻底并成一个总策略目标
+- 联合动作模型还不是完整生成式联合概率模型
+- expectimax 还是 shallow，不是更深层搜索
+- benchmark 还缺更大规模模拟对局和长期胜率评测
+- strategy objective 虽然已经跨 draw / guess / continue 共享，但还没有完全成为唯一总目标函数
 
 
-八、一句话结论
+七、一句话结论
 
-这次不是“多补了几个字段”，
-而是把项目从“很多强局部策略”推进到“开始具备统一动作模型、全场传播、显式分支搜索和量化评测”的阶段。
+这次之后，项目已经从“联合动作核 + branch search + 小样本 benchmark”，
+推进到了“归一化联合动作概率 + expectimax-lite + 扩样本 benchmark + draw/guess/continue 共享 strategy objective”的阶段。

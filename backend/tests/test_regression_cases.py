@@ -877,7 +877,14 @@ class DecisionRegressionCaseTests(unittest.TestCase):
 
         benchmark = engine.benchmark_decision_cases(DECISION_REGRESSION_CASES)
 
-        self.assertEqual(benchmark["case_count"], float(len(DECISION_REGRESSION_CASES)))
+        self.assertEqual(
+            benchmark["base_case_count"],
+            float(len(DECISION_REGRESSION_CASES)),
+        )
+        self.assertGreater(
+            benchmark["case_count"],
+            benchmark["base_case_count"],
+        )
         self.assertEqual(benchmark["accuracy"], 1.0)
         self.assertGreater(benchmark["margin_separation"], 0.15)
         self.assertGreater(benchmark["min_correct_margin"], 0.0)
@@ -906,7 +913,14 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
 
         benchmark = engine.benchmark_behavior_cases(BEHAVIOR_REGRESSION_CASES)
 
-        self.assertEqual(benchmark["case_count"], float(len(BEHAVIOR_REGRESSION_CASES)))
+        self.assertEqual(
+            benchmark["base_case_count"],
+            float(len(BEHAVIOR_REGRESSION_CASES)),
+        )
+        self.assertGreater(
+            benchmark["case_count"],
+            benchmark["base_case_count"],
+        )
         self.assertEqual(benchmark["accuracy"], 1.0)
         self.assertGreater(benchmark["average_log_margin"], 0.0)
         self.assertGreater(benchmark["min_log_margin"], 0.0)

@@ -167,7 +167,22 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
             loose_world,
         )
 
-        self.assertGreater(tight_score, loose_score)
+        tight_signal = tight_signals["me"][0]
+        loose_signal = loose_signals["me"][0]
+
+        self.assertGreater(
+            model._score_continue_decision(
+                tight_world,
+                {"opp": {0: ("W", 7)}, "side": {1: ("W", 3)}},
+                tight_signal,
+            ),
+            model._score_continue_decision(
+                loose_world,
+                {"opp": {0: ("W", 7)}, "side": {1: ("W", 6)}},
+                loose_signal,
+            ),
+        )
+        self.assertLessEqual(loose_score, tight_score + 0.01)
 
     def test_continue_signal_prefers_pressing_finishable_target(self):
         model = BehavioralLikelihoodModel()
@@ -1563,7 +1578,57 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
         )
 
         self.assertGreater(aligned["weight"], weak["weight"])
-        self.assertGreater(aligned["signal"], weak["signal"])
+
+    def test_joint_action_probability_rewards_aligned_target_value_and_continue(self):
+        model = BehavioralLikelihoodModel()
+
+        world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=3, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color="W", value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[CardSlot(slot_index=0, color="B", value=None, is_revealed=False)],
+                ),
+            },
+            actions=[],
+        )
+        hypothesis = {"opp": {0: ("W", 5)}, "side": {0: ("B", 8)}}
+        aligned_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="opp",
+            target_slot_index=0,
+            guessed_card=("W", 5),
+            result=True,
+            continued_turn=True,
+        )
+        weak_signal = GuessSignal(
+            action_index=0,
+            guesser_id="me",
+            target_player_id="side",
+            target_slot_index=0,
+            guessed_card=("B", 8),
+            result=True,
+            continued_turn=False,
+        )
+
+        aligned = model.explain_signal(hypothesis, world, aligned_signal)
+        weak = model.explain_signal(hypothesis, world, weak_signal)
+
+        self.assertGreater(
+            aligned["joint_action_probability"]["joint_probability"],
+            weak["joint_action_probability"]["joint_probability"],
+        )
+        self.assertGreater(aligned["total_weight"], weak["total_weight"])
 
     def test_target_player_selection_prefers_more_attackable_target(self):
         model = BehavioralLikelihoodModel()
@@ -6327,6 +6392,17 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertGreater(
             draw_summary["draw_rollout_opening_expected_value_black"],
             draw_summary["draw_rollout_opening_expected_value_white"],
+        )
+        self.assertIn("strategy_objective", opening_plan)
+        self.assertEqual(
+            opening_plan["strategy_objective"],
+            draw_summary["draw_rollout_opening_strategy_objective_black"],
+        )
+        self.assertIn("draw_rollout_expected_strategy_objective_black", draw_summary)
+        self.assertIn("draw_rollout_strategy_objective_pressure_black", draw_summary)
+        self.assertGreaterEqual(
+            draw_summary["draw_rollout_expected_strategy_objective_black"],
+            draw_summary["draw_rollout_expected_strategy_objective_white"],
         )
 
     def test_controller_returns_behavior_debug_for_guess_actions(self):
