@@ -2515,6 +2515,8 @@ class DaVinciDecisionEngine:
     FAILED_GUESS_SWITCH_CONTINUITY_VALUE_BONUS = 0.18
     TARGET_ATTACK_WINDOW_VALUE_BONUS = 0.24
     TARGET_ATTACK_WINDOW_CONTINUATION_SCALE = 0.12
+    JOINT_COLLAPSE_VALUE_BONUS = 0.22
+    JOINT_COLLAPSE_CONTINUATION_SCALE = 0.08
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -2704,6 +2706,9 @@ class DaVinciDecisionEngine:
                 "best_target_attack_window_signal": 0.0,
                 "best_target_attack_window_bonus": 0.0,
                 "best_target_attack_window_continuation_bonus": 0.0,
+                "best_joint_collapse_signal": 0.0,
+                "best_joint_collapse_bonus": 0.0,
+                "best_joint_collapse_continuation_bonus": 0.0,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -2861,6 +2866,12 @@ class DaVinciDecisionEngine:
                 "target_attack_window_continuation_bonus",
                 0.0,
             ),
+            "best_joint_collapse_signal": best_move.get("joint_collapse_signal", 0.0),
+            "best_joint_collapse_bonus": best_move.get("joint_collapse_bonus", 0.0),
+            "best_joint_collapse_continuation_bonus": best_move.get(
+                "joint_collapse_continuation_bonus",
+                0.0,
+            ),
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -2932,6 +2943,9 @@ class DaVinciDecisionEngine:
         target_attack_window_signal = 0.0
         target_attack_window_bonus = 0.0
         target_attack_window_continuation_bonus = 0.0
+        joint_collapse_signal = 0.0
+        joint_collapse_bonus = 0.0
+        joint_collapse_continuation_bonus = 0.0
         continuation_exposure_gate = 1.0
         behavior_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
         behavior_guidance_support = 0.0
@@ -3143,6 +3157,21 @@ class DaVinciDecisionEngine:
                 0.0,
                 1.0,
             )
+            joint_collapse_signal = clamp(
+                (
+                    0.60
+                    * behavior_model._recent_player_collapse_streak_pressure(
+                        game_state,
+                        player_id,
+                    )
+                )
+                + (
+                    0.40
+                    * behavior_model._global_public_collapse_pressure(game_state)
+                ),
+                0.0,
+                1.0,
+            )
         structural_risk_factor = risk_factor * (
             1.0
             + (self.SELF_EXPOSURE_RISK_SCALE * float(self_exposure_profile["total_exposure"]))
@@ -3178,6 +3207,17 @@ class DaVinciDecisionEngine:
             * max(continuation_likelihood, attackability_after_hit, 0.25)
         )
         continuation_value += target_attack_window_continuation_bonus
+        joint_collapse_bonus = (
+            self.JOINT_COLLAPSE_VALUE_BONUS
+            * joint_collapse_signal
+            * max(probability, attackability_after_hit, continuation_likelihood, 0.25)
+        )
+        joint_collapse_continuation_bonus = (
+            self.JOINT_COLLAPSE_CONTINUATION_SCALE
+            * joint_collapse_signal
+            * max(continuation_likelihood, attackability_after_hit, 0.25)
+        )
+        continuation_value += joint_collapse_continuation_bonus
         immediate_expected_value = (
             hit_reward
             - miss_penalty
@@ -3185,6 +3225,7 @@ class DaVinciDecisionEngine:
             + failure_collapse_bonus
             + failed_guess_switch_bonus
             + target_attack_window_bonus
+            + joint_collapse_bonus
         )
         expected_value = immediate_expected_value + continuation_value
         if (
@@ -3308,6 +3349,9 @@ class DaVinciDecisionEngine:
             "target_attack_window_signal": target_attack_window_signal,
             "target_attack_window_bonus": target_attack_window_bonus,
             "target_attack_window_continuation_bonus": target_attack_window_continuation_bonus,
+            "joint_collapse_signal": joint_collapse_signal,
+            "joint_collapse_bonus": joint_collapse_bonus,
+            "joint_collapse_continuation_bonus": joint_collapse_continuation_bonus,
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
@@ -3326,6 +3370,9 @@ class DaVinciDecisionEngine:
                 "target_attack_window_signal": target_attack_window_signal,
                 "target_attack_window_bonus": target_attack_window_bonus,
                 "target_attack_window_continuation_bonus": target_attack_window_continuation_bonus,
+                "joint_collapse_signal": joint_collapse_signal,
+                "joint_collapse_bonus": joint_collapse_bonus,
+                "joint_collapse_continuation_bonus": joint_collapse_continuation_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
                 "post_hit_continuation_value": post_hit_continuation_value,

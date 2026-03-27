@@ -708,6 +708,106 @@ class StopThresholdTests(unittest.TestCase):
             stable_moves[0]["expected_value"],
         )
 
+    def test_evaluate_all_moves_rewards_joint_collapse_signal(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+        }
+        collapse_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=3, is_revealed=True),
+                        CardSlot(slot_index=1, color=None, value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="W", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="B",
+                    guessed_value=5,
+                    result=True,
+                    revealed_player_id="side",
+                    revealed_slot_index=1,
+                    revealed_color="B",
+                    revealed_value=5,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=False,
+                ),
+            ],
+        )
+        quiet_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=collapse_world.players,
+            actions=[],
+        )
+
+        collapse_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=collapse_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+        quiet_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=quiet_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        self.assertGreater(collapse_moves[0]["joint_collapse_signal"], 0.0)
+        self.assertGreater(collapse_moves[0]["joint_collapse_bonus"], 0.0)
+        self.assertGreater(
+            collapse_moves[0]["continuation_value"],
+            quiet_moves[0]["continuation_value"],
+        )
+        self.assertGreater(
+            collapse_moves[0]["expected_value"],
+            quiet_moves[0]["expected_value"],
+        )
+
     def test_evaluate_all_moves_rewards_failed_guess_switch_continuity(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()
