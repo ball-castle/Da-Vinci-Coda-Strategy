@@ -1256,6 +1256,61 @@ class StopThresholdTests(unittest.TestCase):
             stable_summary["decision_score_breakdown"]["low_confidence_guard_margin"],
         )
 
+    def test_choose_best_move_uses_failure_recovery_pressure(self):
+        engine = DaVinciDecisionEngine()
+        recovery_moves = [
+            {
+                "expected_value": 0.72,
+                "immediate_expected_value": 0.72,
+                "win_probability": 0.56,
+                "continuation_value": 0.12,
+                "continuation_likelihood": 0.58,
+                "attackability_after_hit": 0.70,
+                "post_hit_continue_score": 0.24,
+                "post_hit_stop_score": 0.18,
+                "post_hit_continue_margin": 0.06,
+                "post_hit_best_gap": 0.28,
+                "post_hit_top_k_continue_margin": 0.05,
+                "post_hit_top_k_expected_continue_margin": 0.05,
+                "post_hit_top_k_support_ratio": 1.0,
+                "post_hit_top_k_expected_support_ratio": 1.0,
+                "post_hit_failure_recovery_bonus": 0.18,
+                "post_hit_failed_switch_bonus": 0.08,
+                "self_public_exposure": 0.06,
+                "self_newly_drawn_exposure": 0.02,
+                "self_finish_fragility": 0.02,
+            },
+        ]
+        stable_moves = [
+            {
+                **recovery_moves[0],
+                "post_hit_failure_recovery_bonus": 0.0,
+                "post_hit_failed_switch_bonus": 0.0,
+            },
+        ]
+
+        recovery_best, recovery_summary = engine.choose_best_move(
+            recovery_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+        stable_best, stable_summary = engine.choose_best_move(
+            stable_moves,
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+        )
+
+        self.assertIsNotNone(recovery_best)
+        self.assertIsNone(stable_best)
+        self.assertGreater(
+            recovery_summary["decision_score_breakdown"]["failure_recovery_pressure"],
+            0.0,
+        )
+        self.assertGreater(
+            recovery_summary["continue_margin"],
+            stable_summary["continue_margin"],
+        )
+
     def test_choose_best_move_boosts_edge_pressure_under_self_exposure(self):
         engine = DaVinciDecisionEngine()
         fragile_moves = [

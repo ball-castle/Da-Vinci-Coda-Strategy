@@ -228,9 +228,11 @@ class BehavioralLikelihoodModel:
     CONTINUE_SELF_EXPOSURE_PENALTY = 0.93
     CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY = 0.91
     CONTINUE_FINISH_FRAGILITY_PENALTY = 0.92
+    CONTINUE_FAILURE_RECOVERY_BONUS = 1.05
     STOP_SELF_EXPOSURE_BONUS = 1.05
     STOP_NEW_DRAWN_EXPOSURE_BONUS = 1.07
     STOP_FINISH_FRAGILITY_BONUS = 1.06
+    STOP_FAILURE_RECOVERY_PENALTY = 0.95
     PUBLIC_SELF_EXPOSURE_SECONDARY_BLEND = 0.35
     PUBLIC_SELF_EXPOSURE_FINISH_REFERENCE = 3.0
     PUBLIC_SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS = 1.08
@@ -1289,6 +1291,11 @@ class BehavioralLikelihoodModel:
             game_state,
             signal.guesser_id,
         )
+        failure_recovery_signal = self._continue_failure_recovery_signal(
+            game_state,
+            hypothesis_by_player,
+            signal,
+        )
         if signal.continued_turn:
             weight = (
                 self.CONTINUE_HIGH_ATTACKABILITY_BONUS
@@ -1311,6 +1318,10 @@ class BehavioralLikelihoodModel:
                 weight *= self.CONTINUE_TARGET_FOLLOWUP_BONUS
             if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
                 weight *= self.CONTINUE_TARGET_FINISH_BONUS
+            weight *= 1.0 + (
+                (self.CONTINUE_FAILURE_RECOVERY_BONUS - 1.0)
+                * failure_recovery_signal
+            )
             return weight
 
         weight = (
@@ -1334,7 +1345,42 @@ class BehavioralLikelihoodModel:
             weight *= self.STOP_TARGET_FOLLOWUP_PENALTY
         if self._remaining_hidden_on_target_after_hit(game_state, signal) <= 1:
             weight *= self.STOP_TARGET_FINISH_PENALTY
+        weight *= 1.0 - (
+            (1.0 - self.STOP_FAILURE_RECOVERY_PENALTY)
+            * failure_recovery_signal
+        )
         return weight
+
+    def _continue_failure_recovery_signal(
+        self,
+        game_state: GameState,
+        hypothesis_by_player: Dict[str, Dict[int, Card]],
+        signal: GuessSignal,
+    ) -> float:
+        best_recovery_signal = 0.0
+        for player_id in game_state.players:
+            if player_id == signal.guesser_id:
+                continue
+            exclude_slot = (
+                slot_key(signal.target_player_id, signal.target_slot_index)
+                if player_id == signal.target_player_id
+                else None
+            )
+            attackability = self._player_attackability(
+                game_state,
+                hypothesis_by_player,
+                player_id,
+                exclude_slot=exclude_slot,
+            )
+            failed_guess_pressure = self._recent_failed_guess_pressure(
+                game_state,
+                player_id,
+            )
+            best_recovery_signal = max(
+                best_recovery_signal,
+                attackability * failed_guess_pressure,
+            )
+        return clamp(best_recovery_signal, 0.0, 1.0)
 
     def _public_hand_exposure_profile(
         self,
@@ -2251,8 +2297,10 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_NEW_DRAWN_EXPOSURE = 0.22
     STOP_MARGIN_FINISH_FRAGILITY = 0.18
     STOP_MARGIN_EDGE_SELF_EXPOSURE_BOOST = 0.45
+    STOP_MARGIN_FAILURE_RECOVERY = 0.12
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
+    FAILURE_RECOVERY_REFERENCE = 0.30
     POST_HIT_GAP_REFERENCE = 0.22
     POST_HIT_TOP_K_COUNT = 3
     CONTINUATION_TOP_K_BLEND = 0.38
@@ -2515,6 +2563,7 @@ class DaVinciDecisionEngine:
                     "behavior_match_component_strength": 0.0,
                     "behavior_match_component_penalty": 0.0,
                     "behavior_match_context_focus": 0.0,
+                    "failure_recovery_pressure": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -4065,6 +4114,18 @@ class DaVinciDecisionEngine:
             + behavior_rollout_pressure
         )
         continue_score = best_move["expected_value"] + behavior_match_decision_bonus
+        failure_recovery_signal = clamp(
+            (
+                best_move.get("post_hit_failure_recovery_bonus", 0.0)
+                + best_move.get("post_hit_failed_switch_bonus", 0.0)
+            ) / self.FAILURE_RECOVERY_REFERENCE,
+            0.0,
+            1.0,
+        )
+        failure_recovery_pressure = (
+            self.STOP_MARGIN_FAILURE_RECOVERY * failure_recovery_signal
+        )
+        continue_score += failure_recovery_pressure
         post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
             best_move=best_move,
         )
@@ -4187,6 +4248,7 @@ class DaVinciDecisionEngine:
                 "behavior_match_component_strength": behavior_match_component_strength,
                 "behavior_match_component_penalty": behavior_match_component_penalty,
                 "behavior_match_context_focus": behavior_match_context_focus,
+                "failure_recovery_pressure": failure_recovery_pressure,
             },
         }
 

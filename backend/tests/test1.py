@@ -687,6 +687,168 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(short_weight, buffered_weight)
 
+    def test_continue_decision_rewards_failure_recovery_window(self):
+        model = BehavioralLikelihoodModel()
+
+        recovery_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=6, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=8, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=4,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                ),
+            ],
+        )
+        stable_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=recovery_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                ),
+            ],
+        )
+
+        recovery_signal = model.build_guess_signals(recovery_world)["me"][-1]
+        stable_signal = model.build_guess_signals(stable_world)["me"][-1]
+        hypothesis = {"opp": {0: ("W", 5)}, "side": {1: ("W", 4)}}
+
+        recovery_weight = model._score_continue_decision(
+            recovery_world,
+            hypothesis,
+            recovery_signal,
+        )
+        stable_weight = model._score_continue_decision(
+            stable_world,
+            hypothesis,
+            stable_signal,
+        )
+
+        self.assertGreater(recovery_weight, stable_weight)
+
+    def test_stop_decision_penalizes_failure_recovery_window(self):
+        model = BehavioralLikelihoodModel()
+
+        recovery_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=1, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=1, color="B", value=6, is_revealed=True),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=8, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=4,
+                    result=False,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                ),
+            ],
+        )
+        stable_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=recovery_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=False,
+                ),
+            ],
+        )
+
+        recovery_signal = model.build_guess_signals(recovery_world)["me"][-1]
+        stable_signal = model.build_guess_signals(stable_world)["me"][-1]
+        hypothesis = {"opp": {0: ("W", 5)}, "side": {1: ("W", 4)}}
+
+        recovery_weight = model._score_continue_decision(
+            recovery_world,
+            hypothesis,
+            recovery_signal,
+        )
+        stable_weight = model._score_continue_decision(
+            stable_world,
+            hypothesis,
+            stable_signal,
+        )
+
+        self.assertLess(recovery_weight, stable_weight)
+
     def test_target_player_selection_prefers_more_attackable_target(self):
         model = BehavioralLikelihoodModel()
 
