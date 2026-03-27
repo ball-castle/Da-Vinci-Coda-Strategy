@@ -2518,6 +2518,8 @@ class DaVinciDecisionEngine:
     TARGET_ATTACK_WINDOW_CONTINUATION_SCALE = 0.12
     JOINT_COLLAPSE_VALUE_BONUS = 0.22
     JOINT_COLLAPSE_CONTINUATION_SCALE = 0.08
+    PUBLIC_REVEAL_BRIDGE_VALUE_BONUS = 0.18
+    PUBLIC_REVEAL_BRIDGE_CONTINUATION_SCALE = 0.06
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
         exposure = 1.0 / max(1, my_hidden_count)
@@ -2564,6 +2566,47 @@ class DaVinciDecisionEngine:
         if delta > 2:
             return 0.0
         return clamp(1.0 - (0.35 * delta), 0.0, 1.0)
+
+    def _recent_public_reveal_bridge_signal(
+        self,
+        game_state: Optional[GameState],
+        target_player_id: str,
+        guessed_card: Card,
+    ) -> float:
+        if game_state is None:
+            return 0.0
+        guessed_value = numeric_card_value(guessed_card)
+        if guessed_value is None:
+            return 0.0
+
+        bridge_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            revealed_card = action.revealed_card()
+            revealed_player_id = getattr(action, "revealed_player_id", None)
+            if (
+                revealed_card is None
+                or revealed_player_id is None
+                or revealed_player_id == target_player_id
+                or revealed_card[0] != guessed_card[0]
+            ):
+                recency_weight *= 0.7
+                if recency_weight < 0.2:
+                    break
+                continue
+            revealed_value = numeric_card_value(revealed_card)
+            if revealed_value is None:
+                recency_weight *= 0.7
+                if recency_weight < 0.2:
+                    break
+                continue
+            distance = abs(guessed_value - revealed_value)
+            if distance <= 2:
+                bridge_score += recency_weight * ((3.0 - distance) / 3.0)
+            recency_weight *= 0.7
+            if recency_weight < 0.2:
+                break
+        return clamp(bridge_score, 0.0, 1.0)
 
     def evaluate_all_moves(
         self,
@@ -2948,6 +2991,9 @@ class DaVinciDecisionEngine:
         joint_collapse_signal = 0.0
         joint_collapse_bonus = 0.0
         joint_collapse_continuation_bonus = 0.0
+        public_reveal_bridge_signal = 0.0
+        public_reveal_bridge_bonus = 0.0
+        public_reveal_bridge_continuation_bonus = 0.0
         continuation_exposure_gate = 1.0
         behavior_guidance_multiplier = self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER
         behavior_guidance_support = 0.0
@@ -3174,6 +3220,11 @@ class DaVinciDecisionEngine:
                 0.0,
                 1.0,
             )
+            public_reveal_bridge_signal = self._recent_public_reveal_bridge_signal(
+                game_state,
+                player_id,
+                card,
+            )
         structural_risk_factor = risk_factor * (
             1.0
             + (self.SELF_EXPOSURE_RISK_SCALE * float(self_exposure_profile["total_exposure"]))
@@ -3220,6 +3271,17 @@ class DaVinciDecisionEngine:
             * max(continuation_likelihood, attackability_after_hit, 0.25)
         )
         continuation_value += joint_collapse_continuation_bonus
+        public_reveal_bridge_bonus = (
+            self.PUBLIC_REVEAL_BRIDGE_VALUE_BONUS
+            * public_reveal_bridge_signal
+            * max(probability, attackability_after_hit, continuation_likelihood, 0.25)
+        )
+        public_reveal_bridge_continuation_bonus = (
+            self.PUBLIC_REVEAL_BRIDGE_CONTINUATION_SCALE
+            * public_reveal_bridge_signal
+            * max(continuation_likelihood, attackability_after_hit, 0.25)
+        )
+        continuation_value += public_reveal_bridge_continuation_bonus
         immediate_expected_value = (
             hit_reward
             - miss_penalty
@@ -3228,6 +3290,7 @@ class DaVinciDecisionEngine:
             + failed_guess_switch_bonus
             + target_attack_window_bonus
             + joint_collapse_bonus
+            + public_reveal_bridge_bonus
         )
         expected_value = immediate_expected_value + continuation_value
         if (
@@ -3354,6 +3417,9 @@ class DaVinciDecisionEngine:
             "joint_collapse_signal": joint_collapse_signal,
             "joint_collapse_bonus": joint_collapse_bonus,
             "joint_collapse_continuation_bonus": joint_collapse_continuation_bonus,
+            "public_reveal_bridge_signal": public_reveal_bridge_signal,
+            "public_reveal_bridge_bonus": public_reveal_bridge_bonus,
+            "public_reveal_bridge_continuation_bonus": public_reveal_bridge_continuation_bonus,
             "score_breakdown": {
                 "hit_reward": hit_reward,
                 "miss_penalty": miss_penalty,
@@ -3375,6 +3441,9 @@ class DaVinciDecisionEngine:
                 "joint_collapse_signal": joint_collapse_signal,
                 "joint_collapse_bonus": joint_collapse_bonus,
                 "joint_collapse_continuation_bonus": joint_collapse_continuation_bonus,
+                "public_reveal_bridge_signal": public_reveal_bridge_signal,
+                "public_reveal_bridge_bonus": public_reveal_bridge_bonus,
+                "public_reveal_bridge_continuation_bonus": public_reveal_bridge_continuation_bonus,
                 "immediate_expected_value": immediate_expected_value,
                 "continuation_value": continuation_value,
                 "post_hit_continuation_value": post_hit_continuation_value,

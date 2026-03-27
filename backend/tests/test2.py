@@ -808,6 +808,98 @@ class StopThresholdTests(unittest.TestCase):
             quiet_moves[0]["expected_value"],
         )
 
+    def test_evaluate_all_moves_rewards_public_reveal_bridge_signal(self):
+        engine = DaVinciDecisionEngine()
+        model = BehavioralLikelihoodModel()
+        full_probability_matrix = {
+            "opp": {
+                0: {("W", 7): 0.62, ("W", 8): 0.38},
+            },
+        }
+        hidden_index_by_player = {
+            "opp": {0: 0},
+        }
+        bridge_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=0, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=5, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=11, is_revealed=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[CardSlot(slot_index=0, color=None, value=None, is_revealed=False)],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=9, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="side",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=6,
+                    result=True,
+                    revealed_player_id="side",
+                    revealed_slot_index=1,
+                    revealed_color="W",
+                    revealed_value=6,
+                ),
+            ],
+        )
+        quiet_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=bridge_world.players,
+            actions=[],
+        )
+
+        bridge_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=bridge_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+        quiet_moves, _ = engine.evaluate_all_moves(
+            full_probability_matrix=full_probability_matrix,
+            my_hidden_count=1,
+            hidden_index_by_player=hidden_index_by_player,
+            behavior_model=model,
+            guess_signals_by_player={},
+            acting_player_id="me",
+            game_state=quiet_world,
+            blocked_slots=set(),
+            rollout_depth=0,
+        )
+
+        self.assertGreater(bridge_moves[0]["public_reveal_bridge_signal"], 0.0)
+        self.assertGreater(bridge_moves[0]["public_reveal_bridge_bonus"], 0.0)
+        self.assertGreater(
+            bridge_moves[0]["continuation_value"],
+            quiet_moves[0]["continuation_value"],
+        )
+        self.assertGreater(
+            bridge_moves[0]["expected_value"],
+            quiet_moves[0]["expected_value"],
+        )
+
     def test_evaluate_all_moves_rewards_failed_guess_switch_continuity(self):
         engine = DaVinciDecisionEngine()
         model = BehavioralLikelihoodModel()
