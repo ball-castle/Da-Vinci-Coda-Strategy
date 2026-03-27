@@ -262,6 +262,7 @@ class BehavioralLikelihoodModel:
     CONTINUATION_RECENT_STOP_PENALTY = 0.04
     CONTINUATION_CONFIDENT_STREAK_BONUS = 0.03
     CONTINUATION_TARGET_FINISH_CHAIN_BONUS = 1.08
+    CONTINUATION_TARGET_CHAIN_HISTORY_BONUS = 1.06
     EPSILON = 1e-9
 
     def build_guess_signals(
@@ -365,6 +366,7 @@ class BehavioralLikelihoodModel:
         )
         target_followup_attackability = 0.0
         target_finish_chain_signal = 0.0
+        target_chain_history_signal = 0.0
         if exclude_slot is not None:
             target_player_id = exclude_slot[0]
             target_followup_attackability = self._estimate_player_matrix_attackability(
@@ -388,6 +390,11 @@ class BehavioralLikelihoodModel:
                 full_probability_matrix.get(target_player_id, {}),
                 exclude_slot=exclude_slot,
             )
+            target_chain_history_signal = self._continuation_target_chain_history_signal(
+                guess_signals_by_player,
+                acting_player_id,
+                target_player_id,
+            )
 
         profile = self.continuation_profile(guess_signals_by_player, acting_player_id)
         history_blend = profile["history_blend"]
@@ -402,6 +409,11 @@ class BehavioralLikelihoodModel:
                 (self.CONTINUATION_TARGET_FINISH_CHAIN_BONUS - 1.0)
                 * target_finish_chain_signal
             )
+        if target_chain_history_signal > 0.0:
+            continue_likelihood *= 1.0 + (
+                (self.CONTINUATION_TARGET_CHAIN_HISTORY_BONUS - 1.0)
+                * target_chain_history_signal
+            )
 
         continue_likelihood = clamp(continue_likelihood, self.CONTINUATION_MIN, self.CONTINUATION_MAX)
         return {
@@ -409,6 +421,7 @@ class BehavioralLikelihoodModel:
             "attackability": attackability,
             "target_followup_attackability": target_followup_attackability,
             "target_finish_chain_signal": target_finish_chain_signal,
+            "target_chain_history_signal": target_chain_history_signal,
             "history_continue_rate": profile["continue_rate"],
             "history_observations": profile["observations"],
         }
@@ -434,6 +447,29 @@ class BehavioralLikelihoodModel:
             0.0,
             1.0,
         )
+
+    def _continuation_target_chain_history_signal(
+        self,
+        guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+        acting_player_id: Optional[str],
+        target_player_id: str,
+    ) -> float:
+        if acting_player_id is None:
+            return 0.0
+        signals = guess_signals_by_player.get(acting_player_id, ())
+        chain_score = 0.0
+        recency_weight = 1.0
+        for signal in reversed(signals):
+            if signal.target_player_id != target_player_id:
+                continue
+            if signal.result:
+                chain_score += 0.65 * recency_weight
+                if signal.continued_turn is True:
+                    chain_score += 0.20 * recency_weight
+            recency_weight *= 0.62
+            if recency_weight < 0.15:
+                break
+        return clamp(chain_score, 0.0, 1.0)
 
     def score_hypothesis(
         self,

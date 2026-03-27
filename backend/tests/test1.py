@@ -295,6 +295,65 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
             spread_assessment["continue_likelihood"],
         )
 
+    def test_estimate_continue_likelihood_rewards_target_chain_history(self):
+        model = BehavioralLikelihoodModel()
+        probability_matrix = {
+            "opp": {
+                0: {("W", 5): 1.0},
+                1: {("B", 6): 0.55, ("B", 7): 0.45},
+            },
+            "side": {
+                0: {("W", 7): 0.55, ("W", 8): 0.45},
+            },
+        }
+        chain_signals = {
+            "me": [
+                GuessSignal(
+                    action_index=0,
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=0,
+                    guessed_card=("W", 5),
+                    result=True,
+                    continued_turn=True,
+                ),
+                GuessSignal(
+                    action_index=1,
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_card=("B", 6),
+                    result=True,
+                    continued_turn=True,
+                ),
+            ]
+        }
+        quiet_signals = {"me": []}
+        model.estimate_matrix_attackability = lambda *args, **kwargs: 0.46
+        model._estimate_player_matrix_attackability = lambda *args, **kwargs: 0.42
+
+        chain_assessment = model.estimate_continue_likelihood(
+            probability_matrix,
+            chain_signals,
+            "me",
+            exclude_slot=("opp", 0),
+        )
+        quiet_assessment = model.estimate_continue_likelihood(
+            probability_matrix,
+            quiet_signals,
+            "me",
+            exclude_slot=("opp", 0),
+        )
+
+        self.assertGreater(
+            chain_assessment["target_chain_history_signal"],
+            quiet_assessment["target_chain_history_signal"],
+        )
+        self.assertGreater(
+            chain_assessment["continue_likelihood"],
+            quiet_assessment["continue_likelihood"],
+        )
+
     def test_continue_decision_rewards_same_target_followup_cluster(self):
         model = BehavioralLikelihoodModel()
 
