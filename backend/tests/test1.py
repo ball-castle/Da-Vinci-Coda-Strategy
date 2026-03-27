@@ -1134,6 +1134,90 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
 
         self.assertGreater(collapse_score, settled_score)
 
+    def test_target_player_selection_prefers_collapse_streak_target(self):
+        model = BehavioralLikelihoodModel()
+
+        streak_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=0, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=7, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=10, is_revealed=True),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="side",
+                    target_player_id="opp",
+                    target_slot_index=2,
+                    guessed_color="B",
+                    guessed_value=4,
+                    result=False,
+                    revealed_player_id="opp",
+                    revealed_slot_index=2,
+                    revealed_color="B",
+                    revealed_value=4,
+                ),
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+            ],
+        )
+        single_collapse_world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players=streak_world.players,
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=2,
+                    result=False,
+                ),
+            ],
+        )
+
+        streak_signal = model.build_guess_signals(streak_world)["me"][-1]
+        single_signal = model.build_guess_signals(single_collapse_world)["me"][-1]
+        hypothesis = {"opp": {1: ("W", 2)}, "side": {1: ("W", 8)}}
+
+        streak_score = model._score_target_player_selection(
+            streak_world,
+            hypothesis,
+            streak_signal,
+        )
+        single_score = model._score_target_player_selection(
+            single_collapse_world,
+            hypothesis,
+            single_signal,
+        )
+
+        self.assertGreater(streak_score, single_score)
+
     def test_target_slot_selection_prefers_tighter_slot_on_same_player(self):
         model = BehavioralLikelihoodModel()
         game_state = GameState(

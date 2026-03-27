@@ -181,6 +181,7 @@ class BehavioralLikelihoodModel:
     TARGET_PLAYER_SWITCH_AFTER_FAILURE_BONUS = 1.04
     TARGET_PLAYER_SWITCH_FAILURE_CONTINUITY_BONUS = 1.03
     TARGET_PLAYER_RECENT_COLLAPSE_BONUS = 1.04
+    TARGET_PLAYER_COLLAPSE_STREAK_BONUS = 1.05
     PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
     PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
     PLAYER_RECENT_FAILED_GUESS_BONUS = 0.10
@@ -611,6 +612,15 @@ class BehavioralLikelihoodModel:
             weight *= 1.0 + (
                 (self.TARGET_PLAYER_RECENT_COLLAPSE_BONUS - 1.0)
                 * recent_collapse_pressure
+            )
+        collapse_streak_pressure = self._recent_player_collapse_streak_pressure(
+            game_state,
+            signal.target_player_id,
+        )
+        if collapse_streak_pressure > 0.0:
+            weight *= 1.0 + (
+                (self.TARGET_PLAYER_COLLAPSE_STREAK_BONUS - 1.0)
+                * collapse_streak_pressure
             )
 
         previous_signal = self._previous_guess_signal(game_state, signal)
@@ -1714,6 +1724,36 @@ class BehavioralLikelihoodModel:
             if recency_weight < 0.2:
                 break
         return clamp(collapse_score, 0.0, 1.0)
+
+    def _recent_player_collapse_streak_pressure(
+        self,
+        game_state: GameState,
+        player_id: str,
+    ) -> float:
+        streak_score = 0.0
+        recency_weight = 1.0
+        for action in reversed(getattr(game_state, "actions", ())):
+            is_player_collapse = False
+            if getattr(action, "revealed_player_id", None) == player_id and action.revealed_card() is not None:
+                is_player_collapse = True
+            elif (
+                getattr(action, "action_type", None) == "guess"
+                and getattr(action, "target_player_id", None) == player_id
+                and not getattr(action, "result", False)
+                and action.guessed_card() is not None
+            ):
+                is_player_collapse = True
+
+            if is_player_collapse:
+                streak_score += recency_weight
+                recency_weight *= 0.72
+                if recency_weight < 0.18:
+                    break
+                continue
+
+            if streak_score > 0.0:
+                break
+        return clamp(streak_score, 0.0, 1.0)
 
     def _recent_failed_guess_pressure(
         self,
