@@ -307,6 +307,10 @@ class BehavioralLikelihoodModel:
     JOINT_ACTION_POSTERIOR_TRAJECTORY_BLEND = 0.24
     JOINT_ACTION_POSTERIOR_GAP_CREDIT = 0.14
     JOINT_ACTION_POSTERIOR_ENTROPY_CREDIT = 0.12
+    JOINT_ACTION_POSTERIOR_RETRY_PROGRESSION_CREDIT = 0.14
+    JOINT_ACTION_POSTERIOR_RETRY_ATTACK_WINDOW_CREDIT = 0.06
+    JOINT_ACTION_POSTERIOR_RETRY_STALLED_PENALTY = 0.92
+    JOINT_ACTION_POSTERIOR_RETRY_WIDE_PENALTY = 0.96
     JOINT_ACTION_POSTERIOR_MAX_WEIGHT = 4.0
     EPSILON = 1e-9
 
@@ -1686,7 +1690,16 @@ class BehavioralLikelihoodModel:
                             0.12 * float(meta.get("public_bridge_signal", 0.0))
                         )
                     if same_slot:
-                        trajectory_prior *= 0.94
+                        trajectory_prior *= self._retry_after_failure_trajectory_prior(
+                            previous_signal=previous_signal,
+                            candidate_card=action_key[2],
+                            slot_attackability=float(
+                                meta.get("slot_attackability", 0.0)
+                            ),
+                            attack_window_signal=float(
+                                meta.get("attack_window_signal", 0.0)
+                            ),
+                        )
             posterior_action_mass[action_key] = (
                 max(self.EPSILON, action_probability)
                 * (structured_fit ** self.JOINT_ACTION_STRUCTURED_BLEND)
@@ -2158,6 +2171,42 @@ class BehavioralLikelihoodModel:
         if previous_signal.target_player_id != signal.target_player_id:
             return False
         return abs(previous_signal.target_slot_index - signal.target_slot_index) == 1
+
+    def _retry_after_failure_trajectory_prior(
+        self,
+        *,
+        previous_signal: GuessSignal,
+        candidate_card: Card,
+        slot_attackability: float,
+        attack_window_signal: float,
+    ) -> float:
+        previous_card = previous_signal.guessed_card
+        if previous_card[0] != candidate_card[0]:
+            return self.JOINT_ACTION_POSTERIOR_RETRY_WIDE_PENALTY
+
+        previous_numeric = numeric_card_value(previous_card)
+        candidate_numeric = numeric_card_value(candidate_card)
+        if previous_numeric is None or candidate_numeric is None:
+            return 1.0
+
+        step = abs(candidate_numeric - previous_numeric)
+        if step == 0:
+            return self.JOINT_ACTION_POSTERIOR_RETRY_STALLED_PENALTY
+        if step > 2:
+            return self.JOINT_ACTION_POSTERIOR_RETRY_WIDE_PENALTY
+
+        progression_signal = 1.0 if step == 1 else 0.55
+        return 1.0 + (
+            self.JOINT_ACTION_POSTERIOR_RETRY_PROGRESSION_CREDIT
+            * progression_signal
+        ) + (
+            self.JOINT_ACTION_POSTERIOR_RETRY_ATTACK_WINDOW_CREDIT
+            * clamp(
+                0.6 * float(slot_attackability) + 0.4 * float(attack_window_signal),
+                0.0,
+                1.0,
+            )
+        )
 
     def _score_target_slot(
         self,
@@ -4313,6 +4362,7 @@ class DaVinciDecisionEngine:
     LONG_SELF_PLAY_LEAGUE_MATCH_COUNT = 6
     LONG_SELF_PLAY_LEAGUE_GAMES_PER_MATCH = 4
     LONG_SELF_PLAY_STABILITY_MIN_TOTAL_GAMES = 24
+    LONG_SELF_PLAY_EVALUATION_MIN_TOTAL_GAMES = 96
     LONG_SELF_PLAY_STABILITY_SEED_STRIDE = 1009
     STRATEGY_OBJECTIVE_WIN_SCALE = 0.18
     STRATEGY_OBJECTIVE_CONTINUATION_SCALE = 0.20
@@ -4332,6 +4382,8 @@ class DaVinciDecisionEngine:
     STRATEGY_OBJECTIVE_FINISH_FRAGILITY_DRAG = 0.10
     STOP_MARGIN_OBJECTIVE_CREDIT = 0.16
     STOP_MARGIN_SEARCH_CREDIT = 0.08
+    STOP_MARGIN_SEARCH_DEPTH_CREDIT = 0.05
+    STOP_MARGIN_GUARD_RELIEF_SCALE = 0.30
     OPENING_PRECISION_MARGIN_REFERENCE = 0.28
     OPENING_JOKER_SUPPRESSION_MARGIN = 0.03
     OPENING_JOKER_PENALTY_SCALE = 0.78
@@ -6741,6 +6793,47 @@ class DaVinciDecisionEngine:
             "average_repeats_per_configuration": (
                 sum(repeats_per_configuration) / config_count
             ),
+        }
+
+    def benchmark_long_horizon_evaluation_suite(
+        self,
+        *,
+        seeds: Optional[Sequence[int]] = None,
+        match_counts: Optional[Sequence[int]] = None,
+        games_per_match_options: Optional[Sequence[int]] = None,
+        minimum_total_game_count: Optional[int] = None,
+    ) -> Dict[str, float]:
+        benchmark = self.benchmark_long_horizon_stability_matrix(
+            seeds=seeds or (11, 19, 29, 37, 53, 71),
+            match_counts=match_counts or (4, 6, 8),
+            games_per_match_options=games_per_match_options or (4, 6),
+            minimum_total_game_count=(
+                minimum_total_game_count
+                or self.LONG_SELF_PLAY_EVALUATION_MIN_TOTAL_GAMES
+            ),
+        )
+        fairness_gap = abs(
+            float(benchmark.get("starting_player_win_rate", 0.0))
+            - float(benchmark.get("non_starting_player_win_rate", 0.0))
+        )
+        seat_bias = float(benchmark.get("seat_bias", 0.0))
+        configuration_seat_bias_stddev = float(
+            benchmark.get("configuration_seat_bias_stddev", 0.0)
+        )
+        balance_score = clamp(
+            1.0
+            - (
+                0.50 * seat_bias
+                + 0.35 * fairness_gap
+                + 0.15 * configuration_seat_bias_stddev
+            ),
+            0.0,
+            1.0,
+        )
+        return {
+            **benchmark,
+            "fairness_gap": fairness_gap,
+            "balance_score": balance_score,
         }
 
     def benchmark_long_horizon_configuration_matrix(
@@ -9942,13 +10035,19 @@ class DaVinciDecisionEngine:
         )
         continue_score += behavior_match_decision_structure_adjustment
         continue_margin = continue_score - stop_score
+        guard_relief_signal = float(
+            (stop_threshold_breakdown or {}).get("guard_relief_signal", 0.0)
+        )
         low_confidence_guard_margin = (
             self.LOW_CONFIDENCE_GUARD_MARGIN
             + (self.LOW_CONFIDENCE_SELF_EXPOSURE_BOOST * self_exposure_level)
-        )
+        ) * (1.0 - (0.35 * guard_relief_signal))
         weak_edge_guard_margin = (
             self.WEAK_EDGE_GUARD_MARGIN
             + (self.WEAK_EDGE_SELF_EXPOSURE_BOOST * self_exposure_level)
+        ) * (1.0 - (0.35 * guard_relief_signal))
+        self_exposure_guard_margin = self.SELF_EXPOSURE_GUARD_MARGIN * (
+            1.0 - (0.25 * guard_relief_signal)
         )
 
         low_confidence_guard = (
@@ -9967,7 +10066,7 @@ class DaVinciDecisionEngine:
                 best_move.get("self_public_exposure", 0.0),
                 best_move.get("self_newly_drawn_exposure", 0.0),
             ) >= self.SELF_EXPOSURE_GUARD_REFERENCE
-            and continue_margin < self.SELF_EXPOSURE_GUARD_MARGIN
+            and continue_margin < self_exposure_guard_margin
         )
 
         low_confidence_guard_boost = 0.18 if low_confidence_guard else 0.0
@@ -10007,6 +10106,8 @@ class DaVinciDecisionEngine:
             "self_exposure_guard": self_exposure_guard,
             "low_confidence_guard_margin": low_confidence_guard_margin,
             "weak_edge_guard_margin": weak_edge_guard_margin,
+            "self_exposure_guard_margin": self_exposure_guard_margin,
+            "guard_relief_signal": guard_relief_signal,
             "decision_score_breakdown": {
                 "base_stop_threshold": float(
                     (stop_threshold_breakdown or {}).get("base_stop_threshold", stop_threshold)
@@ -10035,6 +10136,10 @@ class DaVinciDecisionEngine:
                 "search_credit": float(
                     (stop_threshold_breakdown or {}).get("search_credit", 0.0)
                 ),
+                "search_depth_credit": float(
+                    (stop_threshold_breakdown or {}).get("search_depth_credit", 0.0)
+                ),
+                "guard_relief_signal": guard_relief_signal,
                 "total_stop_threshold": stop_threshold,
                 "self_exposure_guard_signal": (
                     max(
@@ -10046,6 +10151,7 @@ class DaVinciDecisionEngine:
                 ),
                 "low_confidence_guard_margin": low_confidence_guard_margin,
                 "weak_edge_guard_margin": weak_edge_guard_margin,
+                "self_exposure_guard_margin": self_exposure_guard_margin,
                 "edge_pressure": edge_pressure,
                 "rollout_pressure": rollout_pressure,
                 "fragile_rollout_pressure": fragile_rollout_pressure,
@@ -10459,6 +10565,8 @@ class DaVinciDecisionEngine:
         weak_continuation_threshold = 0.0
         strategy_objective_credit = 0.0
         search_credit = 0.0
+        search_depth_credit = 0.0
+        guard_relief_signal = 0.0
 
         if best_move is not None:
             self_exposure_threshold = self.STOP_MARGIN_SELF_EXPOSURE * clamp(
@@ -10490,7 +10598,7 @@ class DaVinciDecisionEngine:
                 0.0,
                 1.0,
             )
-            search_credit = self.STOP_MARGIN_SEARCH_CREDIT * clamp(
+            search_signal = clamp(
                 max(
                     float(best_move.get("post_hit_tree_search_signal", 0.0)),
                     float(best_move.get("post_hit_expectimax_signal", 0.0)),
@@ -10499,6 +10607,53 @@ class DaVinciDecisionEngine:
                 ),
                 0.0,
                 1.0,
+            )
+            search_depth_signal = clamp(
+                max(
+                    float(best_move.get("post_hit_mcts_max_depth", 0.0))
+                    / max(1.0, float(self.DEEP_ROLLOUT_DEPTH)),
+                    float(best_move.get("post_hit_mcts_node_count", 0.0))
+                    / max(
+                        1.0,
+                        float(
+                            self.MCTS_SIMULATION_COUNT
+                            * self.MCTS_TOP_K
+                            * self.MCTS_DEEP_CHILD_TOP_K
+                        ),
+                    ),
+                ),
+                0.0,
+                1.0,
+            )
+            search_credit = self.STOP_MARGIN_SEARCH_CREDIT * search_signal
+            search_depth_credit = (
+                self.STOP_MARGIN_SEARCH_DEPTH_CREDIT * search_depth_signal
+            )
+            guard_relief_signal = clamp(
+                (
+                    0.45
+                    * clamp(
+                        float(
+                            best_move.get(
+                                "strategy_objective_core",
+                                best_move.get("strategy_objective", 0.0),
+                            )
+                        )
+                        / self.HIT_REWARD,
+                        0.0,
+                        1.0,
+                    )
+                    + (0.35 * search_signal)
+                    + (0.20 * search_depth_signal)
+                ),
+                0.0,
+                1.0,
+            )
+            low_confidence_threshold *= (
+                1.0 - (self.STOP_MARGIN_GUARD_RELIEF_SCALE * guard_relief_signal)
+            )
+            weak_continuation_threshold *= (
+                1.0 - (self.STOP_MARGIN_GUARD_RELIEF_SCALE * guard_relief_signal)
             )
 
         threshold = (
@@ -10511,6 +10666,7 @@ class DaVinciDecisionEngine:
             + weak_continuation_threshold
             - strategy_objective_credit
             - search_credit
+            - search_depth_credit
         )
         return {
             "base_stop_threshold": base_stop_threshold,
@@ -10522,6 +10678,8 @@ class DaVinciDecisionEngine:
             "weak_continuation_threshold": weak_continuation_threshold,
             "strategy_objective_credit": strategy_objective_credit,
             "search_credit": search_credit,
+            "search_depth_credit": search_depth_credit,
+            "guard_relief_signal": guard_relief_signal,
             "threshold": threshold,
         }
 

@@ -1,5 +1,6 @@
 import sys
 import unittest
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -926,6 +927,30 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreater(benchmark["min_log_margin"], 0.0)
         self.assertGreater(benchmark["average_score_ratio"], 1.0)
 
+    def test_behavior_same_slot_retry_keeps_meaningful_margin(self):
+        model = BehavioralLikelihoodModel()
+        case = next(
+            behavior_case
+            for behavior_case in BEHAVIOR_REGRESSION_CASES
+            if behavior_case.name == "same_slot_retry"
+        )
+
+        preferred_score = model.score_hypothesis(
+            case.preferred_hypothesis,
+            model.build_guess_signals(case.preferred_state),
+            case.preferred_state,
+        )
+        alternative_score = model.score_hypothesis(
+            case.alternative_hypothesis,
+            model.build_guess_signals(case.alternative_state),
+            case.alternative_state,
+        )
+
+        self.assertGreater(
+            math.log2(preferred_score / alternative_score),
+            0.15,
+        )
+
     def test_self_play_benchmark_quantifies_guess_draw_and_rollout_behavior(self):
         engine = DaVinciDecisionEngine()
 
@@ -1123,6 +1148,76 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(
             benchmark["configuration_starting_advantage_stddev"],
             0.0,
+        )
+
+    def test_long_horizon_evaluation_suite_exposes_balance_score(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_long_horizon_evaluation_suite(
+            seeds=(11,),
+            match_counts=(1,),
+            games_per_match_options=(1,),
+            minimum_total_game_count=2,
+        )
+
+        self.assertEqual(benchmark["config_count"], 1.0)
+        self.assertEqual(benchmark["seed_count"], 1.0)
+        self.assertGreaterEqual(
+            benchmark["minimum_total_game_count_per_configuration"],
+            2.0,
+        )
+        self.assertGreaterEqual(benchmark["total_game_count"], 2.0)
+        self.assertGreaterEqual(benchmark["fairness_gap"], 0.0)
+        self.assertLessEqual(benchmark["fairness_gap"], 1.0)
+        self.assertGreaterEqual(benchmark["balance_score"], 0.0)
+        self.assertLessEqual(benchmark["balance_score"], 1.0)
+
+    def test_stop_threshold_uses_tree_guard_relief(self):
+        engine = DaVinciDecisionEngine()
+
+        baseline_move = build_move(
+            win_probability=0.42,
+            continuation_likelihood=0.44,
+            strategy_objective_core=6.4,
+        )
+        relieved_move = build_move(
+            win_probability=0.42,
+            continuation_likelihood=0.44,
+            strategy_objective_core=6.4,
+            post_hit_tree_search_signal=0.85,
+            post_hit_branch_search_signal=0.80,
+            post_hit_mcts_signal=0.92,
+            post_hit_mcts_node_count=24.0,
+            post_hit_mcts_max_depth=3.0,
+        )
+
+        baseline_breakdown = engine._stop_threshold_breakdown(
+            risk_factor=engine.HIT_REWARD,
+            my_hidden_count=2,
+            best_move=baseline_move,
+        )
+        relieved_breakdown = engine._stop_threshold_breakdown(
+            risk_factor=engine.HIT_REWARD,
+            my_hidden_count=2,
+            best_move=relieved_move,
+        )
+
+        self.assertGreater(
+            relieved_breakdown["guard_relief_signal"],
+            baseline_breakdown["guard_relief_signal"],
+        )
+        self.assertGreater(relieved_breakdown["search_depth_credit"], 0.0)
+        self.assertLess(
+            relieved_breakdown["low_confidence_threshold"],
+            baseline_breakdown["low_confidence_threshold"],
+        )
+        self.assertLess(
+            relieved_breakdown["weak_continuation_threshold"],
+            baseline_breakdown["weak_continuation_threshold"],
+        )
+        self.assertLess(
+            relieved_breakdown["threshold"],
+            baseline_breakdown["threshold"],
         )
 
 

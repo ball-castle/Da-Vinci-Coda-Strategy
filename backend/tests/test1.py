@@ -6706,6 +6706,14 @@ class GameControllerOutputTests(unittest.TestCase):
             "post_hit_behavior_fragility_drag",
             result["decision_summary"]["decision_score_breakdown"],
         )
+        self.assertIn(
+            "search_depth_credit",
+            result["decision_summary"]["decision_score_breakdown"],
+        )
+        self.assertIn(
+            "guard_relief_signal",
+            result["decision_summary"]["decision_score_breakdown"],
+        )
 
     def test_controller_aggregates_behavior_debug_across_top_k_posterior_candidates(self):
         game_state = GameState(
