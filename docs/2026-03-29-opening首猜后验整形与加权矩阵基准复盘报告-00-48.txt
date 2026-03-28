@@ -1,0 +1,131 @@
+2026-03-29 opening首猜后验整形与加权矩阵基准复盘报告 00:48
+
+生成时间：2026-03-29 00:48:55 +08:00
+
+一、本轮目标
+
+这轮继续按 VinCi.txt 的主线收口，不补解释，直接打 4 个主缺口：
+
+1. 让 `P(action | state)` 的工程化后验更像“生成式动作分布”，把 candidate ranking 直接接到行为后验上
+2. 继续抬高 behavior posterior 的区分度，减少个别 case 的低 margin
+3. 把 post-draw opening 的首猜 top1 质量真正打穿，解决 Joker 轻微压过数值牌的问题
+4. 让 long-horizon benchmark 的多配置聚合更系统，不再被小配置等权平均放大小样本噪声
+
+二、本轮核心推进
+
+1. 联合动作后验又往前推进了一层“后验自校准”
+- 在 `joint_action_generative_probability_breakdown` 里补了基于 posterior marginals 的二次整形：
+  - `posterior_player_mass`
+  - `posterior_slot_mass`
+  - `posterior_value_mass`
+  - `posterior_continue_mass`
+- 现在不是只把 raw posterior softmax 归一化后直接拿来用，
+  而是让 player / slot / value / continue 这 4 条边缘后验重新反哺联合动作概率。
+- 这一步让 `joint_action_posterior` 更接近“条件联合动作生成近似”，也直接把 behavior benchmark 的区分度往上抬了一截。
+
+2. 候选动作级别的行为后验正式接进 opening 排序
+- 新增了 `_behavior_action_posterior_summary`，它会对当前 candidate move：
+  - 重建单条 `GuessSignal`
+  - 调 `behavior_model.explain_signal(...)`
+  - 读取 `joint_action_posterior`
+  - 输出 `probability / weight / observed_rank / support`
+- 这意味着 opening 期不再只看当前 slot 分布本身，
+  还会显式读“这个动作在行为模型的联合动作后验里到底站不站得住”。
+
+3. opening precision 这轮真正把 Joker 压回去了
+- `_opening_precision_breakdown` 这轮新增并强化了：
+  - `posterior_signal`
+  - `joker_penalty`
+  - `numeric_competition_signal`
+- 关键逻辑变化是：
+  - 如果 Joker 只是略高于最佳数值牌，或者根本没有明显拉开，
+    就触发更强的 `numeric_competition_signal`
+  - Joker 的 `posterior_signal` 会被额外衰减
+  - 最终 `support` 再乘上更强的 `OPENING_JOKER_PENALTY_SCALE`
+- 同时 opening 排序加入了 `opening_joker_penalty` 作为直接 tie-break，
+  所以现在不是“Joker 只要概率略高就天然占优”，
+  而是“只有 Joker 真正明显领先时才允许排第一”。
+
+4. 多配置 benchmark 这轮补了“按实际局数加权”
+- `benchmark_long_horizon_configuration_matrix` 之前虽然已经有多 seed / 多配置，
+  但 `seat_bias` 和 `average_starting_player_advantage` 还是按配置等权平均，
+  这会让小配置的随机波动被放大。
+- 这轮改成按 `total_game_count` 加权：
+  - `seat_bias`
+  - `average_starting_player_advantage`
+  - `average_match_seat_bias`
+- 这一步没有让 benchmark 变快，但让配置矩阵的解释方式更接近“真实长期评测”。
+
+5. 测试层补了 opening 对 Joker 的硬回归
+- `test_opening_precision_support_prefers_clearer_post_draw_guess` 现在不仅校验：
+  - sharper > blurrier
+  - Joker 有 penalty
+- 还新增了近似真实 benchmark 的“Joker 和数值牌近乎打平”场景，
+  断言 near-tied Joker 不能再压过 near-tied numeric。
+- 再加上现有的 long-horizon configuration matrix regression，这轮不是只改排序而没有防回退。
+
+三、本轮量化结果
+
+1. 全量测试
+- `python -m unittest discover -s backend/tests -p "test*.py"`
+- 结果：`173 / 173` 通过
+
+2. behavior benchmark
+- `accuracy = 1.0`
+- `average_log_margin = 0.88020328171312`
+- `min_log_margin = 0.099684523007778`
+- `average_score_ratio = 2.0237164172521953`
+- 相比上一轮的 `average_log_margin = 0.8141`，这轮后验区分度继续提升。
+
+3. synthetic self-play benchmark
+- `world_count = 8`
+- `guess_rate = 1.0`
+- `top1_guess_accuracy = 1.0`
+- `top3_guess_accuracy = 1.0`
+- `recommended_draw_rate = 1.0`
+- `average_realized_hits_per_turn = 1.0`
+- `average_executed_steps = 1.0`
+- 这说明 opening 首猜质量这轮已经真正打穿了，之前 `top1_guess_accuracy = 0.375` 的主缺口被明显解决。
+
+4. long-horizon benchmark
+- single-seed league (`16` 局)：
+  - `seat_bias = 0.03125`
+  - `starting_player_win_rate = 0.453125`
+  - `non_starting_player_win_rate = 0.546875`
+- multi-seed matrix (`32` 局，2 seeds)：
+  - `seat_bias = 0.015625`
+  - `starting_player_win_rate = 0.5`
+  - `non_starting_player_win_rate = 0.5`
+  - `average_starting_player_advantage = 0.0`
+- weighted configuration matrix (`24` 局，2 seeds x 2 configs)：
+  - `seat_bias = 0.10416666666666667`
+  - `average_starting_player_advantage = 0.020833333333333332`
+- 结论是：标准 matrix 已经很平，但更广的配置矩阵仍然会暴露中等样本噪声，这也是下一段还要继续收口的硬点。
+
+四、这轮解决了什么
+
+1. `top1_guess_accuracy = 0.375` 这个 opening 主问题已经被打穿
+2. Joker 轻微压过数值牌的排序缺陷已经被直接修掉
+3. behavior posterior 的整体区分度继续上升
+4. configuration matrix 的聚合方式更合理，benchmark 的解释更接近真实长期评测
+
+五、仍然没彻底打穿的点
+
+1. `P(action | state)` 还是工程化后验近似，不是完整可学习的概率生成模型
+2. 显式 MCTS 仍然是局部后续动作树，不是完整全局 game-state tree / 完整 MCTS
+3. `min_log_margin = 0.099684523007778` 仍然不算很硬，说明个别行为 case 的 posterior separation 还有提升空间
+4. synthetic self-play 的 opening benchmark 已经很强，但它本身仍偏 pre-draw / post-draw 首猜视角，不能单独代表完整长期进攻能力
+5. 多 seed 标准 matrix 已经基本压平先手优势，但更大规模、多配置、可长期复跑的 benchmark 还没有真正做大
+6. `stop / draw / risk guard` 仍然残留局部 threshold 和 shaping，尚未被统一目标完全吞掉
+
+六、结论
+
+这轮不是补解释，而是把“opening 首猜精度”和“benchmark 聚合质量”两个最后阶段最影响体感强度的问题直接往前推了一大步。
+
+尤其是 `top1_guess_accuracy` 从 `0.375 -> 1.0`，说明现在 opening 已经不只是“能把答案放进 top3”，而是开始真正把正确首猜扶到第一位了。
+
+下一轮如果继续沿主线推进，最值钱的方向会是：
+- 继续提高 `min_log_margin`
+- 继续扩大长期 benchmark 样本矩阵
+- 继续削掉 stop / draw / risk guard 里的局部 shaping
+- 再把显式树搜索往完整 game-state tree 拉近一截
