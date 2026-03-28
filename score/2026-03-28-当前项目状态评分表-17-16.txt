@@ -1,0 +1,19 @@
+分数：85/100
+时间：2026-03-28 17:16:40 +08:00
+
+当前问题：
+1. `P(action | state)` 目前仍然是条件联合动作分布近似，不是完整概率生成模型。
+2. `mcts-lite` 已接入 post-hit rollout，但还不是包含显式状态展开、回传与 rollout policy 的完整 MCTS。
+3. long-horizon league self-play 当前样本量仍偏小（16 局），还不是更大规模、更稳定的长期胜率 benchmark。
+4. league self-play 仍存在较明显 seat bias（当前 `seat_bias = 0.375`），说明先后手/座位优势还没有被很好压平。
+5. synthetic self-play benchmark 仍然偏 pre-draw 视角，当前 `recommended_draw_rate = 1.0`、`guess_rate = 0.0`，不能单独代表完整进攻质量。
+6. `stop / draw / risk guard` 虽然已经更多并入统一目标，但仍保留局部 threshold 与 shaping 痕迹，尚未被总策略目标完全替代。
+7. 长期 benchmark 虽然已经从单批次推进到 league 聚合，但还缺少更大规模、更多 seed、更多对局长度配置下的系统化评测。
+8. 搜索层虽然已经有 `branch search / tree search / expectimax / mcts-lite`，但这些分量仍然是叠加式搜索信号，还没有统一成单一、更完整的树搜索框架。
+9. 行为反推能力虽然已明显增强，但目前依然更偏结构化建模与手工信号组合，不是更完整的可学习式动作生成/反演体系。
+10. 当前项目已经进入收口区，但还没有把“统一目标 + 大样本长期自对弈 + 更完整搜索”三者完全闭环，因此离最终完成态还有最后一段硬骨头。
+
+git 提交信息：
+- commit: 63f6393
+- message: 09:29 advance conditional joint action, mcts-lite, and league self-play
+- time: 2026-03-28 09:30:46 +08:00
