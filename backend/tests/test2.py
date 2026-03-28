@@ -96,23 +96,63 @@ class UnifiedObjectiveAndSearchTests(unittest.TestCase):
         sharper = engine._opening_precision_breakdown(
             game_state=game_state,
             player_id="opp",
+            guessed_card=("W", 5),
             probability=0.62,
             slot_distribution={("W", 5): 0.62, ("W", 6): 0.22, ("W", 4): 0.16},
             information_gain=0.35,
             behavior_confidence=0.72,
+            behavior_action_posterior_support=0.68,
         )
         blurrier = engine._opening_precision_breakdown(
             game_state=game_state,
             player_id="opp",
+            guessed_card=("W", 5),
             probability=0.41,
             slot_distribution={("W", 5): 0.41, ("W", 6): 0.35, ("W", 4): 0.24},
             information_gain=0.35,
             behavior_confidence=0.72,
+            behavior_action_posterior_support=0.42,
         )
 
         self.assertEqual(sharper["phase"], "post_draw_opening")
         self.assertGreater(sharper["support"], blurrier["support"])
         self.assertGreater(sharper["margin_signal"], blurrier["margin_signal"])
+
+        joker_guess = engine._opening_precision_breakdown(
+            game_state=game_state,
+            player_id="opp",
+            guessed_card=("W", "-"),
+            probability=0.43,
+            slot_distribution={("W", "-"): 0.43, ("W", 5): 0.41, ("W", 6): 0.16},
+            information_gain=0.35,
+            behavior_confidence=0.72,
+            behavior_action_posterior_support=0.68,
+        )
+        self.assertGreater(joker_guess["joker_penalty"], 0.0)
+        self.assertGreater(joker_guess["numeric_competition_signal"], 0.0)
+        self.assertLess(joker_guess["support"], sharper["support"])
+
+        near_tied_numeric = engine._opening_precision_breakdown(
+            game_state=game_state,
+            player_id="opp",
+            guessed_card=("W", 5),
+            probability=0.41,
+            slot_distribution={("W", "-"): 0.43, ("W", 5): 0.41, ("W", 6): 0.16},
+            information_gain=0.35,
+            behavior_confidence=0.72,
+            behavior_action_posterior_support=0.50,
+        )
+        near_tied_joker = engine._opening_precision_breakdown(
+            game_state=game_state,
+            player_id="opp",
+            guessed_card=("W", "-"),
+            probability=0.43,
+            slot_distribution={("W", "-"): 0.43, ("W", 5): 0.41, ("W", 6): 0.16},
+            information_gain=0.35,
+            behavior_confidence=0.72,
+            behavior_action_posterior_support=0.66,
+        )
+        self.assertLess(near_tied_joker["support"], near_tied_numeric["support"])
 
     def test_stop_threshold_gives_credit_to_strategy_objective_and_search(self):
         engine = DaVinciDecisionEngine()

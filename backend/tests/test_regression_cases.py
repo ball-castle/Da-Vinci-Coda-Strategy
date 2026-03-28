@@ -1067,6 +1067,27 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(benchmark["seed_stop_rate_stddev"], 0.0)
         self.assertGreaterEqual(benchmark["seed_starting_advantage_stddev"], 0.0)
 
+    def test_long_horizon_configuration_matrix_aggregates_multiple_configs(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_long_horizon_configuration_matrix(
+            seeds=(11, 19),
+            match_counts=(2,),
+            games_per_match_options=(1, 2),
+        )
+
+        self.assertEqual(benchmark["config_count"], 2.0)
+        self.assertEqual(benchmark["seed_count"], 2.0)
+        self.assertEqual(benchmark["total_game_count"], 12.0)
+        self.assertGreaterEqual(benchmark["seat_bias"], 0.0)
+        self.assertLessEqual(benchmark["seat_bias"], 1.0)
+        self.assertGreaterEqual(benchmark["starting_player_win_rate"], 0.0)
+        self.assertLessEqual(benchmark["starting_player_win_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["non_starting_player_win_rate"], 0.0)
+        self.assertLessEqual(benchmark["non_starting_player_win_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["config_seat_bias_stddev"], 0.0)
+        self.assertGreaterEqual(benchmark["config_starting_advantage_stddev"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1708,6 +1708,88 @@ class BehavioralLikelihoodModel:
                 action_key: posterior_mass / total_posterior_mass
                 for action_key, posterior_mass in posterior_action_mass.items()
             }
+        posterior_player_probabilities: DefaultDict[str, float] = defaultdict(float)
+        posterior_slot_probabilities: DefaultDict[str, Dict[int, float]] = defaultdict(
+            dict
+        )
+        posterior_value_probabilities: DefaultDict[
+            Tuple[str, int],
+            Dict[Card, float],
+        ] = defaultdict(dict)
+        posterior_continue_probabilities: DefaultDict[
+            Tuple[str, int, Card],
+            Dict[Optional[bool], float],
+        ] = defaultdict(dict)
+        for action_key, posterior_probability in posterior_probabilities.items():
+            player_id, slot_index, candidate_card, continued_turn = action_key
+            posterior_player_probabilities[player_id] += posterior_probability
+            posterior_slot_probabilities[player_id][slot_index] = (
+                posterior_slot_probabilities[player_id].get(slot_index, 0.0)
+                + posterior_probability
+            )
+            posterior_value_probabilities[(player_id, slot_index)][candidate_card] = (
+                posterior_value_probabilities[(player_id, slot_index)].get(
+                    candidate_card,
+                    0.0,
+                )
+                + posterior_probability
+            )
+            posterior_continue_probabilities[(player_id, slot_index, candidate_card)][
+                continued_turn
+            ] = (
+                posterior_continue_probabilities[
+                    (player_id, slot_index, candidate_card)
+                ].get(continued_turn, 0.0)
+                + posterior_probability
+            )
+        refined_posterior_mass: Dict[
+            Tuple[str, int, Card, Optional[bool]],
+            float,
+        ] = {}
+        for action_key, posterior_probability in posterior_probabilities.items():
+            player_id, slot_index, candidate_card, continued_turn = action_key
+            player_mass = max(
+                self.EPSILON,
+                posterior_player_probabilities.get(player_id, self.EPSILON),
+            )
+            slot_mass = max(
+                self.EPSILON,
+                posterior_slot_probabilities.get(player_id, {}).get(
+                    slot_index,
+                    self.EPSILON,
+                ),
+            )
+            value_mass = max(
+                self.EPSILON,
+                posterior_value_probabilities.get((player_id, slot_index), {}).get(
+                    candidate_card,
+                    self.EPSILON,
+                ),
+            )
+            continue_mass = max(
+                self.EPSILON,
+                posterior_continue_probabilities.get(
+                    (player_id, slot_index, candidate_card),
+                    {},
+                ).get(continued_turn, 1.0),
+            )
+            refined_posterior_mass[action_key] = (
+                max(self.EPSILON, posterior_probability)
+                * (player_mass ** 0.16)
+                * (slot_mass ** 0.16)
+                * (value_mass ** 0.18)
+                * (continue_mass ** 0.10)
+            )
+            metadata[action_key]["posterior_player_mass"] = player_mass
+            metadata[action_key]["posterior_slot_mass"] = slot_mass
+            metadata[action_key]["posterior_value_mass"] = value_mass
+            metadata[action_key]["posterior_continue_mass"] = continue_mass
+        total_refined_posterior_mass = sum(refined_posterior_mass.values())
+        if total_refined_posterior_mass > 0.0:
+            posterior_probabilities = {
+                action_key: refined_mass / total_refined_posterior_mass
+                for action_key, refined_mass in refined_posterior_mass.items()
+            }
         observed_key = (
             signal.target_player_id,
             signal.target_slot_index,
@@ -4174,6 +4256,9 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_OBJECTIVE_CREDIT = 0.16
     STOP_MARGIN_SEARCH_CREDIT = 0.08
     OPENING_PRECISION_MARGIN_REFERENCE = 0.28
+    OPENING_JOKER_SUPPRESSION_MARGIN = 0.03
+    OPENING_JOKER_PENALTY_SCALE = 0.78
+    OPENING_JOKER_POSTERIOR_DAMPING = 0.42
     INITIATIVE_RECOVERY_REFERENCE = 3.0
 
     def calculate_risk_factor(self, my_hidden_count: int) -> float:
@@ -4347,6 +4432,8 @@ class DaVinciDecisionEngine:
             moves.sort(
                 key=lambda move: (
                     -move.get("opening_precision_support", 0.0),
+                    -move.get("opening_behavior_posterior_support", 0.0),
+                    move.get("opening_joker_penalty", 0.0),
                     -move["win_probability"],
                     -move.get("opening_margin_signal", 0.0),
                     -move.get("strategy_objective", move.get("ranking_score", move["expected_value"])),
@@ -6261,6 +6348,167 @@ class DaVinciDecisionEngine:
             ),
         }
 
+    def benchmark_long_horizon_configuration_matrix(
+        self,
+        *,
+        seeds: Optional[Sequence[int]] = None,
+        match_counts: Optional[Sequence[int]] = None,
+        games_per_match_options: Optional[Sequence[int]] = None,
+    ) -> Dict[str, float]:
+        benchmark_seeds = tuple(seeds or (11, 19, 29, 37, 53))
+        benchmark_match_counts = tuple(match_counts or (4, 6))
+        benchmark_games_per_match = tuple(games_per_match_options or (4, 6))
+        configurations = [
+            (int(match_count), int(games_per_match))
+            for match_count in benchmark_match_counts
+            for games_per_match in benchmark_games_per_match
+            if int(match_count) > 0 and int(games_per_match) > 0
+        ]
+        if not benchmark_seeds or not configurations:
+            return {
+                "config_count": 0.0,
+                "seed_count": 0.0,
+                "total_game_count": 0.0,
+                "average_turn_count": 0.0,
+                "average_guess_count": 0.0,
+                "average_successful_guesses": 0.0,
+                "average_post_draw_stop_rate": 0.0,
+                "starting_player_win_rate": 0.0,
+                "non_starting_player_win_rate": 0.0,
+                "average_starting_player_advantage": 0.0,
+                "seat_bias": 0.0,
+                "average_match_seat_bias": 0.0,
+                "config_seat_bias_stddev": 0.0,
+                "config_starting_advantage_stddev": 0.0,
+            }
+        configuration_benchmarks = [
+            self.benchmark_long_horizon_matrix(
+                seeds=benchmark_seeds,
+                match_count=match_count,
+                games_per_match=games_per_match,
+            )
+            for match_count, games_per_match in configurations
+        ]
+        total_game_count = sum(
+            float(benchmark["total_game_count"])
+            for benchmark in configuration_benchmarks
+        )
+        if total_game_count <= 0.0:
+            total_game_count = 1.0
+        seat_bias_values = [
+            float(benchmark["seat_bias"])
+            for benchmark in configuration_benchmarks
+        ]
+        starting_advantage_values = [
+            float(benchmark["average_starting_player_advantage"])
+            for benchmark in configuration_benchmarks
+        ]
+        configuration_weights = [
+            float(benchmark["total_game_count"])
+            for benchmark in configuration_benchmarks
+        ]
+        weighted_total = sum(configuration_weights)
+        if weighted_total <= 0.0:
+            weighted_total = float(len(configuration_benchmarks))
+        config_count = float(len(configuration_benchmarks))
+        return {
+            "config_count": config_count,
+            "seed_count": float(len(benchmark_seeds)),
+            "total_game_count": total_game_count,
+            "average_turn_count": sum(
+                float(benchmark["average_turn_count"])
+                * float(benchmark["total_game_count"])
+                for benchmark in configuration_benchmarks
+            )
+            / total_game_count,
+            "average_guess_count": sum(
+                float(benchmark["average_guess_count"])
+                * float(benchmark["total_game_count"])
+                for benchmark in configuration_benchmarks
+            )
+            / total_game_count,
+            "average_successful_guesses": sum(
+                float(benchmark["average_successful_guesses"])
+                * float(benchmark["total_game_count"])
+                for benchmark in configuration_benchmarks
+            )
+            / total_game_count,
+            "average_post_draw_stop_rate": sum(
+                float(benchmark["average_post_draw_stop_rate"])
+                * float(benchmark["total_game_count"])
+                for benchmark in configuration_benchmarks
+            )
+            / total_game_count,
+            "starting_player_win_rate": sum(
+                float(benchmark["starting_player_win_rate"])
+                * float(benchmark["total_game_count"])
+                for benchmark in configuration_benchmarks
+            )
+            / total_game_count,
+            "non_starting_player_win_rate": sum(
+                float(benchmark["non_starting_player_win_rate"])
+                * float(benchmark["total_game_count"])
+                for benchmark in configuration_benchmarks
+            )
+            / total_game_count,
+            "average_starting_player_advantage": sum(
+                value * weight
+                for value, weight in zip(starting_advantage_values, configuration_weights)
+            )
+            / weighted_total,
+            "seat_bias": sum(
+                value * weight
+                for value, weight in zip(seat_bias_values, configuration_weights)
+            )
+            / weighted_total,
+            "average_match_seat_bias": sum(
+                float(benchmark["average_match_seat_bias"])
+                * float(benchmark["total_game_count"])
+                for benchmark in configuration_benchmarks
+            )
+            / weighted_total,
+            "config_seat_bias_stddev": sqrt(
+                sum(
+                    (
+                        value
+                        - (
+                            sum(
+                                seat_bias * weight
+                                for seat_bias, weight in zip(
+                                    seat_bias_values,
+                                    configuration_weights,
+                                )
+                            )
+                            / weighted_total
+                        )
+                    )
+                    ** 2
+                    for value in seat_bias_values
+                )
+                / config_count
+            ),
+            "config_starting_advantage_stddev": sqrt(
+                sum(
+                    (
+                        value
+                        - (
+                            sum(
+                                advantage * weight
+                                for advantage, weight in zip(
+                                    starting_advantage_values,
+                                    configuration_weights,
+                                )
+                            )
+                            / weighted_total
+                        )
+                    )
+                    ** 2
+                    for value in starting_advantage_values
+                )
+                / config_count
+            ),
+        }
+
     def _strategy_objective_breakdown(
         self,
         *,
@@ -6615,6 +6863,9 @@ class DaVinciDecisionEngine:
         opening_precision_signal = 0.0
         opening_probability_signal = 0.0
         opening_margin_signal = 0.0
+        opening_behavior_posterior_support = 0.0
+        opening_joker_penalty = 0.0
+        opening_numeric_competition_signal = 0.0
         initiative_recovery_signal = 0.0
         strategy_objective_core = 0.0
         strategy_objective = 0.0
@@ -6652,6 +6903,12 @@ class DaVinciDecisionEngine:
                 "reason": "neutral",
                 "weight": 1.0,
             },
+        }
+        behavior_action_posterior_summary = {
+            "probability": 0.0,
+            "weight": 1.0,
+            "observed_rank": 1.0,
+            "support": 0.0,
         }
         self_exposure_profile = self_exposure_profile or {
             "total_exposure": 0.0,
@@ -7053,6 +7310,15 @@ class DaVinciDecisionEngine:
                     "behavior_candidate_signal": behavior_candidate_signal,
                 }
             )
+            behavior_action_posterior_summary = self._behavior_action_posterior_summary(
+                game_state=game_state,
+                behavior_model=behavior_model,
+                behavior_map_hypothesis=behavior_map_hypothesis,
+                guesser_id=acting_player_id,
+                target_player_id=player_id,
+                target_slot_index=slot_index,
+                guessed_card=card,
+            )
         behavior_match_ranking_breakdown = self._behavior_match_ranking_breakdown(
             best_move={
                 "behavior_match_bonus": behavior_match_bonus,
@@ -7076,15 +7342,22 @@ class DaVinciDecisionEngine:
         opening_precision_breakdown = self._opening_precision_breakdown(
             game_state=game_state,
             player_id=player_id,
+            guessed_card=card,
             probability=probability,
             slot_distribution=slot_distribution,
             information_gain=info_gain,
             behavior_confidence=behavior_match_confidence_breakdown["candidate_confidence"],
+            behavior_action_posterior_support=behavior_action_posterior_summary["support"],
         )
         opening_precision_support = opening_precision_breakdown["support"]
         opening_precision_signal = opening_precision_breakdown["support"]
         opening_probability_signal = opening_precision_breakdown["probability_signal"]
         opening_margin_signal = opening_precision_breakdown["margin_signal"]
+        opening_behavior_posterior_support = opening_precision_breakdown["posterior_signal"]
+        opening_joker_penalty = opening_precision_breakdown["joker_penalty"]
+        opening_numeric_competition_signal = opening_precision_breakdown[
+            "numeric_competition_signal"
+        ]
         initiative_recovery_signal = opening_precision_breakdown["initiative_recovery_signal"]
         tree_search_signal = clamp(
             max(
@@ -7164,6 +7437,12 @@ class DaVinciDecisionEngine:
             "opening_precision_signal": opening_precision_signal,
             "opening_probability_signal": opening_probability_signal,
             "opening_margin_signal": opening_margin_signal,
+            "opening_behavior_posterior_support": opening_behavior_posterior_support,
+            "opening_joker_penalty": opening_joker_penalty,
+            "opening_numeric_competition_signal": opening_numeric_competition_signal,
+            "behavior_action_posterior_probability": behavior_action_posterior_summary["probability"],
+            "behavior_action_posterior_weight": behavior_action_posterior_summary["weight"],
+            "behavior_action_posterior_rank": behavior_action_posterior_summary["observed_rank"],
             "initiative_recovery_signal": initiative_recovery_signal,
             "strategy_objective_core": strategy_objective_core,
             "strategy_objective": strategy_objective,
@@ -7318,6 +7597,12 @@ class DaVinciDecisionEngine:
                 "opening_precision_signal": opening_precision_signal,
                 "opening_probability_signal": opening_probability_signal,
                 "opening_margin_signal": opening_margin_signal,
+                "opening_behavior_posterior_support": opening_behavior_posterior_support,
+                "opening_joker_penalty": opening_joker_penalty,
+                "opening_numeric_competition_signal": opening_numeric_competition_signal,
+                "behavior_action_posterior_probability": behavior_action_posterior_summary["probability"],
+                "behavior_action_posterior_weight": behavior_action_posterior_summary["weight"],
+                "behavior_action_posterior_rank": behavior_action_posterior_summary["observed_rank"],
                 "initiative_recovery_signal": initiative_recovery_signal,
                 "ranking_score": ranking_score,
                 "strategy_objective_core": strategy_objective_core,
@@ -8733,6 +9018,63 @@ class DaVinciDecisionEngine:
             "map_signal": map_signal,
         }
 
+    def _behavior_action_posterior_summary(
+        self,
+        *,
+        game_state: GameState,
+        behavior_model: BehavioralLikelihoodModel,
+        behavior_map_hypothesis: Dict[str, Dict[int, Card]],
+        guesser_id: str,
+        target_player_id: str,
+        target_slot_index: int,
+        guessed_card: Card,
+    ) -> Dict[str, float]:
+        signal = GuessSignal(
+            action_index=max(
+                0,
+                sum(
+                    1
+                    for action in getattr(game_state, "actions", ())
+                    if getattr(action, "action_type", None) == "guess"
+                ),
+            ),
+            guesser_id=guesser_id,
+            target_player_id=target_player_id,
+            target_slot_index=target_slot_index,
+            guessed_card=guessed_card,
+            result=False,
+            continued_turn=None,
+        )
+        explanation = behavior_model.explain_signal(
+            behavior_map_hypothesis,
+            game_state,
+            signal,
+        )
+        posterior = explanation.get("joint_action_posterior", {})
+        weight = float(posterior.get("weight", 1.0))
+        probability = float(posterior.get("probability", 0.0))
+        observed_rank = float(posterior.get("observed_rank", 1.0))
+        top_actions = list(posterior.get("top_actions", ()))
+        top_probability = float(top_actions[0].get("probability", probability)) if top_actions else probability
+        rank_signal = clamp(
+            1.0 - ((observed_rank - 1.0) / max(1.0, float(len(top_actions)))),
+            0.0,
+            1.0,
+        )
+        support = clamp(
+            (0.44 * clamp(probability / max(1e-9, top_probability), 0.0, 1.0))
+            + (0.34 * clamp((weight - 1.0) / max(1e-9, behavior_model.JOINT_ACTION_POSTERIOR_MAX_WEIGHT - 1.0), 0.0, 1.0))
+            + (0.22 * rank_signal),
+            0.0,
+            1.0,
+        )
+        return {
+            "probability": probability,
+            "weight": weight,
+            "observed_rank": observed_rank,
+            "support": support,
+        }
+
     def _aggregate_candidate_signal_component(
         self,
         *,
@@ -8924,10 +9266,12 @@ class DaVinciDecisionEngine:
         *,
         game_state: Optional[GameState],
         player_id: str,
+        guessed_card: Card,
         probability: float,
         slot_distribution: Dict[Card, float],
         information_gain: float,
         behavior_confidence: float,
+        behavior_action_posterior_support: float,
     ) -> Dict[str, float]:
         phase = self._strategy_phase_for_state(game_state)
         if phase != "post_draw_opening":
@@ -8937,10 +9281,21 @@ class DaVinciDecisionEngine:
                 "probability_signal": 0.0,
                 "margin_signal": 0.0,
                 "confidence_signal": 0.0,
+                "posterior_signal": 0.0,
+                "joker_penalty": 0.0,
+                "numeric_competition_signal": 0.0,
                 "initiative_recovery_signal": 0.0,
             }
         ranked = sorted(slot_distribution.values(), reverse=True)
         second_probability = float(ranked[1]) if len(ranked) > 1 else 0.0
+        best_numeric_probability = max(
+            (
+                float(candidate_probability)
+                for candidate_card, candidate_probability in slot_distribution.items()
+                if candidate_card[1] != JOKER
+            ),
+            default=0.0,
+        )
         probability_signal = clamp(probability, 0.0, 1.0)
         margin_signal = clamp(
             (probability - second_probability) / self.OPENING_PRECISION_MARGIN_REFERENCE,
@@ -8952,24 +9307,55 @@ class DaVinciDecisionEngine:
             0.0,
             1.0,
         )
+        posterior_signal = clamp(behavior_action_posterior_support, 0.0, 1.0)
         initiative_recovery_signal = self._initiative_recovery_signal(
             game_state,
             player_id=player_id,
         )
+        joker_penalty = 0.0
+        numeric_competition_signal = 0.0
+        if guessed_card[1] == JOKER and best_numeric_probability > 0.0:
+            numeric_competition_signal = clamp(
+                (
+                    best_numeric_probability
+                    + self.OPENING_JOKER_SUPPRESSION_MARGIN
+                    - probability
+                )
+                / max(1e-9, self.OPENING_JOKER_SUPPRESSION_MARGIN),
+                0.0,
+                1.0,
+            )
+            joker_penalty = max(
+                clamp(
+                    (best_numeric_probability - max(0.0, probability - 0.015))
+                    / max(1e-9, self.OPENING_PRECISION_MARGIN_REFERENCE),
+                    0.0,
+                    1.0,
+                ),
+                numeric_competition_signal,
+            )
+            posterior_signal *= 1.0 - (
+                self.OPENING_JOKER_POSTERIOR_DAMPING * joker_penalty
+            )
         support = clamp(
             (0.42 * probability_signal)
             + (0.24 * margin_signal)
-            + (0.18 * confidence_signal)
-            + (0.16 * initiative_recovery_signal),
+            + (0.10 * confidence_signal)
+            + (0.12 * posterior_signal)
+            + (0.12 * initiative_recovery_signal),
             0.0,
             1.0,
         )
+        support *= 1.0 - (self.OPENING_JOKER_PENALTY_SCALE * joker_penalty)
         return {
             "phase": phase,
             "support": support,
             "probability_signal": probability_signal,
             "margin_signal": margin_signal,
             "confidence_signal": confidence_signal,
+            "posterior_signal": posterior_signal,
+            "joker_penalty": joker_penalty,
+            "numeric_competition_signal": numeric_competition_signal,
             "initiative_recovery_signal": initiative_recovery_signal,
         }
 
