@@ -1,0 +1,147 @@
+2026-03-29 后验gap校准完整turn基准与稳定矩阵复盘报告 03:19
+
+生成时间：2026-03-29 03:19:16 +08:00
+
+一、本轮目标
+
+这轮继续按 VinCi.txt 的主线补最后几块硬缺口，重点不是再堆解释，而是把下面 4 条往前推：
+
+1. 继续把 `P(action | state)` 从工程化后验往“更像生成式动作分布”推进一层
+2. 继续抬 behavior posterior 的区分度，尤其让 posterior 不只看 rank，还看 top-gap / entropy
+3. 把 synthetic self-play benchmark 从“看起来像 opening-only”推进成显式暴露完整 turn 行为
+4. 把长期 benchmark 的多配置评测做成更稳定的 matrix，而不是只看小配置一次跑出来的噪声
+
+二、本轮核心推进
+
+1. posterior 这轮补了 top-gap / entropy calibration
+- 在 `joint_action_generative_probability_breakdown` 里，`posterior_weight` 不再只吃：
+  - `posterior_probability_advantage`
+  - `posterior_rank_credit`
+- 这轮新增：
+  - `posterior_top_gap_signal`
+  - `posterior_gap_credit`
+  - `posterior_entropy`
+  - `normalized_posterior_entropy`
+  - `posterior_entropy_credit`
+- 也就是说，后验现在不只看“观察动作排第几”，
+  还看“它是不是明显甩开第二名”和“当前动作分布是不是足够低熵”。
+- 这让 `P(action | state)` 又往“条件生成式后验”靠近了一步，而不是纯工程化 rank 修正。
+
+2. strategy root action 这轮也开始显式 tree 化
+- `_build_strategy_action_summary` 之前更多是直接比较 raw action score：
+  - `guess`
+  - `draw_black`
+  - `draw_white`
+  - `stop`
+- 这轮新增了：
+  - `guess_tree`
+  - `draw_black_tree`
+  - `draw_white_tree`
+  - `stop_tree`
+- 推荐动作现在优先读 tree score，再读 raw score。
+- 这意味着 pre-draw / post-draw / stop 的根动作比较，已经不是只看局部 score，而是开始显式读取：
+  - post-hit search 信号
+  - draw opening plan 信号
+  - draw rollout opening support
+- 这一步虽然还不是完整 game-state tree search，但确实把 root 层的动作统一得更像“单一策略树”。
+
+3. synthetic self-play benchmark 不再只暴露 opening 指标
+- `_simulate_self_play_turn` 这轮新增：
+  - `guessed_any`
+  - `stopped_cleanly`
+- `benchmark_self_play_worlds` 现在除了原来的：
+  - `top1_guess_accuracy`
+  - `top3_guess_accuracy`
+  - `recommended_draw_rate`
+- 还会显式输出：
+  - `full_turn_guess_execution_rate`
+  - `full_turn_clean_stop_rate`
+- 这样现在看到 `recommended_draw_rate = 1.0` 时，不会再误以为 benchmark 只说明“系统会摸牌”，
+  因为同一份 benchmark 还能直接告诉你：
+  - 摸完以后有没有真的展开完整 turn 进攻
+  - 有没有在命中后稳定 clean stop
+
+4. 多配置长期 benchmark 这轮补了 stability matrix
+- 新增 `benchmark_long_horizon_stability_matrix(...)`。
+- 它不是简单再跑一次 configuration matrix，
+  而是会对样本过小的配置做 repeat，直到达到 `minimum_total_game_count_per_configuration`。
+- 同时内部用 `_aggregate_long_horizon_matrix_runs(...)` 把重复 matrix 按实际局数加权聚合。
+- 这意味着现在可以区分：
+  - 原始 configuration matrix
+  - 稳定化后的 stability matrix
+- 对长期 seat bias / 先手优势的观察也更接近“真正可复跑的 benchmark”。
+
+5. 回归测试同步补上
+- `test1.py` 补了 `strategy_action_summary` tree fields 的断言
+- `test_regression_cases.py` 补了：
+  - `full_turn_guess_execution_rate`
+  - `full_turn_clean_stop_rate`
+  - `benchmark_long_horizon_stability_matrix(...)`
+- 这轮不是只把 benchmark 指标做出来，而是把它们钉进了回归里。
+
+三、本轮量化结果
+
+1. 全量测试
+- `python -m unittest discover -s backend/tests -p "test*.py"`
+- 结果：`174 / 174` 通过
+
+2. behavior benchmark
+- `accuracy = 1.0`
+- `average_log_margin = 0.901726269184566`
+- `min_log_margin = 0.09797807022884866`
+- `average_score_ratio = 2.0608191452173346`
+- 相比上一轮：
+  - `average_log_margin` 继续从 `0.88020328171312` 提升到了 `0.901726269184566`
+  - 说明 posterior 的整体区分度又往上走了一截
+
+3. synthetic self-play benchmark（8 worlds）
+- `guess_rate = 1.0`
+- `top1_guess_accuracy = 1.0`
+- `top3_guess_accuracy = 1.0`
+- `recommended_draw_rate = 1.0`
+- `average_realized_hits_per_turn = 1.0`
+- `average_executed_steps = 1.0`
+- `full_turn_guess_execution_rate = 1.0`
+- `full_turn_clean_stop_rate = 1.0`
+- 这说明现在这份 benchmark 已经不只是“opening 首猜看起来强”，
+  而是连“摸牌后完整 turn 有没有真正落地执行”也能直接看到。
+
+4. stability matrix
+- `config_count = 2`
+- `seed_count = 2`
+- `matrix_run_count = 5`
+- `minimum_total_game_count_per_configuration = 24`
+- `total_game_count = 56`
+- `seat_bias = 0.08035714285714286`
+- `starting_player_win_rate = 0.5133928571428571`
+- `non_starting_player_win_rate = 0.48660714285714285`
+- `average_starting_player_advantage = 0.026785714285714284`
+- 对比上一轮 weighted configuration matrix 的 `seat_bias = 0.10416666666666667`，
+  这轮稳定化后已经继续往下降了。
+
+四、本轮解决了什么
+
+1. posterior 不再只靠 observed rank 修正，开始显式读取 top-gap 和 entropy
+2. strategy root action 不是只比 raw score，已经开始走 tree score
+3. synthetic self-play benchmark 不再只有 opening 视角，完整 turn 执行率也被显式量化了
+4. 长期 benchmark 不再只剩原始 configuration matrix，已经有可稳定复跑的 stability matrix
+
+五、仍然没彻底打穿的点
+
+1. `P(action | state)` 虽然更像生成式后验了，但本质上仍然是工程化近似，不是完整可学习的概率生成模型
+2. 显式 MCTS 还是局部后续动作树，不是完整全局 game-state tree / 完整 MCTS
+3. `min_log_margin = 0.09797807022884866` 仍然不算硬，说明最弱的 behavior case 还可以继续校准
+4. stability matrix 已经把多配置噪声压下去一截，但 `seat_bias = 0.08035714285714286` 仍然不够低，长期 benchmark 还要继续做大
+5. `stop / draw / risk guard` 虽然 root 层更 tree 化了，但 continue boundary 内部仍然残留局部 threshold 和 shaping
+
+六、结论
+
+这轮的价值不在于又补了几个解释字段，而在于把“最后阶段最难看清的两块”继续实化了：
+- 后验现在开始显式区分“高 rank 但分布拥挤”和“高 rank 且真正拉开差距”的动作
+- benchmark 现在开始显式区分“opening 看起来强”和“完整 turn 真的能打出去”
+
+如果继续沿这条线推进，下一轮最值钱的仍然是：
+- 继续压 `min_log_margin`
+- 继续把 stability matrix 样本做大
+- 继续让 continue boundary 少依赖局部 threshold，多依赖统一策略目标
+- 再把 MCTS 从局部 post-hit tree 往完整 game-state tree 拉近一截
