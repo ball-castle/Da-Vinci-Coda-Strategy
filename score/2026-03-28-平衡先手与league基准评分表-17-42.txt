@@ -1,0 +1,21 @@
+分数：86/100
+时间：2026-03-28 17:42:10 +08:00
+
+当前问题：
+1. `P(action | state)` 当前仍然是条件联合动作分布近似，不是完整概率生成模型。
+2. `mcts-lite` 已接入搜索链，但还不是完整 MCTS；目前仍缺显式树节点状态展开、完整回传和更稳定的 rollout policy。
+3. long-horizon league self-play 虽然已经加入先手轮换和平衡聚合，但本轮实际展示样本仍只有 16 局，距离更大规模长期胜率 benchmark 还有距离。
+4. league self-play 的 `seat_bias` 已从 0.375 降到 0.25，但仍然不低，说明玩家标识/局面结构上的非对称性还没有完全压平。
+5. long self-play 中 `starting_player_win_rate = 0.75`、`non_starting_player_win_rate = 0.25`（4 局样本）仍提示短批次 benchmark 对先手优势非常敏感。
+6. synthetic self-play benchmark 依然偏 pre-draw 视角，当前 `recommended_draw_rate = 1.0`、`guess_rate = 0.0`，不能单独代表完整进攻能力。
+7. `stop / draw / risk guard` 虽然已经更多折算进统一目标，但局部 threshold 和风险 shaping 仍未完全消失。
+8. 搜索层目前是 `branch search / tree search / expectimax / mcts-lite` 并存，仍然更像叠加式框架，还没有完全统一成单一搜索主干。
+9. 行为反推链虽然已明显增强，但仍偏结构化建模与人工信号组合，不是更完整的可学习式动作生成/反演体系。
+10. 当前 benchmark 已更公平，但还缺更大规模、多 seed、多配置、可长期复跑的系统化评测矩阵。
+11. 虽然 `average_starting_player_advantage = 0.0`，但这主要说明 league 聚合更平衡，不等于模型本身已经完全消除了先手优势。
+12. 项目已进入收口区，但离“完整概率生成模型 + 更完整树搜索 + 大样本长期对局验证”的最终完成态还差最后一段硬收尾。
+
+git 提交信息：
+- commit: 4e5b389
+- message: 17:43 balance long self-play seats and league benchmark
+- time: 2026-03-28 17:43:16 +08:00
