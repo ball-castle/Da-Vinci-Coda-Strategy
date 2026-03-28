@@ -5269,6 +5269,7 @@ class DaVinciDecisionEngine:
         self,
         *,
         rng: Random,
+        starting_player_id: str = "p0",
     ) -> Dict[str, float]:
         world = self._build_long_self_play_world(rng)
         truth_slots_by_player = {
@@ -5277,7 +5278,8 @@ class DaVinciDecisionEngine:
         }
         remaining_deck = list(world["remaining_deck"])
         actions: List[GuessAction] = list(world["actions"])
-        acting_player_id = "p0"
+        acting_player_id = starting_player_id
+        non_starting_player_id = "p1" if starting_player_id == "p0" else "p0"
         winner: Optional[str] = None
         total_turns = 0.0
         total_guesses = 0.0
@@ -5460,6 +5462,10 @@ class DaVinciDecisionEngine:
         return {
             "p0_win": 1.0 if winner == "p0" else 0.0,
             "p1_win": 1.0 if winner == "p1" else 0.0,
+            "starting_player_win": 1.0 if winner == starting_player_id else 0.0,
+            "non_starting_player_win": 1.0
+            if winner == non_starting_player_id
+            else 0.0,
             "draw_game": 1.0 if winner is None else 0.0,
             "turn_count": total_turns,
             "guess_count": total_guesses,
@@ -5485,11 +5491,17 @@ class DaVinciDecisionEngine:
                 "average_guess_count": 0.0,
                 "average_successful_guesses": 0.0,
                 "post_draw_stop_rate": 0.0,
+                "starting_player_win_rate": 0.0,
+                "non_starting_player_win_rate": 0.0,
+                "starting_player_advantage": 0.0,
+                "seat_bias": 0.0,
             }
 
         rng = Random(seed)
         p0_wins = 0.0
         p1_wins = 0.0
+        starting_player_wins = 0.0
+        non_starting_player_wins = 0.0
         draw_games = 0.0
         turn_sum = 0.0
         guess_sum = 0.0
@@ -5497,10 +5509,16 @@ class DaVinciDecisionEngine:
         post_draw_stop_sum = 0.0
         draw_turn_sum = 0.0
 
-        for _ in range(total_games):
-            result = self._simulate_long_self_play_game(rng=rng)
+        for game_index in range(total_games):
+            starting_player_id = "p0" if game_index % 2 == 0 else "p1"
+            result = self._simulate_long_self_play_game(
+                rng=rng,
+                starting_player_id=starting_player_id,
+            )
             p0_wins += result["p0_win"]
             p1_wins += result["p1_win"]
+            starting_player_wins += result["starting_player_win"]
+            non_starting_player_wins += result["non_starting_player_win"]
             draw_games += result["draw_game"]
             turn_sum += result["turn_count"]
             guess_sum += result["guess_count"]
@@ -5519,6 +5537,15 @@ class DaVinciDecisionEngine:
             "post_draw_stop_rate": (
                 post_draw_stop_sum / draw_turn_sum if draw_turn_sum > 0.0 else 0.0
             ),
+            "starting_player_win_rate": starting_player_wins / float(total_games),
+            "non_starting_player_win_rate": (
+                non_starting_player_wins / float(total_games)
+            ),
+            "starting_player_advantage": (
+                (starting_player_wins - non_starting_player_wins)
+                / float(total_games)
+            ),
+            "seat_bias": abs(p0_wins - p1_wins) / float(total_games),
         }
 
     def benchmark_long_horizon_league(
@@ -5544,19 +5571,27 @@ class DaVinciDecisionEngine:
                 "average_guess_count": 0.0,
                 "average_successful_guesses": 0.0,
                 "average_post_draw_stop_rate": 0.0,
+                "starting_player_win_rate": 0.0,
+                "non_starting_player_win_rate": 0.0,
+                "average_starting_player_advantage": 0.0,
                 "stop_rate_stddev": 0.0,
                 "seat_bias": 0.0,
+                "average_match_seat_bias": 0.0,
             }
 
         rng = Random(seed)
         total_game_count = float(total_matches * match_games)
         p0_wins = 0.0
         p1_wins = 0.0
+        starting_player_win_sum = 0.0
+        non_starting_player_win_sum = 0.0
         draw_games = 0.0
         turn_sum = 0.0
         guess_sum = 0.0
         success_sum = 0.0
         stop_rate_sum = 0.0
+        seat_bias_sum = 0.0
+        starting_advantage_sum = 0.0
         stop_rates: List[float] = []
 
         for _ in range(total_matches):
@@ -5567,6 +5602,12 @@ class DaVinciDecisionEngine:
             )
             p0_wins += match_benchmark["p0_win_rate"] * match_games
             p1_wins += match_benchmark["p1_win_rate"] * match_games
+            starting_player_win_sum += (
+                match_benchmark["starting_player_win_rate"] * match_games
+            )
+            non_starting_player_win_sum += (
+                match_benchmark["non_starting_player_win_rate"] * match_games
+            )
             draw_games += match_benchmark["draw_rate"] * match_games
             turn_sum += match_benchmark["average_turn_count"] * match_games
             guess_sum += match_benchmark["average_guess_count"] * match_games
@@ -5574,6 +5615,8 @@ class DaVinciDecisionEngine:
                 match_benchmark["average_successful_guesses"] * match_games
             )
             stop_rate_sum += match_benchmark["post_draw_stop_rate"]
+            seat_bias_sum += match_benchmark["seat_bias"]
+            starting_advantage_sum += match_benchmark["starting_player_advantage"]
             stop_rates.append(match_benchmark["post_draw_stop_rate"])
 
         average_post_draw_stop_rate = (
@@ -5599,8 +5642,16 @@ class DaVinciDecisionEngine:
             "average_guess_count": guess_sum / total_game_count,
             "average_successful_guesses": success_sum / total_game_count,
             "average_post_draw_stop_rate": average_post_draw_stop_rate,
+            "starting_player_win_rate": starting_player_win_sum / total_game_count,
+            "non_starting_player_win_rate": (
+                non_starting_player_win_sum / total_game_count
+            ),
+            "average_starting_player_advantage": (
+                starting_advantage_sum / float(total_matches)
+            ),
             "stop_rate_stddev": sqrt(stop_rate_variance),
             "seat_bias": abs(p0_wins - p1_wins) / total_game_count,
+            "average_match_seat_bias": seat_bias_sum / float(total_matches),
         }
 
     def _strategy_objective_breakdown(
