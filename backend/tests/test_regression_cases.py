@@ -951,6 +951,10 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(benchmark["average_realized_hits_per_turn"], 0.0)
         self.assertGreater(benchmark["average_realized_strategy_objective"], -10.0)
         self.assertGreaterEqual(benchmark["average_executed_steps"], 0.0)
+        self.assertGreaterEqual(benchmark["full_turn_guess_execution_rate"], 0.0)
+        self.assertLessEqual(benchmark["full_turn_guess_execution_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["full_turn_clean_stop_rate"], 0.0)
+        self.assertLessEqual(benchmark["full_turn_clean_stop_rate"], 1.0)
         self.assertGreaterEqual(benchmark["deep_rollout_usage"], 0.0)
         self.assertLessEqual(benchmark["deep_rollout_usage"], 1.0)
 
@@ -1087,6 +1091,39 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertLessEqual(benchmark["non_starting_player_win_rate"], 1.0)
         self.assertGreaterEqual(benchmark["config_seat_bias_stddev"], 0.0)
         self.assertGreaterEqual(benchmark["config_starting_advantage_stddev"], 0.0)
+
+    def test_long_horizon_stability_matrix_repeats_small_configs(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_long_horizon_stability_matrix(
+            seeds=(11,),
+            match_counts=(1, 2),
+            games_per_match_options=(1,),
+            minimum_total_game_count=2,
+        )
+
+        self.assertEqual(benchmark["config_count"], 2.0)
+        self.assertEqual(benchmark["seed_count"], 1.0)
+        self.assertGreaterEqual(benchmark["matrix_run_count"], 3.0)
+        self.assertGreaterEqual(
+            benchmark["minimum_total_game_count_per_configuration"],
+            2.0,
+        )
+        self.assertGreaterEqual(benchmark["total_game_count"], 4.0)
+        self.assertGreaterEqual(benchmark["seat_bias"], 0.0)
+        self.assertLessEqual(benchmark["seat_bias"], 1.0)
+        self.assertGreaterEqual(benchmark["starting_player_win_rate"], 0.0)
+        self.assertLessEqual(benchmark["starting_player_win_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["non_starting_player_win_rate"], 0.0)
+        self.assertLessEqual(benchmark["non_starting_player_win_rate"], 1.0)
+        self.assertGreaterEqual(
+            benchmark["configuration_seat_bias_stddev"],
+            0.0,
+        )
+        self.assertGreaterEqual(
+            benchmark["configuration_starting_advantage_stddev"],
+            0.0,
+        )
 
 
 if __name__ == "__main__":

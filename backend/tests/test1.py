@@ -6530,6 +6530,18 @@ class GameControllerOutputTests(unittest.TestCase):
             result["strategy_action_summary"]["stop"],
             result["decision_summary"]["strategy_objective_stop"],
         )
+        self.assertIn("guess_tree", result["strategy_action_summary"])
+        self.assertIn("draw_black_tree", result["strategy_action_summary"])
+        self.assertIn("draw_white_tree", result["strategy_action_summary"])
+        self.assertIn("stop_tree", result["strategy_action_summary"])
+        self.assertGreaterEqual(
+            result["strategy_action_summary"]["draw_black_tree"],
+            result["strategy_action_summary"]["draw_black"],
+        )
+        self.assertGreaterEqual(
+            result["strategy_action_summary"]["draw_white_tree"],
+            result["strategy_action_summary"]["draw_white"],
+        )
         self.assertIn(
             result["strategy_action_summary"]["recommended_action"],
             {"guess", "draw_black", "draw_white", "stop"},

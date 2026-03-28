@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from math import exp, log2, sqrt
+from math import ceil, exp, log2, sqrt
 from random import Random
 from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -305,6 +305,8 @@ class BehavioralLikelihoodModel:
     JOINT_ACTION_POSTERIOR_BLEND = 0.58
     JOINT_ACTION_POSTERIOR_CONTEXT_BLEND = 0.30
     JOINT_ACTION_POSTERIOR_TRAJECTORY_BLEND = 0.24
+    JOINT_ACTION_POSTERIOR_GAP_CREDIT = 0.14
+    JOINT_ACTION_POSTERIOR_ENTROPY_CREDIT = 0.12
     JOINT_ACTION_POSTERIOR_MAX_WEIGHT = 4.0
     EPSILON = 1e-9
 
@@ -1864,8 +1866,52 @@ class BehavioralLikelihoodModel:
                 1.0,
             )
         )
+        posterior_top_probability = float(
+            posterior_ranked_actions[0][1] if posterior_ranked_actions else 0.0
+        )
+        posterior_second_probability = float(
+            posterior_ranked_actions[1][1]
+            if len(posterior_ranked_actions) > 1
+            else 0.0
+        )
+        posterior_top_gap_signal = clamp(
+            (
+                posterior_top_probability - posterior_second_probability
+            )
+            / max(self.EPSILON, posterior_top_probability),
+            0.0,
+            1.0,
+        )
+        posterior_entropy = -sum(
+            probability * log2(max(self.EPSILON, probability))
+            for probability in posterior_probabilities.values()
+        )
+        normalized_posterior_entropy = clamp(
+            posterior_entropy / max(1.0, log2(max(2.0, candidate_count))),
+            0.0,
+            1.0,
+        )
+        posterior_entropy_credit = 1.0 + (
+            self.JOINT_ACTION_POSTERIOR_ENTROPY_CREDIT
+            * (1.0 - normalized_posterior_entropy)
+        )
+        posterior_gap_credit = 1.0 + (
+            self.JOINT_ACTION_POSTERIOR_GAP_CREDIT
+            * posterior_top_gap_signal
+            * clamp(
+                (
+                    (candidate_count - posterior_observed_rank)
+                    / max(1.0, candidate_count - 1.0)
+                ),
+                0.0,
+                1.0,
+            )
+        )
         posterior_weight = clamp(
-            posterior_weight * posterior_rank_credit,
+            posterior_weight
+            * posterior_rank_credit
+            * posterior_gap_credit
+            * posterior_entropy_credit,
             self.EPSILON,
             self.JOINT_ACTION_POSTERIOR_MAX_WEIGHT,
         )
@@ -1961,6 +2007,11 @@ class BehavioralLikelihoodModel:
             "posterior_weight": posterior_weight,
             "observed_rank": observed_rank,
             "posterior_observed_rank": posterior_observed_rank,
+            "posterior_top_gap_signal": posterior_top_gap_signal,
+            "posterior_entropy": posterior_entropy,
+            "normalized_posterior_entropy": normalized_posterior_entropy,
+            "posterior_gap_credit": posterior_gap_credit,
+            "posterior_entropy_credit": posterior_entropy_credit,
             "player_selection_score": float(
                 observed_meta.get("player_selection_score", 0.0)
             ),
@@ -2542,6 +2593,30 @@ class BehavioralLikelihoodModel:
                     joint_action_generative_probability.get(
                         "posterior_observed_rank",
                         joint_action_generative_probability.get("observed_rank", 1.0),
+                    )
+                ),
+                "top_gap_signal": float(
+                    joint_action_generative_probability.get(
+                        "posterior_top_gap_signal",
+                        0.0,
+                    )
+                ),
+                "normalized_entropy": float(
+                    joint_action_generative_probability.get(
+                        "normalized_posterior_entropy",
+                        1.0,
+                    )
+                ),
+                "gap_credit": float(
+                    joint_action_generative_probability.get(
+                        "posterior_gap_credit",
+                        1.0,
+                    )
+                ),
+                "entropy_credit": float(
+                    joint_action_generative_probability.get(
+                        "posterior_entropy_credit",
+                        1.0,
                     )
                 ),
                 "top_actions": list(
@@ -4237,6 +4312,8 @@ class DaVinciDecisionEngine:
     LONG_SELF_PLAY_DRAW_ROLLOUT_SAMPLE_LIMIT = 2
     LONG_SELF_PLAY_LEAGUE_MATCH_COUNT = 6
     LONG_SELF_PLAY_LEAGUE_GAMES_PER_MATCH = 4
+    LONG_SELF_PLAY_STABILITY_MIN_TOTAL_GAMES = 24
+    LONG_SELF_PLAY_STABILITY_SEED_STRIDE = 1009
     STRATEGY_OBJECTIVE_WIN_SCALE = 0.18
     STRATEGY_OBJECTIVE_CONTINUATION_SCALE = 0.20
     STRATEGY_OBJECTIVE_ATTACKABILITY_SCALE = 0.14
@@ -5170,6 +5247,8 @@ class DaVinciDecisionEngine:
         miss = 0.0
         realized_strategy_objective = 0.0
         executed_steps = 0.0
+        guessed_any = 0.0
+        stopped_cleanly = 0.0
 
         for step in range(max_steps):
             result = GameController(current_state).run_turn(
@@ -5185,11 +5264,14 @@ class DaVinciDecisionEngine:
                 if top_moves:
                     best_move = top_moves[0]
             if best_move is None:
+                if executed_steps > 0.0 and miss == 0.0:
+                    stopped_cleanly = 1.0
                 break
 
             guess_card = best_move.get("guess_card")
             if not isinstance(guess_card, (list, tuple)) or len(guess_card) != 2:
                 miss = 1.0
+                guessed_any = 1.0
                 break
 
             target_key = (
@@ -5199,10 +5281,12 @@ class DaVinciDecisionEngine:
             actual_card = truth_by_slot.get(target_key)
             if actual_card is None or (guess_card[0], guess_card[1]) != actual_card:
                 miss = 1.0
+                guessed_any = 1.0
                 break
 
             hits += 1.0
             executed_steps += 1.0
+            guessed_any = 1.0
             current_state = self._apply_benchmark_reveal(
                 current_state,
                 guesser_id=current_state.self_player_id,
@@ -5216,6 +5300,8 @@ class DaVinciDecisionEngine:
             "hits": hits,
             "miss": miss,
             "executed_steps": executed_steps,
+            "guessed_any": guessed_any,
+            "stopped_cleanly": stopped_cleanly,
             "realized_strategy_objective": realized_strategy_objective,
         }
 
@@ -5312,6 +5398,8 @@ class DaVinciDecisionEngine:
                 "turn_miss_rate": 0.0,
                 "average_realized_strategy_objective": 0.0,
                 "average_executed_steps": 0.0,
+                "full_turn_guess_execution_rate": 0.0,
+                "full_turn_clean_stop_rate": 0.0,
                 "deep_rollout_usage": 0.0,
             }
 
@@ -5330,6 +5418,8 @@ class DaVinciDecisionEngine:
         turn_miss_sum = 0.0
         realized_strategy_sum = 0.0
         executed_steps_sum = 0.0
+        full_turn_guess_execution_sum = 0.0
+        full_turn_clean_stop_sum = 0.0
         deep_rollout_count = 0.0
 
         for world_index in range(total_worlds):
@@ -5398,6 +5488,8 @@ class DaVinciDecisionEngine:
                 turn_miss_sum += turn_metrics["miss"]
                 realized_strategy_sum += turn_metrics["realized_strategy_objective"]
                 executed_steps_sum += turn_metrics["executed_steps"]
+                full_turn_guess_execution_sum += turn_metrics["guessed_any"]
+                full_turn_clean_stop_sum += turn_metrics["stopped_cleanly"]
                 continue
 
             sample_guess_rate = 0.0
@@ -5408,6 +5500,8 @@ class DaVinciDecisionEngine:
             sample_miss = 0.0
             sample_realized_strategy = 0.0
             sample_executed_steps = 0.0
+            sample_guessed_any = 0.0
+            sample_stopped_cleanly = 0.0
             for drawn_card in sampled_draw_cards:
                 benchmark_state = GameController(public_state)._simulated_draw_game_state(
                     drawn_card
@@ -5470,6 +5564,8 @@ class DaVinciDecisionEngine:
                 sample_miss += turn_metrics["miss"]
                 sample_realized_strategy += turn_metrics["realized_strategy_objective"]
                 sample_executed_steps += turn_metrics["executed_steps"]
+                sample_guessed_any += turn_metrics["guessed_any"]
+                sample_stopped_cleanly += turn_metrics["stopped_cleanly"]
 
             sample_count = float(len(sampled_draw_cards))
             guess_count += sample_guess_rate / sample_count
@@ -5480,6 +5576,8 @@ class DaVinciDecisionEngine:
             turn_miss_sum += sample_miss / sample_count
             realized_strategy_sum += sample_realized_strategy / sample_count
             executed_steps_sum += sample_executed_steps / sample_count
+            full_turn_guess_execution_sum += sample_guessed_any / sample_count
+            full_turn_clean_stop_sum += sample_stopped_cleanly / sample_count
 
         return {
             "world_count": float(total_worlds),
@@ -5518,6 +5616,12 @@ class DaVinciDecisionEngine:
                 realized_strategy_sum / float(total_worlds)
             ),
             "average_executed_steps": executed_steps_sum / float(total_worlds),
+            "full_turn_guess_execution_rate": (
+                full_turn_guess_execution_sum / float(total_worlds)
+            ),
+            "full_turn_clean_stop_rate": (
+                full_turn_clean_stop_sum / float(total_worlds)
+            ),
             "deep_rollout_usage": deep_rollout_count / float(total_worlds),
         }
 
@@ -6345,6 +6449,297 @@ class DaVinciDecisionEngine:
                     for value in starting_advantage_values
                 )
                 / seed_count
+            ),
+        }
+
+    def _aggregate_long_horizon_matrix_runs(
+        self,
+        benchmarks: Sequence[Dict[str, float]],
+    ) -> Dict[str, float]:
+        if not benchmarks:
+            return {
+                "seed_count": 0.0,
+                "match_count": 0.0,
+                "games_per_match": 0.0,
+                "total_game_count": 0.0,
+                "p0_win_rate": 0.0,
+                "p1_win_rate": 0.0,
+                "draw_rate": 0.0,
+                "average_turn_count": 0.0,
+                "average_guess_count": 0.0,
+                "average_successful_guesses": 0.0,
+                "average_post_draw_stop_rate": 0.0,
+                "starting_player_win_rate": 0.0,
+                "non_starting_player_win_rate": 0.0,
+                "average_starting_player_advantage": 0.0,
+                "seat_bias": 0.0,
+                "average_match_seat_bias": 0.0,
+                "seed_seat_bias_stddev": 0.0,
+                "seed_stop_rate_stddev": 0.0,
+                "seed_starting_advantage_stddev": 0.0,
+            }
+
+        total_game_count = sum(
+            float(benchmark.get("total_game_count", 0.0))
+            for benchmark in benchmarks
+        )
+        if total_game_count <= 0.0:
+            total_game_count = 1.0
+        run_count = float(len(benchmarks))
+        seat_bias_values = [
+            float(benchmark.get("seat_bias", 0.0))
+            for benchmark in benchmarks
+        ]
+        stop_rate_values = [
+            float(benchmark.get("average_post_draw_stop_rate", 0.0))
+            for benchmark in benchmarks
+        ]
+        starting_advantage_values = [
+            float(benchmark.get("average_starting_player_advantage", 0.0))
+            for benchmark in benchmarks
+        ]
+        weighted_seat_bias = (
+            sum(
+                float(benchmark.get("seat_bias", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count
+        )
+        weighted_starting_advantage = (
+            sum(
+                float(benchmark.get("average_starting_player_advantage", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count
+        )
+        weighted_stop_rate = (
+            sum(
+                float(benchmark.get("average_post_draw_stop_rate", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count
+        )
+        return {
+            "seed_count": sum(
+                float(benchmark.get("seed_count", 0.0))
+                for benchmark in benchmarks
+            ),
+            "match_count": sum(
+                float(benchmark.get("match_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / run_count,
+            "games_per_match": sum(
+                float(benchmark.get("games_per_match", 0.0))
+                for benchmark in benchmarks
+            )
+            / run_count,
+            "total_game_count": total_game_count,
+            "p0_win_rate": sum(
+                float(benchmark.get("p0_win_rate", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "p1_win_rate": sum(
+                float(benchmark.get("p1_win_rate", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "draw_rate": sum(
+                float(benchmark.get("draw_rate", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "average_turn_count": sum(
+                float(benchmark.get("average_turn_count", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "average_guess_count": sum(
+                float(benchmark.get("average_guess_count", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "average_successful_guesses": sum(
+                float(benchmark.get("average_successful_guesses", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "average_post_draw_stop_rate": weighted_stop_rate,
+            "starting_player_win_rate": sum(
+                float(benchmark.get("starting_player_win_rate", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "non_starting_player_win_rate": sum(
+                float(benchmark.get("non_starting_player_win_rate", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "average_starting_player_advantage": weighted_starting_advantage,
+            "seat_bias": weighted_seat_bias,
+            "average_match_seat_bias": sum(
+                float(benchmark.get("average_match_seat_bias", 0.0))
+                * float(benchmark.get("total_game_count", 0.0))
+                for benchmark in benchmarks
+            )
+            / total_game_count,
+            "seed_seat_bias_stddev": sqrt(
+                sum((value - weighted_seat_bias) ** 2 for value in seat_bias_values)
+                / run_count
+            ),
+            "seed_stop_rate_stddev": sqrt(
+                sum((value - weighted_stop_rate) ** 2 for value in stop_rate_values)
+                / run_count
+            ),
+            "seed_starting_advantage_stddev": sqrt(
+                sum(
+                    (value - weighted_starting_advantage) ** 2
+                    for value in starting_advantage_values
+                )
+                / run_count
+            ),
+        }
+
+    def benchmark_long_horizon_stability_matrix(
+        self,
+        *,
+        seeds: Optional[Sequence[int]] = None,
+        match_counts: Optional[Sequence[int]] = None,
+        games_per_match_options: Optional[Sequence[int]] = None,
+        minimum_total_game_count: Optional[int] = None,
+    ) -> Dict[str, float]:
+        benchmark_seeds = tuple(seeds or (11, 19, 29, 37, 53))
+        benchmark_match_counts = tuple(match_counts or (4, 6))
+        benchmark_games_per_match = tuple(games_per_match_options or (4, 6))
+        min_total_games = int(
+            minimum_total_game_count or self.LONG_SELF_PLAY_STABILITY_MIN_TOTAL_GAMES
+        )
+        configurations = [
+            (int(match_count), int(games_per_match))
+            for match_count in benchmark_match_counts
+            for games_per_match in benchmark_games_per_match
+            if int(match_count) > 0 and int(games_per_match) > 0
+        ]
+        if not benchmark_seeds or not configurations:
+            return {
+                "config_count": 0.0,
+                "seed_count": 0.0,
+                "matrix_run_count": 0.0,
+                "minimum_total_game_count_per_configuration": float(min_total_games),
+                "total_game_count": 0.0,
+                "average_turn_count": 0.0,
+                "average_guess_count": 0.0,
+                "average_successful_guesses": 0.0,
+                "average_post_draw_stop_rate": 0.0,
+                "starting_player_win_rate": 0.0,
+                "non_starting_player_win_rate": 0.0,
+                "average_starting_player_advantage": 0.0,
+                "seat_bias": 0.0,
+                "average_match_seat_bias": 0.0,
+                "configuration_seat_bias_stddev": 0.0,
+                "configuration_starting_advantage_stddev": 0.0,
+                "average_repeats_per_configuration": 0.0,
+            }
+
+        aggregated_configurations: List[Dict[str, float]] = []
+        repeats_per_configuration: List[float] = []
+        for match_count, games_per_match in configurations:
+            estimated_total = (
+                len(benchmark_seeds) * int(match_count) * int(games_per_match)
+            )
+            repeat_count = max(
+                1,
+                ceil(float(min_total_games) / max(1.0, float(estimated_total))),
+            )
+            repeats_per_configuration.append(float(repeat_count))
+            repeated_benchmarks = [
+                self.benchmark_long_horizon_matrix(
+                    seeds=tuple(
+                        int(seed)
+                        + (
+                            repeat_index
+                            * self.LONG_SELF_PLAY_STABILITY_SEED_STRIDE
+                        )
+                        for seed in benchmark_seeds
+                    ),
+                    match_count=match_count,
+                    games_per_match=games_per_match,
+                )
+                for repeat_index in range(repeat_count)
+            ]
+            aggregated_configuration = self._aggregate_long_horizon_matrix_runs(
+                repeated_benchmarks
+            )
+            aggregated_configuration["match_count"] = float(match_count)
+            aggregated_configuration["games_per_match"] = float(games_per_match)
+            aggregated_configuration["repeat_count"] = float(repeat_count)
+            aggregated_configurations.append(aggregated_configuration)
+
+        aggregate = self._aggregate_long_horizon_matrix_runs(aggregated_configurations)
+        seat_bias_values = [
+            float(benchmark.get("seat_bias", 0.0))
+            for benchmark in aggregated_configurations
+        ]
+        starting_advantage_values = [
+            float(benchmark.get("average_starting_player_advantage", 0.0))
+            for benchmark in aggregated_configurations
+        ]
+        config_count = float(len(aggregated_configurations))
+        return {
+            "config_count": config_count,
+            "seed_count": float(len(benchmark_seeds)),
+            "matrix_run_count": float(sum(repeats_per_configuration)),
+            "minimum_total_game_count_per_configuration": float(min_total_games),
+            "total_game_count": float(aggregate["total_game_count"]),
+            "average_turn_count": float(aggregate["average_turn_count"]),
+            "average_guess_count": float(aggregate["average_guess_count"]),
+            "average_successful_guesses": float(
+                aggregate["average_successful_guesses"]
+            ),
+            "average_post_draw_stop_rate": float(
+                aggregate["average_post_draw_stop_rate"]
+            ),
+            "starting_player_win_rate": float(aggregate["starting_player_win_rate"]),
+            "non_starting_player_win_rate": float(
+                aggregate["non_starting_player_win_rate"]
+            ),
+            "average_starting_player_advantage": float(
+                aggregate["average_starting_player_advantage"]
+            ),
+            "seat_bias": float(aggregate["seat_bias"]),
+            "average_match_seat_bias": float(aggregate["average_match_seat_bias"]),
+            "configuration_seat_bias_stddev": sqrt(
+                sum(
+                    (value - float(aggregate["seat_bias"])) ** 2
+                    for value in seat_bias_values
+                )
+                / config_count
+            ),
+            "configuration_starting_advantage_stddev": sqrt(
+                sum(
+                    (
+                        value
+                        - float(aggregate["average_starting_player_advantage"])
+                    )
+                    ** 2
+                    for value in starting_advantage_values
+                )
+                / config_count
+            ),
+            "average_repeats_per_configuration": (
+                sum(repeats_per_configuration) / config_count
             ),
         }
 
@@ -12632,12 +13027,14 @@ class GameController:
                 "strategy_action_summary": self._build_strategy_action_summary(
                     decision_summary={},
                     draw_color_summary=draw_color_summary,
+                    draw_opening_plan=draw_opening_plan,
                     phase=strategy_phase,
                 ),
                 "strategy_rollout_depth": 0,
                 "recommended_action": self._build_strategy_action_summary(
                     decision_summary={},
                     draw_color_summary=draw_color_summary,
+                    draw_opening_plan=draw_opening_plan,
                     phase=strategy_phase,
                 )["recommended_action"],
                 "recommended_draw_color": (
@@ -12708,6 +13105,7 @@ class GameController:
         strategy_action_summary = self._build_strategy_action_summary(
             decision_summary=decision_summary,
             draw_color_summary=draw_color_summary,
+            draw_opening_plan=draw_opening_plan,
             phase=strategy_phase,
         )
 
@@ -12798,10 +13196,12 @@ class GameController:
         *,
         decision_summary: Optional[Dict[str, Any]],
         draw_color_summary: Optional[Dict[str, Any]],
+        draw_opening_plan: Optional[Dict[str, Any]] = None,
         phase: str,
     ) -> Dict[str, Any]:
         decision_summary = decision_summary or {}
         draw_color_summary = draw_color_summary or {}
+        draw_opening_plan = draw_opening_plan or {}
         action_scores = {
             "guess": float(
                 decision_summary.get(
@@ -12828,6 +13228,53 @@ class GameController:
                 )
             ),
         }
+        tree_action_scores = dict(action_scores)
+        tree_action_scores["guess"] += (
+            0.10
+            * max(
+                float(decision_summary.get("best_post_hit_expectimax_signal", 0.0)),
+                float(decision_summary.get("best_post_hit_mcts_signal", 0.0)),
+                float(decision_summary.get("best_post_hit_branch_search_signal", 0.0)),
+            )
+        )
+        for action, color_suffix in (("draw_black", "black"), ("draw_white", "white")):
+            tree_action_scores[action] += (
+                0.10
+                * float(
+                    draw_color_summary.get(
+                        f"draw_rollout_opening_strategy_objective_{color_suffix}",
+                        0.0,
+                    )
+                )
+            )
+            tree_action_scores[action] += (
+                0.06
+                * float(
+                    draw_color_summary.get(
+                        f"draw_rollout_opening_support_{color_suffix}",
+                        0.0,
+                    )
+                )
+            )
+            tree_action_scores[action] += (
+                0.05
+                * float(
+                    draw_color_summary.get(
+                        f"draw_rollout_opening_guess_support_{color_suffix}",
+                        0.0,
+                    )
+                )
+            )
+        if draw_opening_plan:
+            recommended_color = draw_opening_plan.get("recommended_color")
+            if recommended_color == "B":
+                tree_action_scores["draw_black"] += (
+                    0.05 * float(draw_opening_plan.get("strategy_objective", 0.0))
+                )
+            elif recommended_color == "W":
+                tree_action_scores["draw_white"] += (
+                    0.05 * float(draw_opening_plan.get("strategy_objective", 0.0))
+                )
         if phase == "pre_draw":
             allowed_actions = ["draw_black", "draw_white"]
         elif phase == "post_draw_opening":
@@ -12837,12 +13284,17 @@ class GameController:
         recommended_action = max(
             allowed_actions,
             key=lambda action: (
+                round(tree_action_scores[action], 8),
                 round(action_scores[action], 8),
                 1 if action == "guess" else 0,
             ),
         )
         return {
             **action_scores,
+            "guess_tree": tree_action_scores["guess"],
+            "draw_black_tree": tree_action_scores["draw_black"],
+            "draw_white_tree": tree_action_scores["draw_white"],
+            "stop_tree": tree_action_scores["stop"],
             "phase": phase,
             "allowed_actions": allowed_actions,
             "recommended_action": recommended_action,
