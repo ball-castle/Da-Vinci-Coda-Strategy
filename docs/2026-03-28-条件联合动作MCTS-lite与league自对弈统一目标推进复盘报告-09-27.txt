@@ -1,0 +1,143 @@
+2026-03-28 条件联合动作MCTS-lite与league自对弈统一目标推进复盘报告 09:27
+
+生成时间：2026-03-28 09:27:52
+
+一、本轮目标
+
+这一轮继续正面处理上一份评分表里剩下的四个主缺口：
+
+1. `P(action | state)` 还只是生成式联合动作近似
+2. 深层搜索还不是更系统的树搜索 / MCTS
+3. long self-play 样本量还偏小
+4. stop / draw / risk guard 还残留局部 shaping 痕迹
+
+
+二、本轮核心推进
+
+1. 联合动作生成式模型从“整包 softmax”推进到“条件分布 × prior × 结构拟合”
+- 这轮重写了 `joint_action_generative_probability` 的归一化逻辑。
+- 不再只是把完整动作 tuple 做一层 raw-score softmax，
+  而是显式拆成：
+  - `player_probability`
+  - `slot_probability`
+  - `value_probability`
+  - `continue_probability`
+  再乘上 `prior_probability` 和 `structural_probability` 后重新归一化。
+- 结果是：现在这块更像一个“条件联合动作生成分布”，
+  不再只是结构化加权后取 softmax 的近似打分器。
+
+2. post-hit rollout 接入 `mcts-lite`
+- 在原有 `branch search / tree search / expectimax` 之外，
+  这轮新增了一个 UCB 风格的 `mcts-lite` 聚合。
+- 它不是完整 MCTS，
+  但已经不是纯静态 top-k 加权，
+  而是会基于 `prior + UCB exploration` 在子分支间分配访问次数，
+  再把结果回流成：
+  - `post_hit_mcts_value`
+  - `post_hit_mcts_margin`
+  - `post_hit_mcts_support_ratio`
+  - `post_hit_mcts_signal`
+- 这些信号又继续进入 `strategy_objective` 和 `continue/stop` 决策层。
+
+3. long self-play 从单批 benchmark 推进到 league 聚合 benchmark
+- 这轮新增了 `benchmark_long_horizon_league`。
+- 它会跨多个 match / seed 聚合长期多回合自对弈，
+  输出：
+  - `total_game_count`
+  - 胜率
+  - 平均回合数
+  - 平均猜测数
+  - 平均成功数
+  - 平均 post-draw stop rate
+  - `seat_bias`
+- 这样以后看长期强度就不只盯单个 seed 的 4 局，而是能看更稳定的 league 结果。
+
+4. `continue / stop` 开始真正按统一策略目标比较
+- 这轮没有删除原始 `continue_score / stop_score`，
+  但把最终动作比较再往统一目标推了一层：
+  - `strategy_objective_guess`
+  - `strategy_objective_stop`
+  - `strategy_action_margin`
+- guard 没有再作为纯粹的“硬 if 条件”挂在外面，
+  而是转成 stop objective 的 boost，
+  让最后的 `should_continue` 更像“总目标对总目标”的比较，
+  而不是“局部 continue_score 对局部 stop_score + 外部 guard”的拼装。
+
+
+三、本轮结果
+
+1. decision benchmark
+- case_count = 65
+- accuracy = 1.0
+- margin_separation = 0.5103
+- min_correct_margin = 0.0008
+
+2. behavior benchmark
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 1.2248
+- average_score_ratio = 2.7894
+
+3. synthetic self-play benchmark
+- world_count = 24
+- recommended_draw_rate = 1.0
+- draw_color_alignment = 0.7083
+- average_draw_strategy_margin = 0.5586
+- deep_rollout_usage = 1.0
+
+4. long-horizon self-play benchmark
+- game_count = 4
+- average_turn_count = 2.75
+- average_guess_count = 2.75
+- average_successful_guesses = 1.0
+- post_draw_stop_rate = 0.0
+
+5. league self-play benchmark
+- match_count = 4
+- games_per_match = 4
+- total_game_count = 16
+- p0_win_rate = 0.3125
+- p1_win_rate = 0.6875
+- draw_rate = 0.0
+- average_turn_count = 4.5625
+- average_guess_count = 4.5625
+- average_successful_guesses = 1.0
+- average_post_draw_stop_rate = 0.0
+- seat_bias = 0.375
+
+
+四、这轮最有价值的变化
+
+最关键的不是多了几个数字，
+而是这四条主链终于开始互相接上：
+
+- 行为反推读的是更像条件联合分布的动作模型
+- 搜索层不再只剩浅 expectimax-lite，而是多了一层 UCB 风格的树形访问
+- benchmark 不再只有短批次 long self-play，而是开始有 league 聚合
+- 最终 controller 汇总层的 `strategy_action_summary` 已开始直接读取统一目标字段
+
+也就是说，
+系统现在更像一个真正往“完整策略系统”收敛的东西，
+而不是很多 heuristic 模块的并列堆叠。
+
+
+五、仍然没完全解决的点
+
+虽然这轮把四个缺口都继续往前推了，
+但离“彻底补完”还差这几步：
+
+- `P(action | state)` 现在已经是条件联合动作分布近似，
+  但还不是完整学习式/解析式生成模型
+- `mcts-lite` 已接入，但还不是带显式状态展开/回传/rollout policy 的完整 MCTS
+- league self-play 已经有了，但样本规模还不算大，seat bias 也说明策略对先后手仍然不完全平衡
+- stop / draw / risk guard 虽然更统一了，但局部 threshold 和风险 shaping 仍未完全消失
+
+
+六、一句话结论
+
+这一轮之后，
+项目已经从“有统一目标雏形”推进到“联合动作分布、树搜索、长期 benchmark、最终动作汇总都开始围着同一总目标转”。
+
+后面最值得继续压的就是两件事：
+- 把 `mcts-lite` 继续推进成更完整的树搜索框架
+- 扩 league self-play 规模并压 seat bias

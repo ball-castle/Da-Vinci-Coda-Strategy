@@ -988,6 +988,35 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertLessEqual(benchmark["post_draw_stop_rate"], 0.25)
         self.assertLess(benchmark["draw_rate"], 1.0)
 
+    def test_long_horizon_league_benchmark_aggregates_multiple_matches(self):
+        engine = DaVinciDecisionEngine()
+
+        benchmark = engine.benchmark_long_horizon_league(
+            match_count=2,
+            games_per_match=1,
+            seed=31,
+        )
+
+        self.assertEqual(benchmark["match_count"], 2.0)
+        self.assertEqual(benchmark["games_per_match"], 1.0)
+        self.assertEqual(benchmark["total_game_count"], 2.0)
+        self.assertGreaterEqual(benchmark["p0_win_rate"], 0.0)
+        self.assertLessEqual(benchmark["p0_win_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["p1_win_rate"], 0.0)
+        self.assertLessEqual(benchmark["p1_win_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["draw_rate"], 0.0)
+        self.assertLessEqual(benchmark["draw_rate"], 1.0)
+        self.assertAlmostEqual(
+            benchmark["p0_win_rate"] + benchmark["p1_win_rate"] + benchmark["draw_rate"],
+            1.0,
+            places=6,
+        )
+        self.assertGreaterEqual(benchmark["average_guess_count"], 0.0)
+        self.assertGreaterEqual(benchmark["average_successful_guesses"], 0.0)
+        self.assertGreaterEqual(benchmark["average_post_draw_stop_rate"], 0.0)
+        self.assertLessEqual(benchmark["average_post_draw_stop_rate"], 1.0)
+        self.assertGreaterEqual(benchmark["seat_bias"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

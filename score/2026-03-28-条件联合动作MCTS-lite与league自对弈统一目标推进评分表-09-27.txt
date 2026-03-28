@@ -1,0 +1,117 @@
+2026-03-28 条件联合动作MCTS-lite与league自对弈统一目标推进评分表 09:27
+
+生成时间：2026-03-28 09:27:52
+
+一、当前总评分
+
+如果只报一个数，我现在给：
+85%
+
+更准确地看：
+
+- 按“已经是一个可用、可持续迭代的策略引擎”算：95%
+- 按 VinCi.txt 里的最终目标算：85%
+
+
+二、相比上一份评分的变化
+
+上一份评分是 83%。
+
+这次加到 85%，
+主要是因为四个主缺口都不是“停留在解释层”，
+而是都在主链上继续向前推进了：
+
+1. 联合动作模型从 raw softmax 推进到条件联合分布近似
+2. 深层搜索从 tree/expectimax 继续推进到 `mcts-lite`
+3. 长期 benchmark 从单批次推进到 league 聚合
+4. controller 最后一层动作比较开始直接读取统一目标字段
+
+这两分加的是“系统整体性更强了”，
+不是“输出更好看了”。
+
+
+三、五个目标分项
+
+- 摸黑还是摸白：9.1 / 10
+- 猜谁猜哪张猜几：9.3 / 10
+- 猜对后继续还是停：9.5 / 10
+- 通过别人行为反推他的牌：8.9 / 10
+- 综合成完整算法：9.0 / 10
+
+
+四、最新量化基准
+
+1. decision benchmark
+- case_count = 65
+- accuracy = 1.0
+- margin_separation = 0.5103
+- min_correct_margin = 0.0008
+
+2. behavior benchmark
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 1.2248
+- average_score_ratio = 2.7894
+
+3. synthetic self-play benchmark
+- world_count = 24
+- recommended_draw_rate = 1.0
+- draw_color_alignment = 0.7083
+- average_draw_strategy_margin = 0.5586
+- deep_rollout_usage = 1.0
+
+4. long-horizon self-play benchmark
+- game_count = 4
+- average_guess_count = 2.75
+- average_successful_guesses = 1.0
+- post_draw_stop_rate = 0.0
+
+5. league self-play benchmark
+- total_game_count = 16
+- p0_win_rate = 0.3125
+- p1_win_rate = 0.6875
+- average_turn_count = 4.5625
+- average_guess_count = 4.5625
+- average_post_draw_stop_rate = 0.0
+- seat_bias = 0.375
+
+
+五、为什么这次还能上调
+
+因为现在已经不是只有“短程上看起来不错”，
+而是：
+
+- 行为模型更像在生成完整动作
+- 搜索层更像真正树搜索而不是单层打分
+- 长期 benchmark 已经有跨 match 聚合
+- 最终 action summary 进一步摆脱了局部 shaping 的直接主导
+
+这说明模型离“完整算法”又近了一步。
+
+
+六、为什么还没有更高
+
+还没上到 88%+，主要还是因为：
+
+- `P(action | state)` 仍然是条件联合动作近似，不是完整概率生成模型
+- `mcts-lite` 仍然不是完整 MCTS
+- league self-play 规模还不够大，而且 seat bias 还比较明显
+- 局部 threshold / 风险 shaping 虽然进一步退后，但还没有被统一目标完全替代
+
+
+七、当前判断
+
+现在项目更准确的定位是：
+
+已经从“强 heuristic + rollout 的统一策略系统雏形”，
+推进到了“有条件联合动作分布、有 mcts-lite、有 league self-play benchmark、且统一目标开始真正支配最终动作汇总的高完成度策略系统”。
+
+
+八、一句话结论
+
+这次之后，
+系统最重要的差距已经不再是“有没有这些模块”，
+而是“这些模块还要不要再做深、做大、做稳”。
+
+也就是说，
+项目已经进入最后一段真正的收口区。

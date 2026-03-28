@@ -1636,6 +1636,10 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
             aligned["joint_action_generative_probability"]["weight"],
             weak["joint_action_generative_probability"]["weight"],
         )
+        self.assertGreater(
+            aligned["joint_action_generative_probability"]["conditional_probability"],
+            weak["joint_action_generative_probability"]["conditional_probability"],
+        )
         self.assertGreater(aligned["total_weight"], weak["total_weight"])
 
     def test_target_player_selection_prefers_more_attackable_target(self):
@@ -4808,6 +4812,9 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertIn("best_post_hit_top_k_expected_continue_margin", result["decision_summary"])
         self.assertIn("best_post_hit_top_k_support_ratio", result["decision_summary"])
         self.assertIn("best_post_hit_top_k_expected_support_ratio", result["decision_summary"])
+        self.assertIn("strategy_objective_guess", result["decision_summary"])
+        self.assertIn("strategy_objective_stop", result["decision_summary"])
+        self.assertIn("strategy_action_margin", result["decision_summary"])
         if result["top_moves"]:
             self.assertIn("recommendation_reason", result["top_moves"][0])
             self.assertIn("score_breakdown", result["top_moves"][0])
@@ -4823,6 +4830,8 @@ class GameControllerOutputTests(unittest.TestCase):
             self.assertIn("post_hit_guidance_signal_count", result["top_moves"][0])
             self.assertIn("post_hit_guidance_debug", result["top_moves"][0])
             self.assertIn("post_hit_behavior_support_adjustment", result["top_moves"][0])
+            self.assertIn("post_hit_mcts_value", result["top_moves"][0])
+            self.assertIn("post_hit_mcts_signal", result["top_moves"][0])
             self.assertIn("post_hit_behavior_support_gain", result["top_moves"][0])
             self.assertIn("post_hit_behavior_fragility_drag", result["top_moves"][0])
             self.assertIn(
@@ -6419,7 +6428,7 @@ class GameControllerOutputTests(unittest.TestCase):
         self.assertEqual(result["strategy_phase"], "pre_draw")
         self.assertEqual(
             result["strategy_action_summary"]["guess"],
-            result["decision_summary"]["continue_score"],
+            result["decision_summary"]["strategy_objective_guess"],
         )
         self.assertEqual(
             result["strategy_action_summary"]["draw_black"],
@@ -6431,7 +6440,7 @@ class GameControllerOutputTests(unittest.TestCase):
         )
         self.assertEqual(
             result["strategy_action_summary"]["stop"],
-            result["decision_summary"]["stop_score"],
+            result["decision_summary"]["strategy_objective_stop"],
         )
         self.assertIn(
             result["strategy_action_summary"]["recommended_action"],

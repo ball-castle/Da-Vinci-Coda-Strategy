@@ -274,6 +274,9 @@ class BehavioralLikelihoodModel:
     JOINT_ACTION_GENERATION_PRIOR_BLEND = 0.26
     JOINT_ACTION_GENERATION_MAX_WEIGHT = 2.8
     JOINT_ACTION_GENERATIVE_TEMPERATURE = 2.2
+    JOINT_ACTION_GENERATIVE_CONDITIONAL_BLEND = 0.58
+    JOINT_ACTION_GENERATIVE_PRIOR_BLEND = 0.24
+    JOINT_ACTION_GENERATIVE_STRUCTURAL_BLEND = 0.18
     JOINT_ACTION_GENERATIVE_BLEND = 0.40
     JOINT_ACTION_GENERATIVE_MAX_WEIGHT = 3.2
     EPSILON = 1e-9
@@ -1462,16 +1465,144 @@ class BehavioralLikelihoodModel:
                 "candidate_count": 1.0,
                 "uniform_probability": 1.0,
                 "probability": 1.0,
+                "conditional_probability": 1.0,
+                "prior_probability": 1.0,
+                "structural_probability": 1.0,
                 "probability_advantage": 1.0,
                 "weight": 1.0,
                 "observed_rank": 1.0,
                 "top_actions": [],
             }
 
-        action_probabilities = self._softmax_probabilities(
+        structural_probabilities = self._softmax_probabilities(
             raw_scores,
             temperature=self.JOINT_ACTION_GENERATIVE_TEMPERATURE,
         )
+        player_raw_scores: Dict[str, float] = {}
+        slot_raw_scores: DefaultDict[str, Dict[int, float]] = defaultdict(dict)
+        value_raw_scores: DefaultDict[Tuple[str, int], Dict[Card, float]] = defaultdict(dict)
+        continue_raw_scores: DefaultDict[
+            Tuple[str, int, Card],
+            Dict[Optional[bool], float],
+        ] = defaultdict(dict)
+        prior_raw_scores: Dict[Tuple[str, int, Card, Optional[bool]], float] = {}
+
+        for action_key, meta in metadata.items():
+            player_id, slot_index, candidate_card, continued_turn = action_key
+            player_raw_scores[player_id] = max(
+                float(meta.get("player_selection_score", 0.0)),
+                player_raw_scores.get(player_id, float("-inf")),
+            )
+            slot_raw_scores[player_id][slot_index] = max(
+                float(meta.get("slot_selection_score", 0.0)),
+                slot_raw_scores[player_id].get(slot_index, float("-inf")),
+            )
+            value_raw_scores[(player_id, slot_index)][candidate_card] = max(
+                (
+                    0.72 * float(meta.get("value_selection_score", 0.0))
+                    + 0.28 * float(meta.get("local_slot_fit", 0.0))
+                ),
+                value_raw_scores[(player_id, slot_index)].get(
+                    candidate_card,
+                    float("-inf"),
+                ),
+            )
+            continue_raw_scores[(player_id, slot_index, candidate_card)][
+                continued_turn
+            ] = float(meta.get("continue_score", 1.0))
+            prior_raw_scores[action_key] = (
+                (0.34 * float(meta.get("slot_attackability", 0.0)))
+                + (0.18 * float(meta.get("attack_window_signal", 0.0)))
+                + (0.12 * float(meta.get("global_propagation_signal", 0.0)))
+                + (0.10 * float(meta.get("public_bridge_signal", 0.0)))
+                + (0.10 * float(meta.get("target_chain_signal", 0.0)))
+                + (0.08 * float(meta.get("finish_chain_signal", 0.0)))
+                + (0.08 * float(meta.get("value_selection_score", 0.0)))
+            )
+
+        player_probabilities = self._softmax_probabilities(
+            player_raw_scores,
+            temperature=self.JOINT_ACTION_GENERATIVE_TEMPERATURE,
+        )
+        slot_probabilities = {
+            player_id: self._softmax_probabilities(
+                raw_slot_scores,
+                temperature=self.JOINT_ACTION_GENERATIVE_TEMPERATURE,
+            )
+            for player_id, raw_slot_scores in slot_raw_scores.items()
+        }
+        value_probabilities = {
+            slot_key: self._softmax_probabilities(
+                raw_value_scores,
+                temperature=self.JOINT_ACTION_GENERATIVE_TEMPERATURE,
+            )
+            for slot_key, raw_value_scores in value_raw_scores.items()
+        }
+        continue_probabilities = {
+            continue_key: self._softmax_probabilities(
+                raw_continue_scores,
+                temperature=self.JOINT_ACTION_GENERATIVE_TEMPERATURE,
+            )
+            for continue_key, raw_continue_scores in continue_raw_scores.items()
+        }
+        prior_probabilities = self._softmax_probabilities(
+            prior_raw_scores,
+            temperature=0.7 * self.JOINT_ACTION_GENERATIVE_TEMPERATURE,
+        )
+        action_probability_mass: Dict[Tuple[str, int, Card, Optional[bool]], float] = {}
+        for action_key in raw_scores:
+            player_id, slot_index, candidate_card, continued_turn = action_key
+            conditional_probability = (
+                float(player_probabilities.get(player_id, self.EPSILON))
+                * float(
+                    slot_probabilities.get(player_id, {}).get(
+                        slot_index,
+                        self.EPSILON,
+                    )
+                )
+                * float(
+                    value_probabilities.get((player_id, slot_index), {}).get(
+                        candidate_card,
+                        self.EPSILON,
+                    )
+                )
+                * float(
+                    continue_probabilities.get(
+                        (player_id, slot_index, candidate_card),
+                        {},
+                    ).get(continued_turn, 1.0)
+                )
+            )
+            prior_probability = float(
+                prior_probabilities.get(action_key, self.EPSILON)
+            )
+            structural_probability = float(
+                structural_probabilities.get(action_key, self.EPSILON)
+            )
+            action_probability_mass[action_key] = (
+                max(self.EPSILON, conditional_probability)
+                ** self.JOINT_ACTION_GENERATIVE_CONDITIONAL_BLEND
+                * max(self.EPSILON, prior_probability)
+                ** self.JOINT_ACTION_GENERATIVE_PRIOR_BLEND
+                * max(self.EPSILON, structural_probability)
+                ** self.JOINT_ACTION_GENERATIVE_STRUCTURAL_BLEND
+            )
+            metadata[action_key]["conditional_probability"] = conditional_probability
+            metadata[action_key]["prior_probability"] = prior_probability
+            metadata[action_key]["structural_probability"] = structural_probability
+
+        total_probability_mass = sum(action_probability_mass.values())
+        if total_probability_mass <= 0.0:
+            uniform_probability = 1.0 / float(len(action_probability_mass))
+            action_probabilities = {
+                action_key: uniform_probability
+                for action_key in action_probability_mass
+            }
+        else:
+            action_probabilities = {
+                action_key: probability_mass / total_probability_mass
+                for action_key, probability_mass in action_probability_mass.items()
+            }
         observed_key = (
             signal.target_player_id,
             signal.target_slot_index,
@@ -1517,6 +1648,15 @@ class BehavioralLikelihoodModel:
                     "guess_card": serialize_card(action_key[2]),
                     "continued_turn": action_key[3],
                     "probability": float(probability),
+                    "conditional_probability": float(
+                        meta.get("conditional_probability", probability)
+                    ),
+                    "prior_probability": float(
+                        meta.get("prior_probability", probability)
+                    ),
+                    "structural_probability": float(
+                        meta.get("structural_probability", probability)
+                    ),
                     "player_selection_score": float(
                         meta.get("player_selection_score", 0.0)
                     ),
@@ -1534,6 +1674,15 @@ class BehavioralLikelihoodModel:
             "candidate_count": candidate_count,
             "uniform_probability": uniform_probability,
             "probability": observed_probability,
+            "conditional_probability": float(
+                observed_meta.get("conditional_probability", observed_probability)
+            ),
+            "prior_probability": float(
+                observed_meta.get("prior_probability", observed_probability)
+            ),
+            "structural_probability": float(
+                observed_meta.get("structural_probability", observed_probability)
+            ),
             "probability_advantage": probability_advantage,
             "weight": weight,
             "observed_rank": observed_rank,
@@ -3663,6 +3812,7 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_FINISH_CHAIN = 0.08
     STOP_MARGIN_BRANCH_SEARCH = 0.10
     STOP_MARGIN_EXPECTIMAX = 0.12
+    STOP_MARGIN_MCTS = 0.10
     STOP_EDGE_REFERENCE = 0.18
     ROLLOUT_MARGIN_REFERENCE = 0.40
     FAILURE_RECOVERY_REFERENCE = 0.30
@@ -3723,6 +3873,10 @@ class DaVinciDecisionEngine:
     BRANCH_SEARCH_FUTURE_MARGIN_BLEND = 0.55
     TREE_SEARCH_TOP_K = 2
     TREE_SEARCH_FUTURE_SCALE = 0.72
+    MCTS_TOP_K = 2
+    MCTS_SIMULATION_COUNT = 6
+    MCTS_EXPLORATION_SCALE = 0.32
+    MCTS_FUTURE_SCALE = 0.74
     EXPECTIMAX_TOP_K = 3
     EXPECTIMAX_FUTURE_SCALE = 0.60
     DEEP_ROLLOUT_DEPTH = 3
@@ -3737,6 +3891,8 @@ class DaVinciDecisionEngine:
     LONG_SELF_PLAY_MAX_TURNS = 10
     LONG_SELF_PLAY_PRE_DRAW_ROLLOUT_DEPTH = 1
     LONG_SELF_PLAY_DRAW_ROLLOUT_SAMPLE_LIMIT = 2
+    LONG_SELF_PLAY_LEAGUE_MATCH_COUNT = 6
+    LONG_SELF_PLAY_LEAGUE_GAMES_PER_MATCH = 4
     STRATEGY_OBJECTIVE_WIN_SCALE = 0.18
     STRATEGY_OBJECTIVE_CONTINUATION_SCALE = 0.20
     STRATEGY_OBJECTIVE_ATTACKABILITY_SCALE = 0.14
@@ -3745,6 +3901,7 @@ class DaVinciDecisionEngine:
     STRATEGY_OBJECTIVE_SUPPORT_SCALE = 0.08
     STRATEGY_OBJECTIVE_BEHAVIOR_SCALE = 0.10
     STRATEGY_OBJECTIVE_SEARCH_SIGNAL_SCALE = 0.14
+    STRATEGY_OBJECTIVE_MCTS_SCALE = 0.08
     STRATEGY_OBJECTIVE_RECOVERY_SCALE = 0.08
     STRATEGY_OBJECTIVE_SELF_EXPOSURE_DRAG = 0.12
     STRATEGY_OBJECTIVE_FINISH_FRAGILITY_DRAG = 0.10
@@ -4020,12 +4177,19 @@ class DaVinciDecisionEngine:
                 "best_post_hit_branch_search_margin": 0.0,
                 "best_post_hit_branch_search_support_ratio": 0.0,
                 "best_post_hit_branch_search_signal": 0.0,
+                "best_post_hit_mcts_value": 0.0,
+                "best_post_hit_mcts_margin": 0.0,
+                "best_post_hit_mcts_support_ratio": 0.0,
+                "best_post_hit_mcts_signal": 0.0,
                 "best_post_hit_expectimax_value": 0.0,
                 "best_post_hit_expectimax_margin": 0.0,
                 "best_post_hit_expectimax_support_ratio": 0.0,
                 "best_post_hit_expectimax_signal": 0.0,
                 "best_strategy_objective": 0.0,
                 "best_strategy_objective_core": 0.0,
+                "strategy_objective_guess": 0.0,
+                "strategy_objective_stop": stop_threshold,
+                "strategy_action_margin": -stop_threshold,
                 "stop_threshold": stop_threshold,
                 "stop_score": stop_threshold,
                 "continue_score": 0.0,
@@ -4072,7 +4236,14 @@ class DaVinciDecisionEngine:
                     "target_finish_chain_support": 0.0,
                     "branch_search_support": 0.0,
                     "expectimax_support": 0.0,
+                    "mcts_support": 0.0,
                     "strategy_objective_support": 0.0,
+                    "strategy_objective_continue": 0.0,
+                    "strategy_objective_stop": stop_threshold,
+                    "strategy_action_margin": -stop_threshold,
+                    "low_confidence_guard_boost": 0.0,
+                    "weak_edge_guard_boost": 0.0,
+                    "self_exposure_guard_boost": 0.0,
                 },
                 "stop_reason": "没有可评估的候选动作。",
             }
@@ -4222,6 +4393,13 @@ class DaVinciDecisionEngine:
                 0.0,
             ),
             "best_post_hit_branch_search_signal": best_move.get("post_hit_branch_search_signal", 0.0),
+            "best_post_hit_mcts_value": best_move.get("post_hit_mcts_value", 0.0),
+            "best_post_hit_mcts_margin": best_move.get("post_hit_mcts_margin", 0.0),
+            "best_post_hit_mcts_support_ratio": best_move.get(
+                "post_hit_mcts_support_ratio",
+                0.0,
+            ),
+            "best_post_hit_mcts_signal": best_move.get("post_hit_mcts_signal", 0.0),
             "best_post_hit_expectimax_value": best_move.get("post_hit_expectimax_value", 0.0),
             "best_post_hit_expectimax_margin": best_move.get("post_hit_expectimax_margin", 0.0),
             "best_post_hit_expectimax_support_ratio": best_move.get(
@@ -4231,6 +4409,9 @@ class DaVinciDecisionEngine:
             "best_post_hit_expectimax_signal": best_move.get("post_hit_expectimax_signal", 0.0),
             "best_strategy_objective": best_move.get("strategy_objective", 0.0),
             "best_strategy_objective_core": best_move.get("strategy_objective_core", 0.0),
+            "strategy_objective_guess": decision_snapshot["strategy_objective_continue"],
+            "strategy_objective_stop": decision_snapshot["strategy_objective_stop"],
+            "strategy_action_margin": decision_snapshot["strategy_action_margin"],
             "best_gap": decision_snapshot["best_gap"],
             "stop_threshold": stop_threshold,
             "stop_score": decision_snapshot["stop_score"],
@@ -5340,6 +5521,88 @@ class DaVinciDecisionEngine:
             ),
         }
 
+    def benchmark_long_horizon_league(
+        self,
+        *,
+        match_count: Optional[int] = None,
+        games_per_match: Optional[int] = None,
+        seed: int = 29,
+    ) -> Dict[str, float]:
+        total_matches = int(match_count or self.LONG_SELF_PLAY_LEAGUE_MATCH_COUNT)
+        match_games = int(
+            games_per_match or self.LONG_SELF_PLAY_LEAGUE_GAMES_PER_MATCH
+        )
+        if total_matches <= 0 or match_games <= 0:
+            return {
+                "match_count": 0.0,
+                "games_per_match": 0.0,
+                "total_game_count": 0.0,
+                "p0_win_rate": 0.0,
+                "p1_win_rate": 0.0,
+                "draw_rate": 0.0,
+                "average_turn_count": 0.0,
+                "average_guess_count": 0.0,
+                "average_successful_guesses": 0.0,
+                "average_post_draw_stop_rate": 0.0,
+                "stop_rate_stddev": 0.0,
+                "seat_bias": 0.0,
+            }
+
+        rng = Random(seed)
+        total_game_count = float(total_matches * match_games)
+        p0_wins = 0.0
+        p1_wins = 0.0
+        draw_games = 0.0
+        turn_sum = 0.0
+        guess_sum = 0.0
+        success_sum = 0.0
+        stop_rate_sum = 0.0
+        stop_rates: List[float] = []
+
+        for _ in range(total_matches):
+            match_seed = rng.randrange(1_000_000_000)
+            match_benchmark = self.benchmark_long_horizon_self_play(
+                game_count=match_games,
+                seed=match_seed,
+            )
+            p0_wins += match_benchmark["p0_win_rate"] * match_games
+            p1_wins += match_benchmark["p1_win_rate"] * match_games
+            draw_games += match_benchmark["draw_rate"] * match_games
+            turn_sum += match_benchmark["average_turn_count"] * match_games
+            guess_sum += match_benchmark["average_guess_count"] * match_games
+            success_sum += (
+                match_benchmark["average_successful_guesses"] * match_games
+            )
+            stop_rate_sum += match_benchmark["post_draw_stop_rate"]
+            stop_rates.append(match_benchmark["post_draw_stop_rate"])
+
+        average_post_draw_stop_rate = (
+            stop_rate_sum / float(total_matches) if total_matches > 0 else 0.0
+        )
+        stop_rate_variance = (
+            sum(
+                (stop_rate - average_post_draw_stop_rate) ** 2
+                for stop_rate in stop_rates
+            )
+            / float(len(stop_rates))
+            if stop_rates
+            else 0.0
+        )
+        return {
+            "match_count": float(total_matches),
+            "games_per_match": float(match_games),
+            "total_game_count": total_game_count,
+            "p0_win_rate": p0_wins / total_game_count,
+            "p1_win_rate": p1_wins / total_game_count,
+            "draw_rate": draw_games / total_game_count,
+            "average_turn_count": turn_sum / total_game_count,
+            "average_guess_count": guess_sum / total_game_count,
+            "average_successful_guesses": success_sum / total_game_count,
+            "average_post_draw_stop_rate": average_post_draw_stop_rate,
+            "stop_rate_stddev": sqrt(stop_rate_variance),
+            "seat_bias": abs(p0_wins - p1_wins) / total_game_count,
+        }
+
     def _strategy_objective_breakdown(
         self,
         *,
@@ -5350,6 +5613,7 @@ class DaVinciDecisionEngine:
         information_gain: float,
         expectimax_margin: float,
         tree_search_signal: float,
+        mcts_signal: float,
         support_ratio: float,
         behavior_match_bonus: float,
         post_hit_behavior_support_adjustment: float,
@@ -5391,6 +5655,9 @@ class DaVinciDecisionEngine:
             "tree_search_support": (
                 self.STRATEGY_OBJECTIVE_SEARCH_SIGNAL_SCALE * tree_search_signal
             ),
+            "mcts_support": (
+                self.STRATEGY_OBJECTIVE_MCTS_SCALE * mcts_signal
+            ),
             "recovery_support": (
                 self.STRATEGY_OBJECTIVE_RECOVERY_SCALE * failure_recovery_signal
             ),
@@ -5413,6 +5680,7 @@ class DaVinciDecisionEngine:
             + breakdown["support_ratio_support"]
             + breakdown["behavior_support"]
             + breakdown["tree_search_support"]
+            + breakdown["mcts_support"]
             + breakdown["recovery_support"]
             - breakdown["self_exposure_drag"]
             - breakdown["finish_fragility_drag"]
@@ -5608,6 +5876,10 @@ class DaVinciDecisionEngine:
         post_hit_tree_search_margin = 0.0
         post_hit_tree_search_support_ratio = 0.0
         post_hit_tree_search_signal = 0.0
+        post_hit_mcts_value = 0.0
+        post_hit_mcts_margin = 0.0
+        post_hit_mcts_support_ratio = 0.0
+        post_hit_mcts_signal = 0.0
         post_hit_expectimax_value = 0.0
         post_hit_expectimax_margin = 0.0
         post_hit_expectimax_support_ratio = 0.0
@@ -5663,6 +5935,7 @@ class DaVinciDecisionEngine:
             "support_ratio_support": 0.0,
             "behavior_support": 0.0,
             "tree_search_support": 0.0,
+            "mcts_support": 0.0,
             "recovery_support": 0.0,
             "self_exposure_drag": 0.0,
             "finish_fragility_drag": 0.0,
@@ -5757,6 +6030,10 @@ class DaVinciDecisionEngine:
                 post_hit_tree_search_margin = post_hit_rollout["tree_search_margin"]
                 post_hit_tree_search_support_ratio = post_hit_rollout["tree_search_support_ratio"]
                 post_hit_tree_search_signal = post_hit_rollout["tree_search_signal"]
+                post_hit_mcts_value = post_hit_rollout["mcts_value"]
+                post_hit_mcts_margin = post_hit_rollout["mcts_margin"]
+                post_hit_mcts_support_ratio = post_hit_rollout["mcts_support_ratio"]
+                post_hit_mcts_signal = post_hit_rollout["mcts_signal"]
                 post_hit_expectimax_value = post_hit_rollout["expectimax_value"]
                 post_hit_expectimax_margin = post_hit_rollout["expectimax_margin"]
                 post_hit_expectimax_support_ratio = post_hit_rollout["expectimax_support_ratio"]
@@ -6092,6 +6369,7 @@ class DaVinciDecisionEngine:
         tree_search_signal = clamp(
             max(
                 post_hit_tree_search_signal,
+                post_hit_mcts_signal,
                 post_hit_expectimax_signal,
                 post_hit_branch_search_signal,
             ),
@@ -6106,7 +6384,9 @@ class DaVinciDecisionEngine:
             information_gain=info_gain,
             expectimax_margin=post_hit_expectimax_margin,
             tree_search_signal=tree_search_signal,
+            mcts_signal=post_hit_mcts_signal,
             support_ratio=max(
+                post_hit_mcts_support_ratio,
                 post_hit_tree_search_support_ratio,
                 post_hit_expectimax_support_ratio,
                 post_hit_top_k_support_ratio,
@@ -6190,6 +6470,10 @@ class DaVinciDecisionEngine:
             "post_hit_tree_search_margin": post_hit_tree_search_margin,
             "post_hit_tree_search_support_ratio": post_hit_tree_search_support_ratio,
             "post_hit_tree_search_signal": post_hit_tree_search_signal,
+            "post_hit_mcts_value": post_hit_mcts_value,
+            "post_hit_mcts_margin": post_hit_mcts_margin,
+            "post_hit_mcts_support_ratio": post_hit_mcts_support_ratio,
+            "post_hit_mcts_signal": post_hit_mcts_signal,
             "post_hit_expectimax_value": post_hit_expectimax_value,
             "post_hit_expectimax_margin": post_hit_expectimax_margin,
             "post_hit_expectimax_support_ratio": post_hit_expectimax_support_ratio,
@@ -6314,6 +6598,10 @@ class DaVinciDecisionEngine:
                 "post_hit_branch_search_margin": post_hit_branch_search_margin,
                 "post_hit_branch_search_support_ratio": post_hit_branch_search_support_ratio,
                 "post_hit_branch_search_signal": post_hit_branch_search_signal,
+                "post_hit_mcts_value": post_hit_mcts_value,
+                "post_hit_mcts_margin": post_hit_mcts_margin,
+                "post_hit_mcts_support_ratio": post_hit_mcts_support_ratio,
+                "post_hit_mcts_signal": post_hit_mcts_signal,
                 "post_hit_expectimax_value": post_hit_expectimax_value,
                 "post_hit_expectimax_margin": post_hit_expectimax_margin,
                 "post_hit_expectimax_support_ratio": post_hit_expectimax_support_ratio,
@@ -6444,6 +6732,10 @@ class DaVinciDecisionEngine:
         tree_search_margin = 0.0
         tree_search_support_ratio = 0.0
         tree_search_signal = 0.0
+        mcts_value = 0.0
+        mcts_margin = 0.0
+        mcts_support_ratio = 0.0
+        mcts_signal = 0.0
         expectimax_value = 0.0
         expectimax_margin = 0.0
         expectimax_support_ratio = 0.0
@@ -6454,6 +6746,9 @@ class DaVinciDecisionEngine:
         tree_positive_mass = 0.0
         tree_peak_value = 0.0
         tree_candidates: List[float] = []
+        mcts_visit_sum = 0.0
+        mcts_positive_visits = 0.0
+        mcts_peak_value = 0.0
         expectimax_positive_mass = 0.0
         expectimax_weight_sum = 0.0
         expectimax_peak_value = 0.0
@@ -6615,6 +6910,123 @@ class DaVinciDecisionEngine:
                 0.0,
                 1.0,
             )
+        if tree_moves:
+            mcts_nodes: List[Dict[str, Any]] = []
+            for move in tree_moves:
+                mcts_nodes.append(
+                    {
+                        "move": move,
+                        "prior": max(
+                            1e-9,
+                            (0.40 * float(move.get("win_probability", 0.0)))
+                            + (0.24 * float(move.get("continuation_likelihood", 0.0)))
+                            + (
+                                0.18
+                                * float(move.get("post_hit_top_k_support_ratio", 0.0))
+                            )
+                            + (
+                                0.18
+                                * float(move.get("target_attack_window_signal", 0.0))
+                            ),
+                        ),
+                        "visits": 0.0,
+                        "value_sum": 0.0,
+                    }
+                )
+            for _ in range(self.MCTS_SIMULATION_COUNT):
+                total_visits = 1.0 + sum(
+                    float(node["visits"]) for node in mcts_nodes
+                )
+                selected_index = 0
+                selected_score = float("-inf")
+                for index, node in enumerate(mcts_nodes):
+                    move = node["move"]
+                    mean_value = (
+                        float(node["value_sum"]) / float(node["visits"])
+                        if float(node["visits"]) > 0.0
+                        else float(
+                            move.get(
+                                "strategy_objective",
+                                move.get("ranking_score", move["expected_value"]),
+                            )
+                        )
+                    )
+                    exploration_bonus = (
+                        self.MCTS_EXPLORATION_SCALE
+                        * float(node["prior"])
+                        * sqrt(
+                            log2(total_visits + 1.0)
+                            / (1.0 + float(node["visits"]))
+                        )
+                    )
+                    ucb_score = mean_value + exploration_bonus
+                    if ucb_score > selected_score:
+                        selected_score = ucb_score
+                        selected_index = index
+                selected_node = mcts_nodes[selected_index]
+                selected_move = selected_node["move"]
+                future_mcts_value = max(
+                    0.0,
+                    float(
+                        selected_move.get(
+                            "post_hit_mcts_value",
+                            selected_move.get(
+                                "post_hit_tree_search_value",
+                                selected_move.get(
+                                    "post_hit_expectimax_value",
+                                    selected_move.get(
+                                        "post_hit_branch_search_value",
+                                        0.0,
+                                    ),
+                                ),
+                            ),
+                        )
+                    ),
+                )
+                rollout_value = float(
+                    selected_move.get(
+                        "strategy_objective",
+                        selected_move.get("ranking_score", selected_move["expected_value"]),
+                    )
+                ) + (
+                    self.MCTS_FUTURE_SCALE
+                    * float(selected_move.get("win_probability", 0.0))
+                    * future_mcts_value
+                )
+                selected_node["visits"] = float(selected_node["visits"]) + 1.0
+                selected_node["value_sum"] = float(selected_node["value_sum"]) + rollout_value
+                mcts_value += rollout_value
+                mcts_visit_sum += 1.0
+                if rollout_value > stop_score:
+                    mcts_positive_visits += 1.0
+                mcts_peak_value = max(mcts_peak_value, rollout_value)
+            if mcts_visit_sum > 0.0:
+                mcts_value /= mcts_visit_sum
+                mcts_support_ratio = mcts_positive_visits / mcts_visit_sum
+                mcts_margin = max(0.0, mcts_value - stop_score)
+                mcts_signal = clamp(
+                    (0.38 * mcts_support_ratio)
+                    + (
+                        0.34
+                        * clamp(
+                            mcts_margin
+                            / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                            0.0,
+                            1.0,
+                        )
+                    )
+                    + (
+                        0.28
+                        * clamp(
+                            max(0.0, mcts_peak_value - stop_score)
+                            / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                            0.0,
+                            1.0,
+                        )
+                    ),
+                    0.0,
+                    1.0,
+                )
         if expectimax_candidates:
             if expectimax_weight_sum > 0.0:
                 expectimax_value /= expectimax_weight_sum
@@ -6704,6 +7116,10 @@ class DaVinciDecisionEngine:
             "tree_search_margin": tree_search_margin,
             "tree_search_support_ratio": tree_search_support_ratio,
             "tree_search_signal": tree_search_signal,
+            "mcts_value": mcts_value,
+            "mcts_margin": mcts_margin,
+            "mcts_support_ratio": mcts_support_ratio,
+            "mcts_signal": mcts_signal,
             "expectimax_value": expectimax_value,
             "expectimax_margin": expectimax_margin,
             "expectimax_support_ratio": expectimax_support_ratio,
@@ -7590,6 +8006,11 @@ class DaVinciDecisionEngine:
             * float(best_move.get("post_hit_expectimax_signal", 0.0))
         )
         continue_score += expectimax_support
+        mcts_support = (
+            self.STOP_MARGIN_MCTS
+            * float(best_move.get("post_hit_mcts_signal", 0.0))
+        )
+        continue_score += mcts_support
         post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
             best_move=best_move,
         )
@@ -7633,17 +8054,29 @@ class DaVinciDecisionEngine:
             and continue_margin < self.SELF_EXPOSURE_GUARD_MARGIN
         )
 
-        should_continue = (
-            continue_margin > 0.0
-            and not low_confidence_guard
-            and not weak_edge_guard
-            and not self_exposure_guard
+        low_confidence_guard_boost = 0.18 if low_confidence_guard else 0.0
+        weak_edge_guard_boost = 0.14 if weak_edge_guard else 0.0
+        self_exposure_guard_boost = 0.20 if self_exposure_guard else 0.0
+        continue_strategy_objective = continue_score
+        stop_strategy_objective = (
+            stop_score
+            + low_confidence_guard_boost
+            + weak_edge_guard_boost
+            + self_exposure_guard_boost
         )
+        strategy_action_margin = (
+            continue_strategy_objective - stop_strategy_objective
+        )
+        continue_margin = strategy_action_margin
+        should_continue = strategy_action_margin > 0.0
         return {
             "should_continue": should_continue,
             "continue_score": continue_score,
             "stop_score": stop_score,
             "continue_margin": continue_margin,
+            "strategy_objective_continue": continue_strategy_objective,
+            "strategy_objective_stop": stop_strategy_objective,
+            "strategy_action_margin": strategy_action_margin,
             "best_gap": best_gap,
             "behavior_match_decision_bonus": behavior_match_decision_bonus,
             "behavior_match_decision_structure_adjustment": behavior_match_decision_structure_adjustment,
@@ -7714,6 +8147,9 @@ class DaVinciDecisionEngine:
                 "behavior_match_context_focus": behavior_match_context_focus,
                 "failure_recovery_pressure": failure_recovery_pressure,
                 "strategy_objective_support": strategy_objective_support,
+                "strategy_objective_continue": continue_strategy_objective,
+                "strategy_objective_stop": stop_strategy_objective,
+                "strategy_action_margin": strategy_action_margin,
                 "attack_window_support": attack_window_support,
                 "joint_collapse_support": joint_collapse_support,
                 "global_propagation_support": global_propagation_support,
@@ -7722,6 +8158,10 @@ class DaVinciDecisionEngine:
                 "target_finish_chain_support": target_finish_chain_support,
                 "branch_search_support": branch_search_support,
                 "expectimax_support": expectimax_support,
+                "mcts_support": mcts_support,
+                "low_confidence_guard_boost": low_confidence_guard_boost,
+                "weak_edge_guard_boost": weak_edge_guard_boost,
+                "self_exposure_guard_boost": self_exposure_guard_boost,
             },
         }
 
@@ -10816,7 +11256,7 @@ class GameController:
         action_scores = {
             "guess": float(
                 decision_summary.get(
-                    "continue_score",
+                    "strategy_objective_guess",
                     decision_summary.get("best_strategy_objective", 0.0),
                 )
             ),
@@ -10832,7 +11272,12 @@ class GameController:
                     0.0,
                 )
             ),
-            "stop": float(decision_summary.get("stop_score", 0.0)),
+            "stop": float(
+                decision_summary.get(
+                    "strategy_objective_stop",
+                    decision_summary.get("stop_score", 0.0),
+                )
+            ),
         }
         if phase == "pre_draw":
             allowed_actions = ["draw_black", "draw_white"]
