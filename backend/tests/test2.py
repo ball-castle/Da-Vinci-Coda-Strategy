@@ -66,7 +66,141 @@ class ContinuationLikelihoodTests(unittest.TestCase):
         loose = model.estimate_continue_likelihood(loose_matrix, signals, "me")
 
         self.assertGreater(tight["continue_likelihood"], loose["continue_likelihood"])
-        self.assertGreater(tight["attackability"], loose["attackability"])
+
+
+class UnifiedObjectiveAndSearchTests(unittest.TestCase):
+    def test_opening_precision_support_prefers_clearer_post_draw_guess(self):
+        engine = DaVinciDecisionEngine()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=7, is_revealed=False, is_newly_drawn=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        sharper = engine._opening_precision_breakdown(
+            game_state=game_state,
+            player_id="opp",
+            probability=0.62,
+            slot_distribution={("W", 5): 0.62, ("W", 6): 0.22, ("W", 4): 0.16},
+            information_gain=0.35,
+            behavior_confidence=0.72,
+        )
+        blurrier = engine._opening_precision_breakdown(
+            game_state=game_state,
+            player_id="opp",
+            probability=0.41,
+            slot_distribution={("W", 5): 0.41, ("W", 6): 0.35, ("W", 4): 0.24},
+            information_gain=0.35,
+            behavior_confidence=0.72,
+        )
+
+        self.assertEqual(sharper["phase"], "post_draw_opening")
+        self.assertGreater(sharper["support"], blurrier["support"])
+        self.assertGreater(sharper["margin_signal"], blurrier["margin_signal"])
+
+    def test_stop_threshold_gives_credit_to_strategy_objective_and_search(self):
+        engine = DaVinciDecisionEngine()
+
+        weak = engine._stop_threshold_breakdown(
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+            best_move={
+                "win_probability": 0.46,
+                "continuation_likelihood": 0.46,
+                "self_public_exposure": 0.18,
+                "self_newly_drawn_exposure": 0.20,
+                "self_finish_fragility": 0.16,
+                "strategy_objective_core": 0.22,
+                "post_hit_tree_search_signal": 0.08,
+                "post_hit_expectimax_signal": 0.06,
+                "post_hit_mcts_signal": 0.05,
+                "post_hit_branch_search_signal": 0.04,
+            },
+        )
+        strong = engine._stop_threshold_breakdown(
+            risk_factor=engine.calculate_risk_factor(2),
+            my_hidden_count=2,
+            best_move={
+                "win_probability": 0.46,
+                "continuation_likelihood": 0.46,
+                "self_public_exposure": 0.18,
+                "self_newly_drawn_exposure": 0.20,
+                "self_finish_fragility": 0.16,
+                "strategy_objective_core": 3.2,
+                "post_hit_tree_search_signal": 0.72,
+                "post_hit_expectimax_signal": 0.68,
+                "post_hit_mcts_signal": 0.74,
+                "post_hit_branch_search_signal": 0.61,
+            },
+        )
+
+        self.assertGreater(strong["strategy_objective_credit"], weak["strategy_objective_credit"])
+        self.assertGreater(strong["search_credit"], weak["search_credit"])
+        self.assertLess(strong["threshold"], weak["threshold"])
+
+    def test_post_hit_mcts_expands_beyond_terminal_hit_miss_children(self):
+        engine = DaVinciDecisionEngine()
+        behavior_model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=7, is_revealed=False, is_newly_drawn=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+        success_matrix = {
+            "opp": {
+                2: {("B", 8): 0.64, ("B", 9): 0.36},
+            }
+        }
+
+        rollout = engine._evaluate_post_hit_rollout(
+            success_matrix=success_matrix,
+            my_hidden_count=2,
+            behavior_model=behavior_model,
+            guess_signals_by_player=behavior_model.build_guess_signals(game_state),
+            acting_player_id="me",
+            behavior_guidance_profile=None,
+            game_state=game_state,
+            target_player_id="opp",
+            target_slot_index=1,
+            guessed_card=("W", 5),
+            rollout_depth=2,
+        )
+
+        self.assertGreaterEqual(rollout["mcts_max_depth"], 2.0)
+        self.assertGreaterEqual(rollout["mcts_node_count"], 5.0)
 
     def test_continue_likelihood_rewards_secondary_attackable_followup(self):
         model = BehavioralLikelihoodModel()

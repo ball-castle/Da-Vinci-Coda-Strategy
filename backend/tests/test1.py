@@ -1650,6 +1650,84 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
         )
         self.assertGreater(aligned["total_weight"], weak["total_weight"])
 
+    def test_joint_action_posterior_uses_confident_chain_trajectory_prior(self):
+        model = BehavioralLikelihoodModel()
+
+        world = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[CardSlot(slot_index=0, color="B", value=3, is_revealed=True)],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                        CardSlot(slot_index=2, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+                "side": PlayerState(
+                    player_id="side",
+                    slots=[
+                        CardSlot(slot_index=0, color="W", value=4, is_revealed=True),
+                        CardSlot(slot_index=1, color="B", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[
+                GuessAction(
+                    guesser_id="me",
+                    target_player_id="opp",
+                    target_slot_index=1,
+                    guessed_color="W",
+                    guessed_value=5,
+                    result=True,
+                    continued_turn=True,
+                    revealed_player_id="opp",
+                    revealed_slot_index=1,
+                    revealed_color="W",
+                    revealed_value=5,
+                )
+            ],
+        )
+        hypothesis = {
+            "opp": {1: ("W", 5), 2: ("B", 7)},
+            "side": {1: ("B", 8)},
+        }
+        focused_signal = GuessSignal(
+            action_index=1,
+            guesser_id="me",
+            target_player_id="opp",
+            target_slot_index=2,
+            guessed_card=("B", 7),
+            result=True,
+            continued_turn=True,
+        )
+        switched_signal = GuessSignal(
+            action_index=1,
+            guesser_id="me",
+            target_player_id="side",
+            target_slot_index=1,
+            guessed_card=("B", 8),
+            result=True,
+            continued_turn=False,
+        )
+
+        focused = model.explain_signal(hypothesis, world, focused_signal)
+        switched = model.explain_signal(hypothesis, world, switched_signal)
+
+        self.assertGreater(
+            focused["joint_action_posterior"]["probability"],
+            switched["joint_action_posterior"]["probability"],
+        )
+        self.assertGreater(
+            focused["joint_action_posterior"]["weight"],
+            switched["joint_action_posterior"]["weight"],
+        )
+
     def test_target_player_selection_prefers_more_attackable_target(self):
         model = BehavioralLikelihoodModel()
 
