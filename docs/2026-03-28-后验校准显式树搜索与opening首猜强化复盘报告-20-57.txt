@@ -1,0 +1,141 @@
+2026-03-28 后验校准显式树搜索与opening首猜强化复盘报告 20:57
+
+生成时间：2026-03-28 20:57:30 +08:00
+
+一、本轮目标
+
+这轮继续直接打最后收口区的主缺口，重点不是补解释，而是把下面 5 条往前推进：
+
+1. `joint_action_posterior` 继续校准，把 behavior margin 拉回更强区间
+2. MCTS 从“显式 hit/miss 回传”推进到“显式后续动作树展开”
+3. post-draw opening 的排序改成首猜质量优先，避免 continuation/support 把首猜 top1 冲偏
+4. long-horizon league / matrix benchmark 再去噪，把 player-id 与先手偏差继续压低
+5. 让统一策略目标进一步吃掉 stop threshold 里的局部 shaping
+
+二、本轮核心推进
+
+1. posterior calibration 继续往 sequence-conditioned 方向推进
+- 这轮在 `joint_action_generative_probability_breakdown` 里补了 `trajectory_prior`。
+- 不是简单继续放大 posterior weight，
+  而是把“上一手是否成功继续、是否沿同一目标链推进、是否发生失败后切换”显式折进 posterior 质量里。
+- 同时又补了一层 `posterior_rank_credit`，让后验排序本身也能继续反哺 weight。
+- 结果是：behavior benchmark 的 `average_log_margin` 从 `0.7750` 拉到 `0.8141`。
+
+2. MCTS 从浅层终端树推进到显式后续动作树
+- 之前的显式 MCTS 虽然已经有节点展开和回传，
+  但一个 move 节点展开后基本还是 `hit / miss` 两个终端子节点。
+- 这轮把 hit 分支接上了真正的后续动作候选：
+  - move 节点保留 success matrix
+  - 在 hit 分支里重新跑下一层 `evaluate_all_moves`
+  - 用 top-k child moves 继续展开显式树
+- 现在的搜索已经不再只是“单步命中后看一个终端值”，
+  而是“命中后再看一层后续动作树”的 MCTS 近似。
+
+3. post-draw opening 排序切到首猜质量优先
+- 之前 synthetic self-play 里 `top3_guess_accuracy = 1.0` 但 `top1_guess_accuracy = 0.375`，
+  说明很多世界不是“看不到正确答案”，而是“正确答案没被排到第一”。
+- 这轮单独做了 `opening_precision_breakdown`：
+  - `probability_signal`
+  - `margin_signal`
+  - `confidence_signal`
+  - `initiative_recovery_signal`
+- 然后把 `post_draw_opening` 的排序规则切成：
+  `opening_precision_support -> win_probability -> opening_margin -> strategy_objective`
+- 这一步的目标不是让 opening 继续被 rollout 逻辑主导，
+  而是把首猜本身的质量单独扶正。
+
+4. 统一目标继续替代 stop threshold 的局部 shaping
+- 这轮在 `strategy_objective_breakdown` 里新增了：
+  - `opening_precision_support`
+  - `initiative_recovery_support`
+  - `confidence_drag`
+  - `newly_drawn_drag`
+- 同时在 `_stop_threshold_breakdown` 里新增：
+  - `strategy_objective_credit`
+  - `search_credit`
+- 这样 stop threshold 不再只是单纯堆局部罚项，
+  而是开始显式读取统一目标和搜索信号来回扣阈值。
+
+5. league / matrix benchmark 再做了一层 paired averaging 去噪
+- `benchmark_long_horizon_self_play` 现在每个逻辑 game 不只跑 1 组 world + mirrored world，
+  而是跑 2 组 paired worlds 再平均。
+- 这一步没有改 benchmark API，
+  但把单 seed 和 multi-seed 的 seat bias / starting advantage 噪声进一步压了下去。
+
+三、本轮量化结果
+
+1. decision benchmark
+- case_count = 65
+- accuracy = 1.0
+- margin_separation = 0.5103
+- min_correct_margin = 0.0007641
+
+2. behavior benchmark
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 0.8141
+- min_log_margin = 0.0858
+- average_score_ratio = 1.8990
+
+3. synthetic self-play benchmark
+- world_count = 8
+- guess_rate = 1.0
+- top1_guess_accuracy = 0.375
+- top3_guess_accuracy = 1.0
+- draw_color_alignment = 0.625
+- average_expected_probability = 0.1994
+- average_realized_hits_per_turn = 0.375
+- average_executed_steps = 0.375
+- deep_rollout_usage = 1.0
+
+4. single-seed league benchmark（4 matches × 4 games）
+- total_game_count = 16
+- p0_win_rate = 0.5078125
+- p1_win_rate = 0.4921875
+- seat_bias = 0.015625
+- starting_player_win_rate = 0.5390625
+- non_starting_player_win_rate = 0.4609375
+- average_starting_player_advantage = 0.078125
+
+5. multi-seed matrix benchmark（3 seeds × 4 matches × 4 games）
+- total_game_count = 48
+- p0_win_rate = 0.5
+- p1_win_rate = 0.5
+- seat_bias = 0.020833333333333332
+- starting_player_win_rate = 0.5208333333333334
+- non_starting_player_win_rate = 0.4791666666666667
+- average_starting_player_advantage = 0.041666666666666664
+- seed_seat_bias_stddev = 0.00736569563735987
+
+四、本轮真正解决了什么
+
+明显推进的：
+1. `joint_action_posterior` 不再只是静态后验权重，已经开始显式读取 trajectory / chain context
+2. MCTS 已从浅层终端近似推进到显式后续动作树展开
+3. stop threshold 已开始被统一目标和搜索信用回扣，不再完全是局部 penalty 堆叠
+4. league / matrix 的 player-id 偏差显著下降：
+   - single-seed `seat_bias: 0.078125 -> 0.015625`
+   - multi-seed `seat_bias: 0.09895833333333333 -> 0.020833333333333332`
+5. multi-seed 的 starting advantage 也继续下降：
+   - `0.078125 -> 0.041666666666666664`
+6. behavior benchmark 已回到更强的 margin 区间：
+   - `0.7750 -> 0.8141`
+
+还没有彻底打穿的：
+1. `top1_guess_accuracy` 还卡在 `0.375`
+2. 当前 MCTS 仍然是“后续动作树近似”，还不是完整全局游戏树
+3. `P(action | state)` 仍然是工程化后验近似，不是完整可学习生成模型
+4. long-horizon benchmark 虽然更稳，但总样本仍只是 `48` 局量级，不是长期大样本胜率评测
+
+五、验证
+
+- `python -m unittest discover -s backend/tests -p "test*.py"`
+- 结果：`172 / 172` 全通过
+
+六、下一轮最值得继续的方向
+
+1. 继续打 `top1_guess_accuracy`
+2. 把 MCTS 从后续动作树继续往更完整 game-state tree 推
+3. 继续压 multi-seed 的 starting advantage
+4. 把统一目标继续替代剩余的局部 risk guard / threshold shaping
+5. 把 benchmark 从几十局继续往更大规模矩阵推进
