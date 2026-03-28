@@ -1640,6 +1640,14 @@ class BehavioralLikelihoodModelTests(unittest.TestCase):
             aligned["joint_action_generative_probability"]["conditional_probability"],
             weak["joint_action_generative_probability"]["conditional_probability"],
         )
+        self.assertGreater(
+            aligned["joint_action_posterior"]["probability"],
+            weak["joint_action_posterior"]["probability"],
+        )
+        self.assertGreater(
+            aligned["joint_action_posterior"]["weight"],
+            weak["joint_action_posterior"]["weight"],
+        )
         self.assertGreater(aligned["total_weight"], weak["total_weight"])
 
     def test_target_player_selection_prefers_more_attackable_target(self):
@@ -4832,6 +4840,8 @@ class GameControllerOutputTests(unittest.TestCase):
             self.assertIn("post_hit_behavior_support_adjustment", result["top_moves"][0])
             self.assertIn("post_hit_mcts_value", result["top_moves"][0])
             self.assertIn("post_hit_mcts_signal", result["top_moves"][0])
+            self.assertIn("post_hit_mcts_node_count", result["top_moves"][0])
+            self.assertIn("post_hit_mcts_max_depth", result["top_moves"][0])
             self.assertIn("post_hit_behavior_support_gain", result["top_moves"][0])
             self.assertIn("post_hit_behavior_fragility_drag", result["top_moves"][0])
             self.assertIn(
