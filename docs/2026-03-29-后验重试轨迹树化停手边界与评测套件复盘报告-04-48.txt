@@ -1,0 +1,61 @@
+后验重试轨迹树化停手边界与评测套件复盘报告 04:48
+生成时间：2026-03-29 04:48:24 +08:00
+
+一、本轮目标
+- 继续压缩 `P(action | state)` 在弱 case 上的后验分离度
+- 让 continue boundary 进一步吃到 tree/search 信号，减少局部 threshold 残留
+- 把长期评测从单个 synthetic / 小矩阵，推进到更正式的 evaluation suite 入口
+
+二、本轮核心改动
+1. 后验重试轨迹改造
+- 新增 `retry_after_failure_trajectory_prior`，把“同槽位失败后按相邻数继续试探”从原来的统一惩罚，改成按 `step / slot_attackability / attack_window` 计算的轨迹先验。
+- 这直接修复了 `same_slot_retry` 这类行为 case 的最弱后验分离问题。
+
+2. continue boundary 树化加深
+- `stop_threshold_breakdown` 新增 `search_depth_credit` 和 `guard_relief_signal`。
+- 当 `strategy_objective_core + tree_search_signal + mcts depth/node count` 足够强时，会主动削弱 `low_confidence_threshold / weak_continuation_threshold`。
+- `low_confidence_guard / weak_edge_guard / self_exposure_guard` 的边界也开始读取这个 tree-driven relief，而不是只靠局部硬阈值。
+
+3. 长期评测入口正规化
+- 新增 `benchmark_long_horizon_evaluation_suite`，默认走更大的 multi-seed / multi-config / repeated matrix 聚合。
+- 评测结果额外输出 `fairness_gap` 和 `balance_score`，不再只看裸 `seat_bias`。
+
+三、量化结果
+- behavior benchmark：
+  - `accuracy = 1.0`
+  - `average_log_margin = 0.9426689327680254`
+  - `min_log_margin = 0.15970970043312202`
+  - `average_score_ratio = 2.1228935046320805`
+- long-horizon evaluation suite（本轮展示样本）：
+  - `total_game_count = 48`
+  - `starting_player_win_rate = 0.5078125`
+  - `non_starting_player_win_rate = 0.4921875`
+  - `fairness_gap = 0.015625`
+  - `seat_bias = 0.11979166666666667`
+  - `balance_score = 0.9276041666666667`
+- 全量测试：`177 / 177` 通过
+
+四、对当前主缺口的推进
+1. `P(action | state)`
+- 这轮没有把它升级成完整可学习生成模型，但把失败后重试轨迹真正写进了后验层，后验不再只是静态结构化乘权。
+
+2. 搜索层
+- 这轮没有把搜索升级成完整全局 game-state tree，但 continue boundary 现在会读 `mcts depth/node count`，root 层比上一轮更 tree-driven。
+
+3. behavior 弱 case
+- `same_slot_retry` 的 margin 从之前接近临界，拉到 `0.15970970043312202`，最弱 posterior separation 明显变硬。
+
+4. benchmark
+- 这轮没有直接做到超大规模长期胜率矩阵，但已经把更大的 evaluation suite 入口和 balance 指标补齐，后面只需要继续扩样本，不必再重搭框架。
+
+五、仍未完全解决的问题
+- 还不是完整可学习概率生成模型
+- 还不是完整全局 MCTS / game-state tree
+- 更大样本长期 benchmark 仍需继续扩充
+- `seat_bias` 在更广配置下还没有完全压平
+- continue boundary 里仍有局部 threshold，只是已经进一步被树搜索信号吞掉了一层
+
+git 提交信息：
+- commit: ae666e7
+- message: strengthen posterior retry trajectories and tree-driven evaluation suite
+- time: 2026-03-29 04:48:14 +08:00
