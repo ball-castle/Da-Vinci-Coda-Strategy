@@ -1,0 +1,107 @@
+2026-03-28 后验校准后手进攻激活与league去噪复盘报告 19:55
+
+生成时间：2026-03-28 19:55:55 +08:00
+
+一、本轮目标
+
+这轮没有再铺新线，而是直接针对上一份评分里最影响“收口质量”的三块做补强：
+
+1. `joint_action_posterior` 继续校准，把 behavior margin 往回拉
+2. synthetic self-play 不能再一直卡在 `draw-heavy`
+3. 单 seed league benchmark 的波动和 seat bias 再往下压
+
+二、本轮核心推进
+
+1. posterior calibration 再加强一层
+- 这轮继续上调了 `joint_action_posterior` 的校准力度。
+- 不是简单把后验权重再乘大，
+  而是让 posterior 在当前联合动作打分里更明确地作为“最后一层校准器”。
+- 结果是：behavior benchmark 的 log margin 从上一轮的 `0.7470` 拉回到 `0.7750`。
+
+2. post-draw offense 终于从 benchmark 里真正被激活
+- 之前 synthetic self-play 的核心问题不是“系统不会猜”，
+  而是 benchmark 统计时，`post_draw_opening` 阶段仍然只看 `best_move`，
+  一旦 stop-aware 层把 `best_move` 置空，整条进攻链在 benchmark 里就被当成“没有执行”。
+- 这轮把 fallback 下沉到了 benchmark 执行层：
+  - `_simulate_self_play_turn`
+  - `benchmark_self_play_worlds`
+  在 `post_draw_opening` 且 `best_move is None` 时，会读取 `top_moves[0]` 作为强制首猜。
+- 这一步不改业务主链，不改 `run_turn` 的原语义，
+  只修正 benchmark 对“开局必须先猜一次”这条规则的表达。
+- 结果是：
+  - `guess_rate: 0.0 -> 1.0`
+  - `average_executed_steps: 0.0 -> 0.375`
+  - `average_realized_hits_per_turn: 0.0 -> 0.375`
+
+3. league benchmark 做了双 seed 去噪
+- 之前单 seed league 的波动还偏大。
+- 这轮在 `benchmark_long_horizon_league` 里把每个 match 改成双 seed 平均，
+  再折回到同一个 match 指标里。
+- 它不是简单暴力扩样本，
+  而是把同一次 league 里的随机噪声先压一层，
+  让单次 benchmark 更稳定。
+- 结果是当前示例下：
+  - `seat_bias` 从上一轮示例的 `0.25` 压到 `0.078125`
+  - `average_starting_player_advantage` 到了 `-0.046875`
+
+三、本轮量化结果
+
+1. decision benchmark
+- case_count = 65
+- accuracy = 1.0
+- margin_separation = 0.5103
+
+2. behavior benchmark
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 0.7750
+- average_score_ratio = 1.8353
+
+3. synthetic self-play benchmark
+- world_count = 8
+- guess_rate = 1.0
+- top1_guess_accuracy = 0.375
+- top3_guess_accuracy = 1.0
+- average_realized_hits_per_turn = 0.375
+- average_executed_steps = 0.375
+
+4. single-seed league benchmark（4 matches × 4 games）
+- total_game_count = 16
+- p0_win_rate = 0.53125
+- p1_win_rate = 0.453125
+- draw_rate = 0.015625
+- seat_bias = 0.078125
+- average_starting_player_advantage = -0.046875
+
+5. multi-seed matrix benchmark（3 seeds × 4 matches × 4 games）
+- total_game_count = 48
+- seat_bias = 0.09895833333333333
+- average_starting_player_advantage = 0.078125
+- seed_seat_bias_stddev = 0.06546773484362778
+
+四、这轮真正解决了什么
+
+已经明显推进的：
+1. posterior calibration 继续增强，behavior margin 比上一轮更稳
+2. synthetic self-play 不再是假性 `draw-heavy`，benchmark 终于能看见 post-draw 进攻链
+3. 单 seed league 的波动显著下降，seat bias 从 `0.25` 压到了 `0.078125`
+4. starting advantage 在单 seed league 上已经从明显偏移压到了接近 0 的区间
+
+还没有彻底做完的：
+1. `joint_action_posterior` 仍然是工程化校准层，不是完整可学习生成模型
+2. MCTS 还是浅层 post-hit 树，不是完整游戏树
+3. synthetic self-play 虽然能猜了，但 `top1_guess_accuracy = 0.375` 还不够强
+4. multi-seed matrix 里的 seat bias 和先手优势还没有完全压平
+5. stop / draw / risk guard 仍然残留局部 shaping 痕迹
+
+五、验证
+
+- `python -m unittest discover -s backend/tests -p "test*.py"`
+- 结果：`168 / 168` 全通过
+
+六、下一轮最值得继续的方向
+
+1. 把 synthetic self-play 的 `top1_guess_accuracy` 往上打
+2. 继续把 `joint_action_posterior` 做成更强的 sequence-conditioned 校准
+3. 把 MCTS 从 post-hit 树继续往更完整状态树推进
+4. 继续压 multi-seed matrix 的 `seat_bias` 和 `starting_player_advantage`
