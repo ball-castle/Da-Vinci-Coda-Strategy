@@ -292,9 +292,9 @@ class BehavioralLikelihoodModel:
     JOINT_ACTION_GENERATIVE_STRUCTURAL_BLEND = 0.18
     JOINT_ACTION_GENERATIVE_BLEND = 0.40
     JOINT_ACTION_GENERATIVE_MAX_WEIGHT = 3.2
-    JOINT_ACTION_POSTERIOR_BLEND = 0.46
-    JOINT_ACTION_POSTERIOR_CONTEXT_BLEND = 0.24
-    JOINT_ACTION_POSTERIOR_MAX_WEIGHT = 3.6
+    JOINT_ACTION_POSTERIOR_BLEND = 0.58
+    JOINT_ACTION_POSTERIOR_CONTEXT_BLEND = 0.30
+    JOINT_ACTION_POSTERIOR_MAX_WEIGHT = 4.0
     EPSILON = 1e-9
 
     def build_guess_signals(
@@ -5012,6 +5012,10 @@ class DaVinciDecisionEngine:
                 decision_summary.get("best_strategy_objective", 0.0)
             )
             best_move = result.get("best_move")
+            if best_move is None and result.get("strategy_phase") == "post_draw_opening":
+                top_moves = list(result.get("top_moves", ()))
+                if top_moves:
+                    best_move = top_moves[0]
             if best_move is None:
                 break
 
@@ -5245,6 +5249,12 @@ class DaVinciDecisionEngine:
                 )
                 post_draw_best_move = post_draw_result.get("best_move")
                 post_draw_top_moves = list(post_draw_result.get("top_moves", ()))
+                if (
+                    post_draw_best_move is None
+                    and post_draw_result.get("strategy_phase") == "post_draw_opening"
+                    and post_draw_top_moves
+                ):
+                    post_draw_best_move = post_draw_top_moves[0]
                 if post_draw_best_move is not None:
                     sample_guess_rate += 1.0
                     sample_expected_probability_sum += float(
@@ -5944,11 +5954,24 @@ class DaVinciDecisionEngine:
         stop_rates: List[float] = []
 
         for _ in range(total_matches):
-            match_seed = rng.randrange(1_000_000_000)
-            match_benchmark = self.benchmark_long_horizon_self_play(
+            match_seed_primary = rng.randrange(1_000_000_000)
+            match_seed_secondary = rng.randrange(1_000_000_000)
+            primary_benchmark = self.benchmark_long_horizon_self_play(
                 game_count=match_games,
-                seed=match_seed,
+                seed=match_seed_primary,
             )
+            secondary_benchmark = self.benchmark_long_horizon_self_play(
+                game_count=match_games,
+                seed=match_seed_secondary,
+            )
+            match_benchmark = {
+                key: (
+                    float(primary_benchmark.get(key, 0.0))
+                    + float(secondary_benchmark.get(key, 0.0))
+                )
+                / 2.0
+                for key in primary_benchmark
+            }
             p0_wins += match_benchmark["p0_win_rate"] * match_games
             p1_wins += match_benchmark["p1_win_rate"] * match_games
             starting_player_win_sum += (
