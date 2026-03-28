@@ -1,0 +1,126 @@
+2026-03-28 联合动作后验显式MCTS与多seed矩阵基准推进复盘报告 19:03
+
+生成时间：2026-03-28 19:03:20 +08:00
+
+一、本轮目标
+
+这轮直接对上一份评分里最硬的四条主缺口动刀：
+
+1. `P(action | state)` 还只是条件联合动作分布近似
+2. `mcts-lite` 还不是显式树节点 + 展开 + 回传
+3. long-horizon benchmark 还不够多 seed / 多批次 / 可量化比较
+4. seat bias 和 player-id 非对称还没有压到更低
+
+二、本轮核心推进
+
+1. 联合动作从“生成分布”推进到“生成分布 + 归一化后验”
+- 这轮没有停留在 `conditional × prior × structural` 的生成概率上，
+  而是在 `_joint_action_generative_probability_breakdown` 里继续往后推了一层：
+  - 先得到归一化生成分布 `action_probabilities`
+  - 再把 `player/slot/value/continue` 的结构拟合与上下文先验重新折进 `posterior_action_mass`
+  - 最后再归一化成 `posterior_probability`
+- 现在 `explain_signal` 会额外输出 `joint_action_posterior`，
+  `score_hypothesis` 也开始直接读取 `posterior_weight`，
+  不再只是把几个结构化权重串乘起来。
+
+2. post-hit MCTS 从“UCB 风格聚合”推进到显式节点树
+- 新增了 `SearchTreeNode`。
+- `post_hit_mcts` 现在不再只是列表节点 + value_sum 的轻量聚合，
+  而是：
+  - root 节点
+  - move 节点
+  - `hit / miss` 终端子节点
+  的显式树结构。
+- 这轮补上了：
+  - 先验 `prior`
+  - 节点展开 `_expand_post_hit_mcts_node`
+  - UCB 选子 `_mcts_ucb_score`
+  - 回传 `_run_post_hit_mcts_search`
+- 同时把 `post_hit_mcts_node_count / post_hit_mcts_max_depth` 挂回 move 结果里，方便继续观测。
+
+3. long self-play 做了镜像 seat balancing
+- `benchmark_long_horizon_self_play` 现在每个 base world 不再只跑一局，
+  而是：
+  - 原世界
+  - `p0/p1` 镜像世界
+  成对跑完后再取平均。
+- 这一步不是“假装没偏差”，
+  而是把 player-id / 座位标签自身带来的非对称尽量抵消掉。
+- 直接结果是：
+  - 4 局 long self-play 的 `seat_bias` 已经压到 `0.0`
+  - 多 seed matrix 的平均 `seat_bias` 压到 `0.0833`
+
+4. benchmark 从单 league 扩成多 seed matrix
+- 新增 `benchmark_long_horizon_matrix`。
+- 它会跨多个 seed 聚合 league 结果，输出：
+  - `seed_count`
+  - `total_game_count`
+  - 胜率 / 猜测数 / 回合数
+  - `seat_bias`
+  - `average_match_seat_bias`
+  - `seed_seat_bias_stddev`
+  - `seed_starting_advantage_stddev`
+- 这一步的意义是：
+  以后看“模型变强没有”，不必只盯某一个 seed 的 16 局结果。
+
+三、本轮量化结果
+
+1. decision benchmark
+- case_count = 65
+- accuracy = 1.0
+- margin_separation = 0.5103
+- min_correct_margin = 0.0008
+
+2. behavior benchmark
+- case_count = 20
+- accuracy = 1.0
+- average_log_margin = 0.7470
+- average_score_ratio = 1.7931
+- 说明：
+  联合动作后验已经接进去了，
+  但这轮 posterior 还没有完全校准到之前那种更高的行为 margin，
+  下一轮还需要继续做 calibration。
+
+3. long self-play（4 局，小样本）
+- p0_win_rate = 0.5
+- p1_win_rate = 0.5
+- seat_bias = 0.0
+- average_guess_count = 3.25
+- post_draw_stop_rate = 0.0
+
+4. 多 seed matrix benchmark（5 seeds × 6 matches × 4 games = 120 局）
+- total_game_count = 120
+- p0_win_rate = 0.5167
+- p1_win_rate = 0.4833
+- seat_bias = 0.0833
+- average_match_seat_bias = 0.15
+- starting_player_win_rate = 0.5333
+- non_starting_player_win_rate = 0.4667
+- average_starting_player_advantage = 0.0667
+- seed_seat_bias_stddev = 0.0697
+
+四、验证
+
+- `python -m unittest discover -s backend/tests -p "test*.py"`
+- 结果：`168 / 168` 全通过
+
+五、这轮真正解决了什么
+
+已经明显推进的：
+1. `P(action | state)` 不再只是结构化 prior，而是有了显式后验层
+2. `mcts-lite` 不再只是平面 UCB 聚合，而是有了显式节点展开与回传
+3. benchmark 不再只靠单 seed / 单 league，可以跨 seed 做矩阵聚合
+4. seat bias 从单轮显著偏差，推进到了 matrix 平均 `0.0833`
+
+还没有彻底做完的：
+1. 联合动作后验仍然是工程化近似，不是可学习的完整生成模型
+2. MCTS 还是浅层 post-hit 树，不是完整游戏状态树搜索
+3. synthetic self-play 仍然偏 draw-heavy，说明这个 benchmark 切面还不够强
+4. 行为 benchmark 的 margin 这轮下降了，posterior 还需要继续校准
+
+六、下一轮最合理的继续方向
+
+1. 校准 `joint_action_posterior`，把 behavior margin 拉回去
+2. 继续把 MCTS 从 post-hit 两层树推到更深 rollout
+3. 进一步改 synthetic self-play world，让 post-draw 攻击链不再全是 0
+4. 让 matrix benchmark 直接进入评分主表，减少单 seed league 的噪声
