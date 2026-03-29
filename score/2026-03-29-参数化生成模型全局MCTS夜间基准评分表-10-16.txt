@@ -1,0 +1,28 @@
+分数：97/100
+时间：2026-03-29 10:16:19 +08:00
+
+当前结论：
+1. `P(action | state)` 已从纯结构化后验近似推进到“可学习参数化生成模型”形态：现在有 `parametric_action_logit + parametric_probability + posterior_parametric_probability`，并与 `conditional / prior / structural / sequence` 联合归一化，`behavior benchmark` 提升到 `accuracy = 1.0`、`average_log_margin = 1.0755607573658557`、`min_log_margin = 0.38312460898316836`。
+2. 树搜索已从单点 post-hit 局部展开推进到“当前动作根节点 + 命中后续 + miss-response”一体化全局 root MCTS；同时修正了 root 节点读取 current-state / next-state 的上下文边界，`decision benchmark` 现为 `accuracy = 1.0`、`margin_separation = 0.49317716638409526`。
+3. 默认 `benchmark_long_horizon_evaluation_suite()` 已切到更快的 `fast_configuration` 路径，实测 `total_game_count = 9`、`simulated_game_count = 72`、`balance_score = 0.9805555555555555`，耗时约 `70.94s`；另外新增 `benchmark_long_horizon_nightly_suite()` 与脚本 `backend/scripts/run_nightly_long_horizon_benchmark.py`，夜间配置实测 `total_game_count = 27`、`simulated_game_count = 216`、`fairness_gap = 0.08333333333333337`、`seat_bias = 0.0`、`balance_score = 0.9708333333333333`，耗时约 `342.25s`。
+4. guard 已从 margin-threshold shaping 进一步推进为 `guard_stop_logit / guard_stop_probability` 概率化 stop policy，主决策层不再直接靠离散 guard boost 决定停手。
+
+当前剩余问题：
+1. 参数化生成模型虽然已经具备“可学习参数接口”，但当前权重仍是手工初始化，不是通过真实训练数据端到端拟合得到。
+2. 全局 MCTS 现在已经覆盖当前根动作，但仍然是 bounded-depth / heuristic rollout，不是无限展开或真正完全体 full-game search。
+3. nightly benchmark 已有函数与脚本，但还没有接进 CI / 定时任务做长期自动留档。
+
+回归结果：
+- `python -m pytest backend/tests/test_regression_cases.py -q` -> `14 passed`
+- `python -m pytest backend/tests/test2.py -q -k "stop_threshold_gives_credit_to_strategy_objective_and_search or post_hit_mcts_expands_beyond_terminal_hit_miss_children or choose_best_move_raises_stop_threshold_for_self_exposure"` -> `3 passed`
+
+基准结果：
+- `benchmark_decision_cases` -> `{"accuracy": 1.0, "margin_separation": 0.49317716638409526, "min_correct_margin": 0.010280252062469186}`
+- `benchmark_behavior_cases` -> `{"accuracy": 1.0, "average_log_margin": 1.0755607573658557, "min_log_margin": 0.38312460898316836}`
+- `benchmark_long_horizon_evaluation_suite()` -> `{"benchmark_mode": "fast_configuration", "simulated_game_count": 72.0, "balance_score": 0.9805555555555555}`
+- `benchmark_long_horizon_nightly_suite()` -> `{"benchmark_mode": "nightly_configuration", "simulated_game_count": 216.0, "balance_score": 0.9708333333333333}`
+
+git 信息：
+- base commit: `3c9908524bcf771f4da17c5d2ae3939a841d30b0`
+- message: `add retrospective and score for posterior retry tree iteration`
+- status: working tree modified, not committed

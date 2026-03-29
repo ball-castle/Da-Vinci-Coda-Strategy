@@ -1,0 +1,28 @@
+分数：98/100
+时间：2026-03-29 10:40:05 +08:00
+
+当前结论：
+1. 参数化生成模型已经不再只是“手工初始化接口”：现已接入真实样本拟合与已训练权重加载。新增 `backend/scripts/train_parametric_behavior_model.py`，会基于 `regression_cases + self_play_traces` 拟合 `backend/app/core/parametric_weights.json`；当前权重文件包含 `sample_count = 32`（`regression_sample_count = 16`，`self_play_sample_count = 16`），运行时 `BehavioralLikelihoodModel` 会自动加载该文件，`parametric_weights_source = backend/app/core/parametric_weights.json`。
+2. 全局搜索已进一步从“root + heuristic bounded rollout”推进到“按剩余 hidden-card horizon 扩展的 full-game horizon MCTS”：当前根节点、命中后续、miss-response 都会在真实 current-state / post-hit-state 上按需重建上下文继续展开，而不是只消费预先烘焙的局部 post-hit 值；采样 opening state 下可见 `best_global_mcts_node_count = 10.0`、`best_global_mcts_max_depth = 2.0`。
+3. nightly benchmark 已真正接进 CI：新增 `.github/workflows/nightly-benchmark.yml`，支持 `schedule + workflow_dispatch`，会执行 `backend/scripts/run_nightly_long_horizon_benchmark.py` 并上传 artifact 留档。
+4. 指标继续提升：`behavior benchmark` 现为 `accuracy = 1.0`、`average_log_margin = 1.1013286916864735`、`min_log_margin = 0.398681344494604`；`decision benchmark` 现为 `accuracy = 1.0`、`margin_separation = 0.49317716638409526`、`min_correct_margin = 0.010280252062469186`。
+5. 默认 long-horizon suite 保持 fast path，`benchmark_long_horizon_evaluation_suite()` 当前 `benchmark_mode = fast_configuration`、`simulated_game_count = 72.0`、`balance_score = 0.9805555555555555`；nightly 配置当前 `benchmark_mode = nightly_configuration`、`simulated_game_count = 216.0`、`fairness_gap = 0.08333333333333337`、`seat_bias = 0.0`、`balance_score = 0.9708333333333333`。
+
+当前剩余问题：
+1. 训练权重已经来自真实运行样本，但样本规模目前仍偏小，主要来自回归集与本地 self-play，还不是更大规模的人类/线上轨迹语料。
+2. full-game search 已经按终局 horizon 展开，但依然受 `MCTS_SIMULATION_COUNT` 与 draw-policy 近似控制，不是无预算的完全穷举。
+
+回归结果：
+- `python -m pytest backend/tests/test_regression_cases.py -q` -> `14 passed`
+- `python -m pytest backend/tests/test2.py -q -k "behavior_model_loads_trained_parametric_weights or stop_threshold_gives_credit_to_strategy_objective_and_search or post_hit_mcts_expands_beyond_terminal_hit_miss_children or choose_best_move_raises_stop_threshold_for_self_exposure"` -> `4 passed`
+
+基准结果：
+- `benchmark_decision_cases` -> `{"accuracy": 1.0, "margin_separation": 0.49317716638409526, "min_correct_margin": 0.010280252062469186}`
+- `benchmark_behavior_cases` -> `{"accuracy": 1.0, "average_log_margin": 1.1013286916864735, "min_log_margin": 0.398681344494604}`
+- `benchmark_long_horizon_evaluation_suite()` -> `{"benchmark_mode": "fast_configuration", "simulated_game_count": 72.0, "balance_score": 0.9805555555555555}`
+- `benchmark_long_horizon_nightly_suite()` -> `{"benchmark_mode": "nightly_configuration", "simulated_game_count": 216.0, "balance_score": 0.9708333333333333}`
+
+git 信息：
+- base commit: `3c9908524bcf771f4da17c5d2ae3939a841d30b0`
+- message: `add retrospective and score for posterior retry tree iteration`
+- status: working tree modified, not committed

@@ -1,47 +1,332 @@
-import React, { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './index.css';
 import { Hand } from './components/Hand';
 import { AICenter } from './components/AICenter';
 import { ActionHistory } from './components/ActionHistory';
+import { TileEditorModal } from './components/TileEditorModal';
+import { ActionLogger } from './components/ActionLogger';
+import { fetchAIAnalysis } from './services/api';
+import type { TileState, PlayerState, GameAction } from './types';
+
+const INITIAL_OPPONENTS_DATA = [
+  {
+    id: 'p-a',
+    name: 'Player A',
+    tiles: [
+      { id: 'a1', color: 'black', isKnown: true, number: 0 },
+      { id: 'a2', color: 'white', isKnown: false, probabilities: [{ number: 5, prob: 60 }, { number: 6, prob: 40 }] },
+      { id: 'a3', color: 'black', isKnown: false, probabilities: [{ number: 8, prob: 90 }, { number: 9, prob: 10 }] },
+    ]
+  },
+  {
+    id: 'p-b',
+    name: 'Player B',
+    tiles: [
+      { id: 'b1', color: 'white', isKnown: false, probabilities: [{ number: 1, prob: 50 }, { number: 2, prob: 50 }] },
+      { id: 'b2', color: 'white', isKnown: false, probabilities: [{ number: 4, prob: 75 }, { number: 5, prob: 25 }] },
+      { id: 'b3', color: 'black', isKnown: true, number: 11 },
+    ]
+  },
+  {
+    id: 'p-c',
+    name: 'Player C',
+    tiles: []
+  }
+] as PlayerState[];
 
 function App() {
-  const [opponents] = useState([
-    {
-      id: 'p-a',
-      name: 'Player A',
-      tiles: [
-        { id: 'a1', color: 'black', isKnown: true, number: 0 },
-        { id: 'a2', color: 'white', isKnown: false, probabilities: [{ number: 5, prob: 60 }, { number: 6, prob: 40 }] },
-        { id: 'a3', color: 'black', isKnown: false, probabilities: [{ number: 8, prob: 90 }, { number: 9, prob: 10 }] },
-      ]
-    },
-    {
-      id: 'p-b',
-      name: 'Player B',
-      tiles: [
-        { id: 'b1', color: 'white', isKnown: false, probabilities: [{ number: 1, prob: 50 }, { number: 2, prob: 50 }] },
-        { id: 'b2', color: 'white', isKnown: false, probabilities: [{ number: 4, prob: 75 }, { number: 5, prob: 25 }] },
-        { id: 'b3', color: 'black', isKnown: true, number: 11 },
-      ]
-    }
-  ]);
+  const [playerCount, setPlayerCount] = useState<number>(3); // 2, 3, or 4 (including You)
+  
+  const [opponents, setOpponents] = useState<PlayerState[]>(INITIAL_OPPONENTS_DATA.slice(0, 2));
 
-  const [myHand] = useState([
+  const [myHand, setMyHand] = useState<TileState[]>([
     { id: 'm1', color: 'black', isKnown: true, number: 2 },
     { id: 'm2', color: 'white', isKnown: true, number: 7 },
     { id: 'm3', color: 'black', isKnown: true, number: 10 },
   ]);
 
+  // Action History State
+  const [actionHistory, setActionHistory] = useState<GameAction[]>([]);
+  
+  // History Stack for Undo
+  const [historyStack, setHistoryStack] = useState<{opponents: PlayerState[], myHand: TileState[], actionHistory: GameAction[]}[]>([]);
+
+  // AI 建议状态
+  const [isAILoading, setIsAILoading] = useState<boolean>(false);
+  const [aiAnalysis, setAiAnalysis] = useState<any>(null);
+
+  // UI Modal State
+  const [editingTileId, setEditingTileId] = useState<{playerId: string, tileId: string} | null>(null);
+
+  // Capture current state for Undo
+  const saveStateToHistory = () => {
+    setHistoryStack(prev => [...prev, { opponents, myHand, actionHistory }]);
+  };
+
+  const handleUndo = () => {
+    if (historyStack.length === 0) return;
+    const lastState = historyStack[historyStack.length - 1];
+    setOpponents(lastState.opponents);
+    setMyHand(lastState.myHand);
+    setActionHistory(lastState.actionHistory);
+    setHistoryStack(prev => prev.slice(0, -1));
+  };
+
+  // Sorting Helper Function (黑左白右，从小到大)
+  // 只对已知且非百搭的牌进行原位排序，保留未知牌和百搭牌的当前相对物理槽位
+  const sortTiles = (tiles: TileState[]) => {
+    const result = [...tiles];
+    const knownPositions: number[] = [];
+    const knownTiles: TileState[] = [];
+    
+    result.forEach((t, i) => {
+      // 提取所有可以确定绝对大小的牌
+      if (t.isKnown && !t.isJoker && t.number !== undefined) {
+        knownPositions.push(i);
+        knownTiles.push(t);
+      }
+    });
+
+    // 对提取出的牌进行标准规则排序
+    knownTiles.sort((a, b) => {
+      if (a.number !== b.number) return a.number! - b.number!;
+      if (a.color === 'black' && b.color === 'white') return -1;
+      if (a.color === 'white' && b.color === 'black') return 1;
+      return 0;
+    });
+
+    // 填回原位，这样就能完美保留 `?` 和 `-` 的用户手动排序插槽
+    knownPositions.forEach((pos, index) => {
+      result[pos] = knownTiles[index];
+    });
+
+    return result;
+  };
+
+  // Handle changing total players
+  const handlePlayerCountChange = (count: number) => {
+    saveStateToHistory();
+    setPlayerCount(count);
+    const requiredOpponents = count - 1;
+    setOpponents(INITIAL_OPPONENTS_DATA.slice(0, requiredOpponents));
+  };
+
+  // Add a tile to a specific player
+  const addTileToPlayer = (playerId: string, color: 'black' | 'white') => {
+    saveStateToHistory();
+    const newTile: TileState = {
+      id: `${playerId}-${Date.now()}`,
+      color,
+      isKnown: false, // Default to unknown when just drawn
+    };
+
+    if (playerId === 'me') {
+      setMyHand([...myHand, { ...newTile, isKnown: true }]); 
+    } else {
+      setOpponents(prev => prev.map(opp => 
+        opp.id === playerId ? { ...opp, tiles: [...opp.tiles, newTile] } : opp
+      ));
+    }
+  };
+
+  // Remove the last tile from a specific player
+  const removeTileFromPlayer = (playerId: string) => {
+    saveStateToHistory();
+    if (playerId === 'me') {
+      setMyHand(prev => prev.slice(0, -1));
+    } else {
+      setOpponents(prev => prev.map(opp => 
+        opp.id === playerId ? { ...opp, tiles: opp.tiles.slice(0, -1) } : opp
+      ));
+    }
+  };
+
+  // Move tile left or right
+  const moveTile = (playerId: string, tileId: string, direction: 'left' | 'right') => {
+    saveStateToHistory();
+    const moveInArray = (arr: TileState[]) => {
+      const idx = arr.findIndex(t => t.id === tileId);
+      if (idx === -1) return arr;
+      if (direction === 'left' && idx > 0) {
+        const newArr = [...arr];
+        [newArr[idx - 1], newArr[idx]] = [newArr[idx], newArr[idx - 1]];
+        return sortTiles(newArr); // Re-evaluate knowns sort after shift
+      }
+      if (direction === 'right' && idx < arr.length - 1) {
+        const newArr = [...arr];
+        [newArr[idx], newArr[idx + 1]] = [newArr[idx + 1], newArr[idx]];
+        return sortTiles(newArr);
+      }
+      return arr;
+    };
+
+    if (playerId === 'me') {
+      setMyHand(moveInArray);
+    } else {
+      setOpponents(prev => prev.map(opp => 
+        opp.id === playerId ? { ...opp, tiles: moveInArray(opp.tiles) } : opp
+      ));
+    }
+  };
+
+  // Find Tile to Edit
+  const getTileToEdit = () => {
+    if (!editingTileId) return null;
+    if (editingTileId.playerId === 'me') {
+      return myHand.find(t => t.id === editingTileId.tileId) || null;
+    }
+    const opp = opponents.find(o => o.id === editingTileId.playerId);
+    return opp?.tiles.find(t => t.id === editingTileId.tileId) || null;
+  };
+
+  // 监听动作历史，自动调用 AI 分析
+  useEffect(() => {
+    // Skip empty states initially unless you want initial analysis
+    const syncAI = async () => {
+      setIsAILoading(true);
+      try {
+        const result = await fetchAIAnalysis({ playerCount, opponents, myHand, actionHistory });
+        setAiAnalysis(result);
+        
+        // 我们也可以在这里反向更新牌的后验概率 (prob 面板)
+        // 例如遍历 result.posteriorProbabilities 更新 opponents
+      } catch (err) {
+        console.error("AI Sync failed", err);
+      } finally {
+        setIsAILoading(false);
+      }
+    };
+    syncAI();
+  }, [actionHistory]); // Re-fetch whenever action history changes
+
+  // Handle Save Edited Tile
+  const handleSaveTile = (updatedTile: TileState) => {
+    if (!editingTileId) return;
+    saveStateToHistory();
+
+    if (editingTileId.playerId === 'me') {
+      setMyHand(prev => sortTiles(prev.map(t => t.id === updatedTile.id ? updatedTile : t)));
+    } else {
+      setOpponents(prev => prev.map(opp => {
+        if (opp.id === editingTileId.playerId) {
+          return {
+            ...opp,
+            tiles: sortTiles(opp.tiles.map(t => t.id === updatedTile.id ? updatedTile : t))
+          };
+        }
+        return opp;
+      }));
+    }
+    setEditingTileId(null);
+  };
+
+  const handleResetGame = () => {
+    if (window.confirm("确定要重置当前对局吗？所有的牌将被清空。")) {
+      saveStateToHistory();
+      setMyHand([]);
+      setOpponents(prev => prev.map(opp => ({...opp, tiles: []})));
+      setActionHistory([]);
+    }
+  };
+
+  const handleLogAction = (action: GameAction) => {
+    saveStateToHistory();
+    // 1. Log to history
+    setActionHistory(prev => [action, ...prev]);
+
+    // 2. Auto-sync state
+    if (action.type === 'DRAW' && action.color) {
+      // Auto add tile
+      const newTile: TileState = { id: `${action.actorId}-${Date.now()}`, color: action.color, isKnown: action.actorId === 'me' };
+      if (action.actorId === 'me') {
+        setMyHand(prev => [...prev, { ...newTile, isKnown: true }]);
+      } else {
+        setOpponents(prev => prev.map(opp => opp.id === action.actorId ? { ...opp, tiles: [...opp.tiles, newTile] } : opp));
+      }
+    }
+    else if (action.type === 'GUESS' && action.isHit) {
+      // Auto reveal tile if guessed correctly
+      if (action.targetId && action.targetTileId && action.guessNumber !== undefined) {
+        const targetIndex = parseInt(action.targetTileId, 10);
+        if (action.targetId === 'me') {
+          // Typically my hand is known, do nothing
+        } else {
+          setOpponents(prev => prev.map(opp => {
+            if (opp.id === action.targetId) {
+              const newTiles = [...opp.tiles];
+              if (newTiles[targetIndex]) {
+                newTiles[targetIndex] = { ...newTiles[targetIndex], isKnown: true, number: action.guessNumber };
+              }
+              return { ...opp, tiles: sortTiles(newTiles) };
+            }
+            return opp;
+          }));
+        }
+      }
+    }
+  };
+
   return (
-    <div className="min-h-screen p-6 flex gap-6 max-w-7xl mx-auto h-screen items-stretch">
-      
+    <div className="min-h-screen p-6 flex gap-6 max-w-7xl mx-auto h-screen items-stretch relative">
+      {/* 模态框渲染 */}
+      {editingTileId && getTileToEdit() && (
+        <TileEditorModal 
+          tile={getTileToEdit()!} 
+          onClose={() => setEditingTileId(null)} 
+          onSave={handleSaveTile}
+        />
+      )}
+
       {/* 左侧：桌面状态沙盘 (70%) */}
       <div className="flex-[7] flex flex-col gap-6 h-full">
-        <header className="mb-2 shrink-0">
-          <h1 className="text-3xl font-black text-white tracking-widest uppercase items-center flex gap-3">
-            DA VINCI CODA <span className="text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded text-2xl border border-blue-500/30">AI</span>
-          </h1>
-          <p className="text-sm text-gray-400 mt-1">部分可观察马尔可夫决策辅助系统</p>
+        <header className="mb-2 shrink-0 flex justify-between items-start">
+          <div>
+            <h1 className="text-3xl font-black text-white tracking-widest uppercase items-center flex gap-3">
+              DA VINCI CODA <span className="text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded text-2xl border border-blue-500/30">AI</span>
+            </h1>
+            <p className="text-sm text-gray-400 mt-1">部分可观察马尔可夫决策辅助系统</p>
+          </div>
+          
+          {/* 游戏设置区 */}
+          <div className="flex gap-4">
+            <div className="bg-gray-800 p-2 rounded-lg border border-gray-700 shadow-sm flex items-center gap-3">
+              <span className="text-sm font-semibold text-gray-300">对局总人数:</span>
+              <div className="flex gap-1 bg-gray-900 rounded p-1">
+                {[2, 3, 4].map(num => (
+                  <button
+                    key={num}
+                    onClick={() => handlePlayerCountChange(num)}
+                    className={`px-3 py-1 rounded text-sm font-bold transition-colors ${
+                      playerCount === num 
+                        ? 'bg-blue-600 text-white shadow' 
+                        : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                    }`}
+                  >
+                    {num}人
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button
+              onClick={handleUndo}
+              disabled={historyStack.length === 0}
+              className={`px-4 py-2 rounded-lg font-bold transition shadow-sm border ${
+                historyStack.length === 0 
+                  ? 'bg-gray-800 text-gray-600 border-gray-700 cursor-not-allowed' 
+                  : 'bg-yellow-900/40 text-yellow-400 border-yellow-800/50 hover:bg-yellow-900/60 hover:text-yellow-300'
+              }`}
+              title="撤销上一步操作"
+            >
+              ↩ 撤销
+            </button>
+            <button
+              onClick={handleResetGame}
+              className="bg-red-900/40 text-red-400 border border-red-800/50 hover:bg-red-900/60 hover:text-red-300 px-4 py-2 rounded-lg font-bold transition shadow-sm"
+              title="清空所有玩家状态"
+            >
+              重置对局
+            </button>
+          </div>
         </header>
 
         {/* 敌方手牌区域 */}
@@ -51,8 +336,16 @@ function App() {
               key={opp.id}
               playerName={opp.name} 
               isMe={false} 
-              // @ts-ignore (简化处理)
-              tiles={opp.tiles} 
+              tiles={opp.tiles}
+              aiTargetTileIndex={
+                aiAnalysis?.attackTarget?.playerId === opp.id 
+                  ? aiAnalysis.attackTarget.tileIndex 
+                  : undefined
+              }
+              onAddTile={(color) => addTileToPlayer(opp.id, color)}
+              onRemoveTile={() => removeTileFromPlayer(opp.id)}
+              onTileClick={(tileId) => setEditingTileId({ playerId: opp.id, tileId })}
+              onMoveTile={(tileId, dir) => moveTile(opp.id, tileId, dir)}
             />
           ))}
         </div>
@@ -69,10 +362,11 @@ function App() {
           <Hand 
             playerName="My Player" 
             isMe={true} 
-            // @ts-ignore
             tiles={myHand}
-            onAddTile={(color) => console.log('Add tile', color)}
-            onTileClick={(id) => console.log('Clicked', id)}
+            onAddTile={(color) => addTileToPlayer('me', color)}
+            onRemoveTile={() => removeTileFromPlayer('me')}
+            onTileClick={(tileId) => setEditingTileId({ playerId: 'me', tileId })}
+            onMoveTile={(tileId, dir) => moveTile('me', tileId, dir)}
           />
         </div>
       </div>
@@ -80,13 +374,21 @@ function App() {
       {/* 右侧：控制台与事件区 (30%) */}
       <div className="flex-[3] flex flex-col gap-6 h-full pt-[64px]">
         {/* AI 决策面板 (占上部) */}
-        <div className="flex-[3] min-h-0">
-          <AICenter />
+        <div className="flex-[3] min-h-0 flex flex-col gap-4">
+          <AICenter 
+            aiAnalysis={aiAnalysis} 
+            isAILoading={isAILoading}
+            opponentNames={opponents.reduce((acc, opp) => ({...acc, [opp.id]: opp.name}), {} as Record<string, string>)}
+          />
+          <ActionLogger 
+            players={[...opponents, { id: 'me', name: 'You', tiles: myHand }]} 
+            onLogAction={handleLogAction} 
+          />
         </div>
         
         {/* 事件时间线 (占下部) */}
         <div className="flex-[2] min-h-0 mb-4">
-          <ActionHistory />
+          <ActionHistory logs={actionHistory} />
         </div>
       </div>
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from math import ceil, exp, log2, sqrt
+from pathlib import Path
 from random import Random
 from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -60,6 +62,7 @@ class SearchTreeNode:
     visits: float = 0.0
     value_sum: float = 0.0
     peak_value: float = 0.0
+    positive_value_count: float = 0.0
     children: Optional[List["SearchTreeNode"]] = None
     success_matrix: Optional[FullProbabilityMatrix] = None
     my_hidden_count: int = 0
@@ -72,6 +75,7 @@ class SearchTreeNode:
     behavior_map_hypothesis: Optional[Dict[str, Dict[int, Card]]] = None
     rollout_depth_remaining: int = 0
     perspective_sign: float = 1.0
+    search_mode: str = "mcts"
 
 
 def numeric_card_value(card: Optional[Card]) -> Optional[int]:
@@ -315,8 +319,107 @@ class BehavioralLikelihoodModel:
     JOINT_ACTION_SEQUENCE_RECENCY_DECAY = 0.72
     JOINT_ACTION_SEQUENCE_CONDITIONAL_BLEND = 0.16
     JOINT_ACTION_SEQUENCE_POSTERIOR_BLEND = 0.14
+    JOINT_ACTION_PARAMETRIC_BLEND = 0.32
+    JOINT_ACTION_POSTERIOR_PARAMETRIC_BLEND = 0.22
+    PARAMETRIC_GENERATIVE_BIAS = -0.18
+    PARAMETRIC_POSTERIOR_BIAS = -0.10
+    PARAMETRIC_GENERATIVE_FEATURE_WEIGHTS: Dict[str, float] = {
+        "player_selection": 0.55,
+        "slot_selection": 0.72,
+        "value_selection": 0.90,
+        "slot_fit": 0.68,
+        "continue_fit": 0.46,
+        "attackability": 0.52,
+        "attack_window": 0.40,
+        "public_bridge": 0.22,
+        "target_chain": 0.24,
+        "finish_chain": 0.28,
+        "global_propagation": 0.20,
+        "same_player_transition": 0.16,
+        "same_slot_transition": 0.24,
+        "continue_choice": 0.10,
+        "conditional_probability": 0.78,
+        "prior_probability": 0.38,
+        "structural_probability": 0.60,
+        "sequence_probability": 0.54,
+        "sequence_profile_stability": 0.22,
+        "sequence_profile_density": 0.14,
+        "base_probability": 0.70,
+    }
+    PARAMETRIC_POSTERIOR_FEATURE_WEIGHTS: Dict[str, float] = {
+        "player_selection": 0.36,
+        "slot_selection": 0.44,
+        "value_selection": 0.58,
+        "continue_fit": 0.30,
+        "sequence_probability": 0.40,
+        "base_probability": 0.54,
+        "posterior_structured_fit": 0.72,
+        "posterior_contextual_prior": 0.48,
+        "posterior_trajectory_prior": 0.52,
+        "posterior_sequence_prior": 0.46,
+        "sequence_profile_stability": 0.18,
+        "sequence_profile_density": 0.12,
+    }
     JOINT_ACTION_POSTERIOR_MAX_WEIGHT = 4.0
     EPSILON = 1e-9
+
+    def __init__(
+        self,
+        *,
+        load_trained_weights: bool = True,
+        parametric_weights_path: Optional[Path] = None,
+    ) -> None:
+        self.PARAMETRIC_GENERATIVE_FEATURE_WEIGHTS = dict(
+            self.PARAMETRIC_GENERATIVE_FEATURE_WEIGHTS
+        )
+        self.PARAMETRIC_POSTERIOR_FEATURE_WEIGHTS = dict(
+            self.PARAMETRIC_POSTERIOR_FEATURE_WEIGHTS
+        )
+        self.PARAMETRIC_GENERATIVE_BIAS = float(self.PARAMETRIC_GENERATIVE_BIAS)
+        self.PARAMETRIC_POSTERIOR_BIAS = float(self.PARAMETRIC_POSTERIOR_BIAS)
+        self.parametric_weights_source = "default"
+        if load_trained_weights:
+            self._load_trained_parametric_weights(
+                parametric_weights_path=parametric_weights_path
+            )
+
+    def _load_trained_parametric_weights(
+        self,
+        *,
+        parametric_weights_path: Optional[Path] = None,
+    ) -> None:
+        weights_path = parametric_weights_path or Path(__file__).with_name(
+            "parametric_weights.json"
+        )
+        if not weights_path.exists():
+            return
+        try:
+            payload = json.loads(weights_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        generative = payload.get("generative", {})
+        posterior = payload.get("posterior", {})
+        generative_weights = generative.get("weights", {})
+        posterior_weights = posterior.get("weights", {})
+        if isinstance(generative_weights, dict):
+            self.PARAMETRIC_GENERATIVE_FEATURE_WEIGHTS.update(
+                {
+                    str(key): float(value)
+                    for key, value in generative_weights.items()
+                }
+            )
+        if isinstance(posterior_weights, dict):
+            self.PARAMETRIC_POSTERIOR_FEATURE_WEIGHTS.update(
+                {
+                    str(key): float(value)
+                    for key, value in posterior_weights.items()
+                }
+            )
+        if "bias" in generative:
+            self.PARAMETRIC_GENERATIVE_BIAS = float(generative["bias"])
+        if "bias" in posterior:
+            self.PARAMETRIC_POSTERIOR_BIAS = float(posterior["bias"])
+        self.parametric_weights_source = str(weights_path)
 
     def build_guess_signals(
         self,
@@ -1679,6 +1782,81 @@ class BehavioralLikelihoodModel:
             1.0,
         )
 
+    def _parametric_action_feature_bundle(
+        self,
+        *,
+        action_key: Tuple[str, int, Card, Optional[bool]],
+        metadata: Dict[str, Any],
+        base_probability: float,
+        sequence_profile: Dict[str, Any],
+    ) -> Dict[str, float]:
+        action_features = dict(metadata.get("action_features", {}))
+        sequence_count = float(sequence_profile.get("count", 0.0))
+        sequence_total_weight = float(sequence_profile.get("total_weight", 0.0))
+        density = clamp(
+            sequence_total_weight / max(1.0, sequence_count + 1.0),
+            0.0,
+            1.0,
+        )
+        feature_bundle = {
+            **action_features,
+            "conditional_probability": clamp(
+                float(
+                    metadata.get(
+                        "conditional_probability",
+                        base_probability,
+                    )
+                ),
+                0.0,
+                1.0,
+            ),
+            "prior_probability": clamp(
+                float(metadata.get("prior_probability", base_probability)),
+                0.0,
+                1.0,
+            ),
+            "structural_probability": clamp(
+                float(metadata.get("structural_probability", base_probability)),
+                0.0,
+                1.0,
+            ),
+            "sequence_probability": clamp(
+                float(metadata.get("sequence_probability", base_probability)),
+                0.0,
+                1.0,
+            ),
+            "base_probability": clamp(float(base_probability), 0.0, 1.0),
+            "sequence_profile_stability": clamp(
+                float(sequence_profile.get("stability", 0.0)),
+                0.0,
+                1.0,
+            ),
+            "sequence_profile_density": density,
+        }
+        if "continue_choice" not in feature_bundle:
+            continued_turn = action_key[3]
+            feature_bundle["continue_choice"] = (
+                0.5
+                if continued_turn is None
+                else 1.0
+                if continued_turn
+                else 0.0
+            )
+        return feature_bundle
+
+    def _parametric_action_logit(
+        self,
+        features: Dict[str, float],
+        *,
+        weights: Dict[str, float],
+        bias: float,
+    ) -> float:
+        logit = float(bias)
+        for feature_name, feature_weight in weights.items():
+            feature_value = clamp(float(features.get(feature_name, 0.0)), 0.0, 1.0)
+            logit += float(feature_weight) * (feature_value - 0.5)
+        return logit
+
     def _joint_action_generative_probability_breakdown(
         self,
         game_state: GameState,
@@ -1686,6 +1864,7 @@ class BehavioralLikelihoodModel:
         signal: GuessSignal,
         *,
         guesser_cards: Sequence[Card],
+        include_candidate_catalog: bool = False,
     ) -> Dict[str, Any]:
         raw_scores: Dict[Tuple[str, int, Card, Optional[bool]], float] = {}
         metadata: Dict[Tuple[str, int, Card, Optional[bool]], Dict[str, Any]] = {}
@@ -2004,14 +2183,63 @@ class BehavioralLikelihoodModel:
         total_probability_mass = sum(action_probability_mass.values())
         if total_probability_mass <= 0.0:
             uniform_probability = 1.0 / float(len(action_probability_mass))
-            action_probabilities = {
+            base_action_probabilities = {
                 action_key: uniform_probability
                 for action_key in action_probability_mass
             }
         else:
-            action_probabilities = {
+            base_action_probabilities = {
                 action_key: probability_mass / total_probability_mass
                 for action_key, probability_mass in action_probability_mass.items()
+            }
+        parametric_raw_scores: Dict[Tuple[str, int, Card, Optional[bool]], float] = {}
+        for action_key, base_probability in base_action_probabilities.items():
+            meta = metadata.get(action_key, {})
+            parametric_features = self._parametric_action_feature_bundle(
+                action_key=action_key,
+                metadata=meta,
+                base_probability=base_probability,
+                sequence_profile=sequence_profile,
+            )
+            parametric_logit = self._parametric_action_logit(
+                parametric_features,
+                weights=self.PARAMETRIC_GENERATIVE_FEATURE_WEIGHTS,
+                bias=self.PARAMETRIC_GENERATIVE_BIAS,
+            )
+            parametric_raw_scores[action_key] = parametric_logit
+            meta["parametric_features"] = parametric_features
+            meta["parametric_logit"] = parametric_logit
+        parametric_probabilities = self._softmax_probabilities(
+            parametric_raw_scores,
+            temperature=1.0,
+        )
+        blended_action_mass: Dict[
+            Tuple[str, int, Card, Optional[bool]],
+            float,
+        ] = {}
+        for action_key, base_probability in base_action_probabilities.items():
+            parametric_probability = float(
+                parametric_probabilities.get(action_key, self.EPSILON)
+            )
+            blended_action_mass[action_key] = (
+                max(self.EPSILON, base_probability)
+                ** (1.0 - self.JOINT_ACTION_PARAMETRIC_BLEND)
+                * max(self.EPSILON, parametric_probability)
+                ** self.JOINT_ACTION_PARAMETRIC_BLEND
+            )
+            metadata[action_key]["base_probability"] = base_probability
+            metadata[action_key]["parametric_probability"] = parametric_probability
+        total_blended_action_mass = sum(blended_action_mass.values())
+        if total_blended_action_mass <= 0.0:
+            uniform_probability = 1.0 / float(max(1, len(blended_action_mass)))
+            action_probabilities = {
+                action_key: uniform_probability
+                for action_key in blended_action_mass
+            }
+        else:
+            action_probabilities = {
+                action_key: probability_mass / total_blended_action_mass
+                for action_key, probability_mass in blended_action_mass.items()
             }
         posterior_action_mass: Dict[
             Tuple[str, int, Card, Optional[bool]],
@@ -2101,6 +2329,73 @@ class BehavioralLikelihoodModel:
             posterior_probabilities = {
                 action_key: posterior_mass / total_posterior_mass
                 for action_key, posterior_mass in posterior_action_mass.items()
+            }
+        posterior_parametric_raw_scores: Dict[
+            Tuple[str, int, Card, Optional[bool]],
+            float,
+        ] = {}
+        for action_key, posterior_probability in posterior_probabilities.items():
+            meta = metadata.get(action_key, {})
+            posterior_parametric_features = self._parametric_action_feature_bundle(
+                action_key=action_key,
+                metadata=meta,
+                base_probability=posterior_probability,
+                sequence_profile=sequence_profile,
+            )
+            posterior_parametric_features.update(
+                {
+                    "posterior_structured_fit": self._normalize_action_feature_score(
+                        float(meta.get("posterior_structured_fit", 1.0)),
+                        radius=0.45,
+                    ),
+                    "posterior_contextual_prior": self._normalize_action_feature_score(
+                        float(meta.get("posterior_contextual_prior", 1.0)),
+                        radius=0.35,
+                    ),
+                    "posterior_trajectory_prior": self._normalize_action_feature_score(
+                        float(meta.get("posterior_trajectory_prior", 1.0)),
+                        radius=0.35,
+                    ),
+                    "posterior_sequence_prior": self._normalize_action_feature_score(
+                        float(meta.get("posterior_sequence_prior", 1.0)),
+                        radius=0.35,
+                    ),
+                }
+            )
+            posterior_parametric_logit = self._parametric_action_logit(
+                posterior_parametric_features,
+                weights=self.PARAMETRIC_POSTERIOR_FEATURE_WEIGHTS,
+                bias=self.PARAMETRIC_POSTERIOR_BIAS,
+            )
+            posterior_parametric_raw_scores[action_key] = posterior_parametric_logit
+            meta["posterior_parametric_features"] = posterior_parametric_features
+            meta["posterior_parametric_logit"] = posterior_parametric_logit
+        posterior_parametric_probabilities = self._softmax_probabilities(
+            posterior_parametric_raw_scores,
+            temperature=1.0,
+        )
+        blended_posterior_mass: Dict[
+            Tuple[str, int, Card, Optional[bool]],
+            float,
+        ] = {}
+        for action_key, posterior_probability in posterior_probabilities.items():
+            posterior_parametric_probability = float(
+                posterior_parametric_probabilities.get(action_key, self.EPSILON)
+            )
+            blended_posterior_mass[action_key] = (
+                max(self.EPSILON, posterior_probability)
+                ** (1.0 - self.JOINT_ACTION_POSTERIOR_PARAMETRIC_BLEND)
+                * max(self.EPSILON, posterior_parametric_probability)
+                ** self.JOINT_ACTION_POSTERIOR_PARAMETRIC_BLEND
+            )
+            metadata[action_key]["posterior_parametric_probability"] = (
+                posterior_parametric_probability
+            )
+        total_blended_posterior_mass = sum(blended_posterior_mass.values())
+        if total_blended_posterior_mass > 0.0:
+            posterior_probabilities = {
+                action_key: blended_mass / total_blended_posterior_mass
+                for action_key, blended_mass in blended_posterior_mass.items()
             }
         posterior_player_probabilities: DefaultDict[str, float] = defaultdict(float)
         posterior_slot_probabilities: DefaultDict[str, Dict[int, float]] = defaultdict(
@@ -2333,6 +2628,13 @@ class BehavioralLikelihoodModel:
                     "structural_probability": float(
                         meta.get("structural_probability", probability)
                     ),
+                    "base_probability": float(
+                        meta.get("base_probability", probability)
+                    ),
+                    "parametric_probability": float(
+                        meta.get("parametric_probability", probability)
+                    ),
+                    "parametric_logit": float(meta.get("parametric_logit", 0.0)),
                     "sequence_probability": float(
                         meta.get("sequence_probability", probability)
                     ),
@@ -2382,6 +2684,28 @@ class BehavioralLikelihoodModel:
                             action_probabilities.get(action_key, probability),
                         )
                     ),
+                    "base_probability": float(
+                        meta.get(
+                            "base_probability",
+                            action_probabilities.get(action_key, probability),
+                        )
+                    ),
+                    "parametric_probability": float(
+                        meta.get(
+                            "parametric_probability",
+                            action_probabilities.get(action_key, probability),
+                        )
+                    ),
+                    "posterior_parametric_probability": float(
+                        meta.get(
+                            "posterior_parametric_probability",
+                            probability,
+                        )
+                    ),
+                    "parametric_logit": float(meta.get("parametric_logit", 0.0)),
+                    "posterior_parametric_logit": float(
+                        meta.get("posterior_parametric_logit", 0.0)
+                    ),
                     "sequence_probability": float(
                         meta.get(
                             "sequence_probability",
@@ -2403,7 +2727,7 @@ class BehavioralLikelihoodModel:
                 }
             )
         observed_meta = metadata.get(observed_key, {})
-        return {
+        result = {
             "candidate_count": candidate_count,
             "uniform_probability": uniform_probability,
             "probability": observed_probability,
@@ -2416,6 +2740,13 @@ class BehavioralLikelihoodModel:
             "structural_probability": float(
                 observed_meta.get("structural_probability", observed_probability)
             ),
+            "base_probability": float(
+                observed_meta.get("base_probability", observed_probability)
+            ),
+            "parametric_probability": float(
+                observed_meta.get("parametric_probability", observed_probability)
+            ),
+            "parametric_logit": float(observed_meta.get("parametric_logit", 0.0)),
             "sequence_probability": float(
                 observed_meta.get("sequence_probability", observed_probability)
             ),
@@ -2428,6 +2759,15 @@ class BehavioralLikelihoodModel:
             "posterior_probability": observed_posterior_probability,
             "posterior_probability_advantage": posterior_probability_advantage,
             "posterior_weight": posterior_weight,
+            "posterior_parametric_probability": float(
+                observed_meta.get(
+                    "posterior_parametric_probability",
+                    observed_posterior_probability,
+                )
+            ),
+            "posterior_parametric_logit": float(
+                observed_meta.get("posterior_parametric_logit", 0.0)
+            ),
             "observed_rank": observed_rank,
             "posterior_observed_rank": posterior_observed_rank,
             "posterior_top_gap_signal": posterior_top_gap_signal,
@@ -2464,6 +2804,28 @@ class BehavioralLikelihoodModel:
             ),
             "posterior_top_actions": posterior_top_actions,
         }
+        if include_candidate_catalog:
+            result["candidate_catalog"] = [
+                {
+                    "action_key": action_key,
+                    "observed": action_key == observed_key,
+                    "probability": float(action_probabilities.get(action_key, 0.0)),
+                    "posterior_probability": float(
+                        posterior_probabilities.get(action_key, 0.0)
+                    ),
+                    "parametric_features": dict(
+                        metadata.get(action_key, {}).get("parametric_features", {})
+                    ),
+                    "posterior_parametric_features": dict(
+                        metadata.get(action_key, {}).get(
+                            "posterior_parametric_features",
+                            {},
+                        )
+                    ),
+                }
+                for action_key in posterior_probabilities
+            ]
+        return result
 
     def _has_failure_switch_guess_continuity(
         self,
@@ -4764,8 +5126,16 @@ class DaVinciDecisionEngine:
     MCTS_TOP_K = 2
     MCTS_DEEP_CHILD_TOP_K = 2
     MCTS_SIMULATION_COUNT = 6
+    MCTS_SIMULATION_COUNT_PER_HORIZON = 3
+    MCTS_SIMULATION_COUNT_PER_ROOT_MOVE = 2
+    MCTS_SIMULATION_COUNT_CAP = 48
     MCTS_EXPLORATION_SCALE = 0.32
     MCTS_FUTURE_SCALE = 0.74
+    GLOBAL_MCTS_TOP_K = 3
+    GLOBAL_MCTS_OBJECTIVE_SCALE = 0.14
+    GLOBAL_MCTS_RANKING_SCALE = 0.08
+    EXACT_TREE_SEARCH_HORIZON_THRESHOLD = 4
+    EXACT_TREE_SEARCH_NODE_BUDGET = 96
     EXPECTIMAX_TOP_K = 3
     EXPECTIMAX_FUTURE_SCALE = 0.60
     DEEP_ROLLOUT_DEPTH = 3
@@ -4806,6 +5176,13 @@ class DaVinciDecisionEngine:
     STOP_MARGIN_SEARCH_CREDIT = 0.08
     STOP_MARGIN_SEARCH_DEPTH_CREDIT = 0.05
     STOP_MARGIN_GUARD_RELIEF_SCALE = 0.30
+    STOP_MARGIN_GUARD_POLICY_SCALE = 0.22
+    GUARD_POLICY_BIAS = -1.70
+    GUARD_POLICY_LOW_CONFIDENCE_WEIGHT = 2.10
+    GUARD_POLICY_WEAK_EDGE_WEIGHT = 1.55
+    GUARD_POLICY_SELF_EXPOSURE_WEIGHT = 1.85
+    GUARD_POLICY_MARGIN_RELIEF_WEIGHT = 1.20
+    GUARD_POLICY_SEARCH_RELIEF_WEIGHT = 0.95
     OPENING_PRECISION_MARGIN_REFERENCE = 0.28
     OPENING_JOKER_SUPPRESSION_MARGIN = 0.03
     OPENING_JOKER_PENALTY_SCALE = 0.78
@@ -5010,6 +5387,164 @@ class DaVinciDecisionEngine:
             )
         return moves, risk_factor
 
+    def _sort_scored_moves(
+        self,
+        moves: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        sorted_moves = list(moves)
+        opening_phase = (
+            bool(sorted_moves)
+            and str(sorted_moves[0].get("strategy_phase", "")) == "post_draw_opening"
+        )
+        if opening_phase:
+            sorted_moves.sort(
+                key=lambda move: (
+                    -move.get("opening_precision_support", 0.0),
+                    -move.get("opening_behavior_posterior_support", 0.0),
+                    move.get("opening_joker_penalty", 0.0),
+                    -move["win_probability"],
+                    -move.get("opening_margin_signal", 0.0),
+                    -move.get(
+                        "strategy_objective",
+                        move.get("ranking_score", move["expected_value"]),
+                    ),
+                    -move.get("ranking_score", move["expected_value"]),
+                    -move["continuation_value"],
+                    move.get("target_player_id", ""),
+                    int(move.get("target_slot_index", -1)),
+                    card_sort_key(
+                        tuple(move.get("guess_card", ("B", 0)))  # type: ignore[arg-type]
+                    ),
+                )
+            )
+        else:
+            sorted_moves.sort(
+                key=lambda move: (
+                    -move.get(
+                        "strategy_objective",
+                        move.get("ranking_score", move["expected_value"]),
+                    ),
+                    -move.get("ranking_score", move["expected_value"]),
+                    -move["win_probability"],
+                    -move["continuation_value"],
+                    -move["continuation_likelihood"],
+                    move.get("target_player_id", ""),
+                    int(move.get("target_slot_index", -1)),
+                    card_sort_key(
+                        tuple(move.get("guess_card", ("B", 0)))  # type: ignore[arg-type]
+                    ),
+                )
+            )
+        return sorted_moves
+
+    def _apply_global_mcts_rerank(
+        self,
+        *,
+        all_moves: Sequence[Dict[str, Any]],
+        risk_factor: float,
+        my_hidden_count: int,
+    ) -> List[Dict[str, Any]]:
+        ranked_moves = list(all_moves)
+        if len(ranked_moves) <= 1:
+            return ranked_moves
+        root_moves = ranked_moves
+        if any(
+            "target_player_id" not in move
+            or "target_slot_index" not in move
+            or "guess_card" not in move
+            for move in root_moves
+        ):
+            return ranked_moves
+        baseline_stop_threshold = self._stop_threshold_breakdown(
+            risk_factor=risk_factor,
+            my_hidden_count=my_hidden_count,
+            best_move=root_moves[0],
+        )["threshold"]
+        global_mcts = self._run_hybrid_full_game_search(
+            tree_moves=root_moves,
+            stop_score=baseline_stop_threshold,
+        )
+        root_stats_by_key = {
+            tuple(root_stat.get("move_key", ())): root_stat
+            for root_stat in global_mcts.get("root_children", ())
+        }
+        for move in ranked_moves:
+            root_stat = root_stats_by_key.get(self._move_identity_key(move), {})
+            global_mcts_margin = float(root_stat.get("margin", 0.0))
+            global_mcts_signal = float(root_stat.get("signal", 0.0))
+            global_mcts_bonus = (
+                self.GLOBAL_MCTS_OBJECTIVE_SCALE * global_mcts_margin
+                + self.GLOBAL_MCTS_RANKING_SCALE * global_mcts_signal
+            )
+            move["global_mcts_value"] = float(
+                root_stat.get(
+                    "value",
+                    move.get(
+                        "strategy_objective",
+                        move.get("ranking_score", move.get("expected_value", 0.0)),
+                    ),
+                )
+            )
+            move["global_mcts_margin"] = global_mcts_margin
+            move["global_mcts_support_ratio"] = float(
+                root_stat.get("support_ratio", 0.0)
+            )
+            move["global_mcts_signal"] = global_mcts_signal
+            move["global_mcts_visit_share"] = float(
+                root_stat.get("visit_share", 0.0)
+            )
+            move["global_mcts_peak_value"] = float(
+                root_stat.get("peak_value", move["global_mcts_value"])
+            )
+            move["global_mcts_visits"] = float(root_stat.get("visits", 0.0))
+            move["global_mcts_node_count"] = float(
+                global_mcts.get("node_count", 0.0)
+            )
+            move["global_mcts_max_depth"] = float(
+                global_mcts.get("max_depth", 0.0)
+            )
+            move["global_mcts_search_mode"] = str(
+                global_mcts.get("search_mode", "mcts")
+            )
+            move["global_mcts_simulation_budget"] = float(
+                global_mcts.get("simulation_budget", 0.0)
+            )
+            move["global_mcts_bonus"] = global_mcts_bonus
+            move["strategy_objective"] = float(
+                move.get(
+                    "strategy_objective",
+                    move.get("ranking_score", move.get("expected_value", 0.0)),
+                )
+            ) + global_mcts_bonus
+            move["ranking_score"] = float(
+                move.get("ranking_score", move.get("expected_value", 0.0))
+            ) + (0.45 * global_mcts_bonus)
+            score_breakdown = move.get("score_breakdown")
+            if isinstance(score_breakdown, dict):
+                score_breakdown["global_mcts_value"] = move["global_mcts_value"]
+                score_breakdown["global_mcts_margin"] = global_mcts_margin
+                score_breakdown["global_mcts_support_ratio"] = move[
+                    "global_mcts_support_ratio"
+                ]
+                score_breakdown["global_mcts_signal"] = global_mcts_signal
+                score_breakdown["global_mcts_bonus"] = global_mcts_bonus
+                score_breakdown["global_mcts_visit_share"] = move[
+                    "global_mcts_visit_share"
+                ]
+                score_breakdown["global_mcts_node_count"] = move[
+                    "global_mcts_node_count"
+                ]
+                score_breakdown["global_mcts_max_depth"] = move[
+                    "global_mcts_max_depth"
+                ]
+                score_breakdown["global_mcts_search_mode"] = move[
+                    "global_mcts_search_mode"
+                ]
+                score_breakdown["global_mcts_simulation_budget"] = move[
+                    "global_mcts_simulation_budget"
+                ]
+        return self._sort_scored_moves(ranked_moves)
+
     def choose_best_move(
         self,
         all_moves: List[Dict[str, Any]],
@@ -5109,6 +5644,13 @@ class DaVinciDecisionEngine:
                 "best_post_hit_expectimax_margin": 0.0,
                 "best_post_hit_expectimax_support_ratio": 0.0,
                 "best_post_hit_expectimax_signal": 0.0,
+                "best_global_mcts_value": 0.0,
+                "best_global_mcts_margin": 0.0,
+                "best_global_mcts_support_ratio": 0.0,
+                "best_global_mcts_signal": 0.0,
+                "best_global_mcts_visit_share": 0.0,
+                "best_global_mcts_node_count": 0.0,
+                "best_global_mcts_max_depth": 0.0,
                 "best_strategy_objective": 0.0,
                 "best_strategy_objective_core": 0.0,
                 "strategy_objective_guess": 0.0,
@@ -5163,6 +5705,7 @@ class DaVinciDecisionEngine:
                     "branch_search_support": 0.0,
                     "expectimax_support": 0.0,
                     "mcts_support": 0.0,
+                    "global_mcts_support": 0.0,
                     "strategy_objective_support": 0.0,
                     "strategy_objective_continue": 0.0,
                     "strategy_objective_stop": stop_threshold,
@@ -5174,6 +5717,11 @@ class DaVinciDecisionEngine:
                 "stop_reason": "没有可评估的候选动作。",
             }
 
+        all_moves = self._apply_global_mcts_rerank(
+            all_moves=all_moves,
+            risk_factor=risk_factor,
+            my_hidden_count=my_hidden_count,
+        )
         best_move = all_moves[0]
         second_move = all_moves[1] if len(all_moves) > 1 else None
         stop_threshold_breakdown = self._stop_threshold_breakdown(
@@ -5333,6 +5881,25 @@ class DaVinciDecisionEngine:
                 0.0,
             ),
             "best_post_hit_expectimax_signal": best_move.get("post_hit_expectimax_signal", 0.0),
+            "best_global_mcts_value": best_move.get("global_mcts_value", 0.0),
+            "best_global_mcts_margin": best_move.get("global_mcts_margin", 0.0),
+            "best_global_mcts_support_ratio": best_move.get(
+                "global_mcts_support_ratio",
+                0.0,
+            ),
+            "best_global_mcts_signal": best_move.get("global_mcts_signal", 0.0),
+            "best_global_mcts_visit_share": best_move.get(
+                "global_mcts_visit_share",
+                0.0,
+            ),
+            "best_global_mcts_node_count": best_move.get(
+                "global_mcts_node_count",
+                0.0,
+            ),
+            "best_global_mcts_max_depth": best_move.get(
+                "global_mcts_max_depth",
+                0.0,
+            ),
             "best_strategy_objective": best_move.get("strategy_objective", 0.0),
             "best_strategy_objective_core": best_move.get("strategy_objective_core", 0.0),
             "strategy_objective_guess": decision_snapshot["strategy_objective_continue"],
@@ -7245,6 +7812,80 @@ class DaVinciDecisionEngine:
             ),
         }
 
+    def _summarize_long_horizon_balance(
+        self,
+        benchmark: Dict[str, float],
+        *,
+        benchmark_mode: str,
+        seat_bias_stddev_keys: Sequence[str],
+    ) -> Dict[str, float]:
+        fairness_gap = abs(
+            float(benchmark.get("starting_player_win_rate", 0.0))
+            - float(benchmark.get("non_starting_player_win_rate", 0.0))
+        )
+        seat_bias = float(benchmark.get("seat_bias", 0.0))
+        seat_bias_stddev = 0.0
+        for seat_bias_stddev_key in seat_bias_stddev_keys:
+            if seat_bias_stddev_key in benchmark:
+                seat_bias_stddev = float(benchmark.get(seat_bias_stddev_key, 0.0))
+                break
+        balance_score = clamp(
+            1.0
+            - (
+                0.50 * seat_bias
+                + 0.35 * fairness_gap
+                + 0.15 * seat_bias_stddev
+            ),
+            0.0,
+            1.0,
+        )
+        return {
+            **benchmark,
+            "benchmark_mode": benchmark_mode,
+            "effective_simulated_game_count": float(
+                benchmark.get("simulated_game_count", 0.0)
+            ),
+            "fairness_gap": fairness_gap,
+            "seat_bias_stddev": seat_bias_stddev,
+            "balance_score": balance_score,
+        }
+
+    def benchmark_long_horizon_nightly_suite(
+        self,
+        *,
+        seeds: Optional[Sequence[int]] = None,
+        match_counts: Optional[Sequence[int]] = None,
+        games_per_match_options: Optional[Sequence[int]] = None,
+        benchmark_mode: str = "configuration",
+        minimum_total_game_count: Optional[int] = None,
+    ) -> Dict[str, float]:
+        normalized_mode = str(benchmark_mode or "configuration").lower()
+        if normalized_mode == "stability":
+            benchmark = self.benchmark_long_horizon_stability_matrix(
+                seeds=seeds or (11, 19, 29),
+                match_counts=match_counts or (1, 2),
+                games_per_match_options=games_per_match_options or (1, 2),
+                minimum_total_game_count=(
+                    minimum_total_game_count
+                    or self.LONG_SELF_PLAY_EVALUATION_MIN_TOTAL_GAMES
+                ),
+            )
+            return self._summarize_long_horizon_balance(
+                benchmark,
+                benchmark_mode="nightly_stability",
+                seat_bias_stddev_keys=("configuration_seat_bias_stddev",),
+            )
+        benchmark = self.benchmark_long_horizon_configuration_matrix(
+            seeds=seeds or (11, 19, 29),
+            match_counts=match_counts or (1, 2),
+            games_per_match_options=games_per_match_options or (1, 2),
+        )
+        return self._summarize_long_horizon_balance(
+            benchmark,
+            benchmark_mode="nightly_configuration",
+            seat_bias_stddev_keys=("config_seat_bias_stddev",),
+        )
+
     def benchmark_long_horizon_evaluation_suite(
         self,
         *,
@@ -7252,42 +7893,62 @@ class DaVinciDecisionEngine:
         match_counts: Optional[Sequence[int]] = None,
         games_per_match_options: Optional[Sequence[int]] = None,
         minimum_total_game_count: Optional[int] = None,
+        benchmark_mode: str = "fast",
     ) -> Dict[str, float]:
-        benchmark = self.benchmark_long_horizon_stability_matrix(
-            seeds=seeds or (11, 19, 29, 37, 53, 71),
-            match_counts=match_counts or (4, 6, 8),
-            games_per_match_options=games_per_match_options or (4, 6),
-            minimum_total_game_count=(
-                minimum_total_game_count
-                or self.LONG_SELF_PLAY_EVALUATION_MIN_TOTAL_GAMES
-            ),
+        normalized_mode = str(benchmark_mode or "fast").lower()
+        if normalized_mode in {"nightly", "nightly_configuration", "nightly_stability"}:
+            return self.benchmark_long_horizon_nightly_suite(
+                seeds=seeds,
+                match_counts=match_counts,
+                games_per_match_options=games_per_match_options,
+                benchmark_mode=(
+                    "stability"
+                    if normalized_mode == "nightly_stability"
+                    else "configuration"
+                ),
+                minimum_total_game_count=minimum_total_game_count,
+            )
+        if normalized_mode in {"stability", "full"}:
+            benchmark = self.benchmark_long_horizon_stability_matrix(
+                seeds=seeds or (11, 19, 29, 37, 53, 71),
+                match_counts=match_counts or (4, 6, 8),
+                games_per_match_options=games_per_match_options or (4, 6),
+                minimum_total_game_count=(
+                    minimum_total_game_count
+                    or self.LONG_SELF_PLAY_EVALUATION_MIN_TOTAL_GAMES
+                ),
+            )
+            return self._summarize_long_horizon_balance(
+                benchmark,
+                benchmark_mode="stability",
+                seat_bias_stddev_keys=("configuration_seat_bias_stddev",),
+            )
+        if minimum_total_game_count is not None:
+            benchmark = self.benchmark_long_horizon_stability_matrix(
+                seeds=seeds or (11, 19, 29),
+                match_counts=match_counts or (1,),
+                games_per_match_options=games_per_match_options or (1, 2),
+                minimum_total_game_count=minimum_total_game_count,
+            )
+            return self._summarize_long_horizon_balance(
+                benchmark,
+                benchmark_mode="fast_stability",
+                seat_bias_stddev_keys=("configuration_seat_bias_stddev",),
+            )
+        benchmark = self.benchmark_long_horizon_configuration_matrix(
+            seeds=seeds or (11, 19, 29),
+            match_counts=match_counts or (1,),
+            games_per_match_options=games_per_match_options or (1, 2),
         )
-        fairness_gap = abs(
-            float(benchmark.get("starting_player_win_rate", 0.0))
-            - float(benchmark.get("non_starting_player_win_rate", 0.0))
+        summary = self._summarize_long_horizon_balance(
+            benchmark,
+            benchmark_mode="fast_configuration",
+            seat_bias_stddev_keys=("config_seat_bias_stddev",),
         )
-        seat_bias = float(benchmark.get("seat_bias", 0.0))
-        configuration_seat_bias_stddev = float(
-            benchmark.get("configuration_seat_bias_stddev", 0.0)
+        summary["minimum_total_game_count_per_configuration"] = float(
+            benchmark.get("total_game_count", 0.0)
         )
-        balance_score = clamp(
-            1.0
-            - (
-                0.50 * seat_bias
-                + 0.35 * fairness_gap
-                + 0.15 * configuration_seat_bias_stddev
-            ),
-            0.0,
-            1.0,
-        )
-        return {
-            **benchmark,
-            "effective_simulated_game_count": float(
-                benchmark.get("simulated_game_count", 0.0)
-            ),
-            "fairness_gap": fairness_gap,
-            "balance_score": balance_score,
-        }
+        return summary
 
     def benchmark_long_horizon_configuration_matrix(
         self,
@@ -7759,6 +8420,8 @@ class DaVinciDecisionEngine:
         post_hit_mcts_signal = 0.0
         post_hit_mcts_node_count = 0.0
         post_hit_mcts_max_depth = 0.0
+        post_hit_mcts_search_mode = "mcts"
+        post_hit_mcts_simulation_budget = 0.0
         post_hit_expectimax_value = 0.0
         post_hit_expectimax_margin = 0.0
         post_hit_expectimax_support_ratio = 0.0
@@ -7937,6 +8600,13 @@ class DaVinciDecisionEngine:
                 post_hit_mcts_signal = post_hit_rollout["mcts_signal"]
                 post_hit_mcts_node_count = post_hit_rollout["mcts_node_count"]
                 post_hit_mcts_max_depth = post_hit_rollout["mcts_max_depth"]
+                post_hit_mcts_search_mode = post_hit_rollout.get(
+                    "mcts_search_mode",
+                    "mcts",
+                )
+                post_hit_mcts_simulation_budget = float(
+                    post_hit_rollout.get("mcts_simulation_budget", 0.0)
+                )
                 post_hit_expectimax_value = post_hit_rollout["expectimax_value"]
                 post_hit_expectimax_margin = post_hit_rollout["expectimax_margin"]
                 post_hit_expectimax_support_ratio = post_hit_rollout["expectimax_support_ratio"]
@@ -8436,6 +9106,8 @@ class DaVinciDecisionEngine:
             "post_hit_mcts_signal": post_hit_mcts_signal,
             "post_hit_mcts_node_count": post_hit_mcts_node_count,
             "post_hit_mcts_max_depth": post_hit_mcts_max_depth,
+            "post_hit_mcts_search_mode": post_hit_mcts_search_mode,
+            "post_hit_mcts_simulation_budget": post_hit_mcts_simulation_budget,
             "post_hit_expectimax_value": post_hit_expectimax_value,
             "post_hit_expectimax_margin": post_hit_expectimax_margin,
             "post_hit_expectimax_support_ratio": post_hit_expectimax_support_ratio,
@@ -8483,6 +9155,10 @@ class DaVinciDecisionEngine:
             "_post_hit_behavior_map_hypothesis": (
                 post_hit_behavior_map_hypothesis_for_search
             ),
+            "_mcts_current_game_state": game_state,
+            "_mcts_current_guess_signals_by_player": guess_signals_by_player,
+            "_mcts_current_behavior_guidance_profile": behavior_guidance_profile,
+            "_mcts_current_behavior_map_hypothesis": behavior_map_hypothesis,
             "_mcts_rollout_depth_remaining": max(0, rollout_depth - 1),
             "_mcts_my_hidden_count": my_hidden_count,
             "_mcts_behavior_model": behavior_model,
@@ -8627,6 +9303,174 @@ class DaVinciDecisionEngine:
             for child in (node.children or ())
         )
 
+    def _move_identity_key(
+        self,
+        move: Dict[str, Any],
+    ) -> Tuple[Optional[str], int, Tuple[Any, ...]]:
+        guess_card = move.get("guess_card")
+        if isinstance(guess_card, (list, tuple)):
+            normalized_guess_card = tuple(guess_card)
+        else:
+            normalized_guess_card = ()
+        return (
+            move.get("target_player_id"),
+            int(move.get("target_slot_index", -1)),
+            normalized_guess_card,
+        )
+
+    def _full_game_search_horizon(
+        self,
+        game_state: Optional[GameState],
+        *,
+        fallback_depth: int = 0,
+    ) -> int:
+        if game_state is None:
+            return max(0, int(fallback_depth))
+        hidden_count = sum(
+            1
+            for player_id in game_state.players
+            for slot in game_state.resolved_ordered_slots(player_id)
+            if not slot.is_revealed
+        )
+        return max(int(fallback_depth), int(hidden_count))
+
+    def _adaptive_mcts_simulation_budget(
+        self,
+        tree_moves: Sequence[Dict[str, Any]],
+    ) -> int:
+        root_horizon = max(
+            (
+                self._full_game_search_horizon(
+                    move.get(
+                        "_mcts_current_game_state",
+                        move.get("_post_hit_game_state"),
+                    ),
+                    fallback_depth=int(move.get("_mcts_rollout_depth_remaining", 0)),
+                )
+                for move in tree_moves
+            ),
+            default=0,
+        )
+        budget = (
+            int(self.MCTS_SIMULATION_COUNT)
+            + max(0, int(root_horizon) - 1) * int(self.MCTS_SIMULATION_COUNT_PER_HORIZON)
+            + max(0, len(tree_moves) - 1) * int(self.MCTS_SIMULATION_COUNT_PER_ROOT_MOVE)
+        )
+        return max(
+            int(self.MCTS_SIMULATION_COUNT),
+            min(int(self.MCTS_SIMULATION_COUNT_CAP), int(budget)),
+        )
+
+    def _should_run_exhaustive_tree_search(
+        self,
+        tree_moves: Sequence[Dict[str, Any]],
+    ) -> bool:
+        if not tree_moves:
+            return False
+        root_horizon = max(
+            (
+                self._full_game_search_horizon(
+                    move.get(
+                        "_mcts_current_game_state",
+                        move.get("_post_hit_game_state"),
+                    ),
+                    fallback_depth=int(move.get("_mcts_rollout_depth_remaining", 0)),
+                )
+                for move in tree_moves
+            ),
+            default=0,
+        )
+        if root_horizon > self.EXACT_TREE_SEARCH_HORIZON_THRESHOLD:
+            return False
+        branching_factor = max(
+            len(tree_moves),
+            int(self.MCTS_DEEP_CHILD_TOP_K) + int(self.MCTS_TOP_K),
+        )
+        estimated_node_count = 1.0 + float(len(tree_moves))
+        frontier_width = float(max(1, len(tree_moves)))
+        for _ in range(max(0, int(root_horizon))):
+            frontier_width *= float(max(1, branching_factor))
+            estimated_node_count += frontier_width
+            if estimated_node_count > float(self.EXACT_TREE_SEARCH_NODE_BUDGET):
+                return False
+        return True
+
+    def _build_hit_search_context(
+        self,
+        node: SearchTreeNode,
+    ) -> Dict[str, Any]:
+        move = node.move or {}
+        success_matrix = node.success_matrix or move.get("_success_matrix")
+        behavior_model = node.behavior_model
+        game_state = node.game_state
+        acting_player_id = node.acting_player_id
+        guidance_profile = node.behavior_guidance_profile
+        behavior_map_hypothesis = node.behavior_map_hypothesis
+        guess_signals = node.guess_signals_by_player
+        if (
+            not success_matrix
+            or behavior_model is None
+            or game_state is None
+            or acting_player_id is None
+            or "target_player_id" not in move
+            or "target_slot_index" not in move
+            or "guess_card" not in move
+        ):
+            return {
+                "success_matrix": success_matrix,
+                "game_state": game_state,
+                "guess_signals_by_player": guess_signals,
+                "behavior_guidance_profile": guidance_profile,
+                "behavior_map_hypothesis": behavior_map_hypothesis,
+            }
+        guess_card = move.get("guess_card")
+        if not isinstance(guess_card, (list, tuple)) or len(guess_card) != 2:
+            return {
+                "success_matrix": success_matrix,
+                "game_state": game_state,
+                "guess_signals_by_player": guess_signals,
+                "behavior_guidance_profile": guidance_profile,
+                "behavior_map_hypothesis": behavior_map_hypothesis,
+            }
+        try:
+            post_hit_context = self._build_post_hit_behavior_context(
+                game_state=game_state,
+                success_matrix=success_matrix,
+                behavior_model=behavior_model,
+                acting_player_id=acting_player_id,
+                target_player_id=str(move.get("target_player_id")),
+                target_slot_index=int(move.get("target_slot_index", -1)),
+                guessed_card=(guess_card[0], guess_card[1]),
+            )
+            next_game_state = post_hit_context["game_state"]
+            next_guess_signals = post_hit_context["guess_signals_by_player"]
+            next_behavior_map_hypothesis = post_hit_context["behavior_map_hypothesis"]
+            guidance_rebuild = self._rebuild_post_hit_behavior_guidance_profile(
+                base_profile=guidance_profile,
+                behavior_model=behavior_model,
+                full_probability_matrix=success_matrix,
+                game_state=next_game_state,
+                guess_signals_by_player=next_guess_signals,
+                behavior_map_hypothesis=next_behavior_map_hypothesis,
+                acting_player_id=acting_player_id,
+            )
+            next_guidance_profile = guidance_rebuild["profile"]
+        except ValueError:
+            return {
+                "success_matrix": success_matrix,
+                "game_state": game_state,
+                "guess_signals_by_player": guess_signals,
+                "behavior_guidance_profile": guidance_profile,
+                "behavior_map_hypothesis": behavior_map_hypothesis,
+            }
+        return {
+            "success_matrix": success_matrix,
+            "game_state": next_game_state,
+            "guess_signals_by_player": next_guess_signals,
+            "behavior_guidance_profile": next_guidance_profile,
+            "behavior_map_hypothesis": next_behavior_map_hypothesis,
+        }
+
     def _select_miss_reveal_slot(
         self,
         game_state: GameState,
@@ -8755,14 +9599,20 @@ class DaVinciDecisionEngine:
             return []
 
         response_game_state = miss_context["game_state"]
-        response_controller = GameController(response_game_state)
+        try:
+            response_controller = GameController(response_game_state)
+        except ValueError:
+            return []
         response_controller.decision_engine.DEEP_ROLLOUT_DEPTH = min(
             1,
             self.DEEP_ROLLOUT_DEPTH,
         )
-        response_result = response_controller.run_turn(
-            include_draw_color_summary=False,
-        )
+        try:
+            response_result = response_controller.run_turn(
+                include_draw_color_summary=False,
+            )
+        except ValueError:
+            return []
         response_moves = list(response_result.get("top_moves", ()))
         if (
             not response_moves
@@ -8770,7 +9620,8 @@ class DaVinciDecisionEngine:
             and response_result.get("best_move") is not None
         ):
             response_moves = [response_result["best_move"]]
-        response_moves = response_moves[: self.MCTS_DEEP_CHILD_TOP_K]
+        if node.search_mode != "exhaustive":
+            response_moves = response_moves[: self.MCTS_DEEP_CHILD_TOP_K]
         if not response_moves:
             return []
 
@@ -8825,11 +9676,15 @@ class DaVinciDecisionEngine:
                     behavior_map_hypothesis=response_move.get(
                         "_post_hit_behavior_map_hypothesis"
                     ),
-                    rollout_depth_remaining=max(
-                        0,
-                        int(node.rollout_depth_remaining) - 1,
+                    rollout_depth_remaining=self._full_game_search_horizon(
+                        response_game_state,
+                        fallback_depth=max(
+                            0,
+                            int(node.rollout_depth_remaining) - 1,
+                        ),
                     ),
                     perspective_sign=(-node.perspective_sign),
+                    search_mode=node.search_mode,
                 )
             )
         return response_children
@@ -8894,13 +9749,29 @@ class DaVinciDecisionEngine:
         miss_prior = clamp(1.0 - hit_prior, 0.05, 0.95)
         deeper_success_matrix = node.success_matrix or move.get("_success_matrix")
         deeper_behavior_model = node.behavior_model
-        deeper_guess_signals = node.guess_signals_by_player
-        deeper_guidance_profile = node.behavior_guidance_profile
-        deeper_game_state = node.game_state
-        deeper_behavior_map_hypothesis = node.behavior_map_hypothesis
-        deeper_hidden_index_by_player = node.hidden_index_by_player
+        hit_context = self._build_hit_search_context(node)
+        deeper_guess_signals = hit_context.get(
+            "guess_signals_by_player",
+            node.guess_signals_by_player,
+        )
+        deeper_guidance_profile = hit_context.get(
+            "behavior_guidance_profile",
+            node.behavior_guidance_profile,
+        )
+        deeper_game_state = hit_context.get("game_state", node.game_state)
+        deeper_behavior_map_hypothesis = hit_context.get(
+            "behavior_map_hypothesis",
+            node.behavior_map_hypothesis,
+        )
+        deeper_success_matrix = hit_context.get("success_matrix", deeper_success_matrix)
+        deeper_hidden_index_by_player = self._hidden_index_by_player_from_matrix(
+            deeper_success_matrix or {}
+        ) if deeper_success_matrix else node.hidden_index_by_player
         deeper_my_hidden_count = node.my_hidden_count
-        deeper_depth_remaining = max(0, int(node.rollout_depth_remaining))
+        deeper_depth_remaining = self._full_game_search_horizon(
+            deeper_game_state,
+            fallback_depth=max(0, int(node.rollout_depth_remaining)),
+        )
 
         future_children: List[SearchTreeNode] = []
         if (
@@ -8922,7 +9793,8 @@ class DaVinciDecisionEngine:
                 blocked_slots=set(),
                 rollout_depth=0,
             )
-            future_moves = future_moves[: self.MCTS_DEEP_CHILD_TOP_K]
+            if node.search_mode != "exhaustive":
+                future_moves = future_moves[: self.MCTS_DEEP_CHILD_TOP_K]
             if future_moves:
                 total_child_prior = sum(
                     self._mcts_move_prior(child_move)
@@ -8975,11 +9847,15 @@ class DaVinciDecisionEngine:
                                 "_post_hit_behavior_map_hypothesis",
                                 deeper_behavior_map_hypothesis,
                             ),
-                            rollout_depth_remaining=max(
-                                0,
-                                deeper_depth_remaining - 1,
+                            rollout_depth_remaining=self._full_game_search_horizon(
+                                deeper_game_state,
+                                fallback_depth=max(
+                                    0,
+                                    deeper_depth_remaining - 1,
+                                ),
                             ),
                             perspective_sign=perspective_sign,
+                            search_mode=node.search_mode,
                         )
                     )
 
@@ -9041,24 +9917,13 @@ class DaVinciDecisionEngine:
         )
         return mean_value + exploration_bonus
 
-    def _run_post_hit_mcts_search(
+    def _build_post_hit_search_root(
         self,
         *,
         tree_moves: Sequence[Dict[str, Any]],
-        stop_score: float,
-    ) -> Dict[str, Any]:
-        if not tree_moves:
-            return {
-                "value": 0.0,
-                "margin": 0.0,
-                "support_ratio": 0.0,
-                "signal": 0.0,
-                "peak_value": 0.0,
-                "max_depth": 0.0,
-                "node_count": 0.0,
-            }
-
-        root = SearchTreeNode(
+        search_mode: str,
+    ) -> SearchTreeNode:
+        return SearchTreeNode(
             label="root",
             prior=1.0,
             rollout_value=0.0,
@@ -9081,28 +9946,264 @@ class DaVinciDecisionEngine:
                     if move.get("_success_matrix")
                     else None,
                     behavior_model=move.get("_mcts_behavior_model"),
-                    guess_signals_by_player=move.get("_post_hit_guess_signals_by_player"),
+                    guess_signals_by_player=move.get(
+                        "_mcts_current_guess_signals_by_player",
+                        move.get("_post_hit_guess_signals_by_player"),
+                    ),
                     acting_player_id=move.get("_mcts_acting_player_id"),
                     behavior_guidance_profile=move.get(
-                        "_post_hit_behavior_guidance_profile"
+                        "_mcts_current_behavior_guidance_profile",
+                        move.get("_post_hit_behavior_guidance_profile"),
                     ),
-                    game_state=move.get("_post_hit_game_state"),
+                    game_state=move.get(
+                        "_mcts_current_game_state",
+                        move.get("_post_hit_game_state"),
+                    ),
                     behavior_map_hypothesis=move.get(
-                        "_post_hit_behavior_map_hypothesis"
+                        "_mcts_current_behavior_map_hypothesis",
+                        move.get("_post_hit_behavior_map_hypothesis"),
                     ),
-                    rollout_depth_remaining=int(
-                        move.get("_mcts_rollout_depth_remaining", 0)
+                    rollout_depth_remaining=self._full_game_search_horizon(
+                        move.get(
+                            "_mcts_current_game_state",
+                            move.get("_post_hit_game_state"),
+                        ),
+                        fallback_depth=int(
+                            move.get("_mcts_rollout_depth_remaining", 0)
+                        ),
                     ),
                     perspective_sign=1.0,
+                    search_mode=search_mode,
                 )
                 for index, move in enumerate(tree_moves)
             ],
         )
 
+    def _rollup_exhaustive_tree_search(
+        self,
+        node: SearchTreeNode,
+        *,
+        stop_score: float,
+    ) -> Dict[str, float]:
+        if not node.is_terminal and node.children is None:
+            self._expand_post_hit_mcts_node(node, stop_score=stop_score)
+
+        if node.is_terminal or not node.children:
+            node_value = float(node.rollout_value)
+            return {
+                "value": node_value,
+                "support_ratio": 1.0 if node_value > stop_score else 0.0,
+                "peak_value": node_value,
+                "max_depth": 0.0,
+                "node_count": 1.0,
+                "leaf_count": 1.0,
+            }
+
+        child_rollups = [
+            self._rollup_exhaustive_tree_search(
+                child,
+                stop_score=stop_score,
+            )
+            for child in node.children
+        ]
+        total_prior = sum(max(1e-9, float(child.prior)) for child in node.children)
+        if total_prior <= 0.0:
+            total_prior = float(len(node.children))
+        value = sum(
+            max(1e-9, float(child.prior)) * rollup["value"]
+            for child, rollup in zip(node.children, child_rollups)
+        ) / total_prior
+        support_ratio = sum(
+            max(1e-9, float(child.prior)) * rollup["support_ratio"]
+            for child, rollup in zip(node.children, child_rollups)
+        ) / total_prior
+        peak_value = max(rollup["peak_value"] for rollup in child_rollups)
+        max_depth = 1.0 + max(rollup["max_depth"] for rollup in child_rollups)
+        node_count = 1.0 + sum(rollup["node_count"] for rollup in child_rollups)
+        leaf_count = sum(rollup["leaf_count"] for rollup in child_rollups)
+        return {
+            "value": value,
+            "support_ratio": support_ratio,
+            "peak_value": peak_value,
+            "max_depth": max_depth,
+            "node_count": node_count,
+            "leaf_count": leaf_count,
+        }
+
+    def _run_post_hit_exhaustive_search(
+        self,
+        *,
+        tree_moves: Sequence[Dict[str, Any]],
+        stop_score: float,
+    ) -> Dict[str, Any]:
+        if not tree_moves:
+            return {
+                "value": 0.0,
+                "margin": 0.0,
+                "support_ratio": 0.0,
+                "signal": 0.0,
+                "peak_value": 0.0,
+                "max_depth": 0.0,
+                "node_count": 0.0,
+                "root_children": [],
+                "search_mode": "exhaustive",
+                "simulation_budget": 0.0,
+            }
+
+        root = self._build_post_hit_search_root(
+            tree_moves=tree_moves,
+            search_mode="exhaustive",
+        )
+        root_children = root.children or []
+        total_root_prior = sum(max(1e-9, float(child.prior)) for child in root_children)
+        if total_root_prior <= 0.0:
+            total_root_prior = float(len(root_children))
+
+        root_child_summaries: List[Dict[str, Any]] = []
+        aggregated_value = 0.0
+        aggregated_support_ratio = 0.0
+        peak_value = 0.0
+        max_depth = 0.0
+        total_node_count = 1.0
+        for child in root_children:
+            child_rollup = self._rollup_exhaustive_tree_search(
+                child,
+                stop_score=stop_score,
+            )
+            child_weight = max(1e-9, float(child.prior))
+            aggregated_value += child_weight * child_rollup["value"]
+            aggregated_support_ratio += child_weight * child_rollup["support_ratio"]
+            peak_value = max(peak_value, child_rollup["peak_value"])
+            max_depth = max(max_depth, 1.0 + child_rollup["max_depth"])
+            total_node_count += child_rollup["node_count"]
+            child_margin = max(0.0, child_rollup["value"] - stop_score)
+            child_signal = clamp(
+                (0.42 * child_rollup["support_ratio"])
+                + (
+                    0.34
+                    * clamp(
+                        child_margin
+                        / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                        0.0,
+                        1.0,
+                    )
+                )
+                + (
+                    0.24
+                    * clamp(
+                        max(0.0, child_rollup["peak_value"] - stop_score)
+                        / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                        0.0,
+                        1.0,
+                    )
+                ),
+                0.0,
+                1.0,
+            )
+            root_child_summaries.append(
+                {
+                    "move_key": self._move_identity_key(child.move or {}),
+                    "value": child_rollup["value"],
+                    "margin": child_margin,
+                    "support_ratio": child_rollup["support_ratio"],
+                    "signal": child_signal,
+                    "visit_share": child_weight / total_root_prior,
+                    "peak_value": child_rollup["peak_value"],
+                    "visits": child_rollup["leaf_count"],
+                }
+            )
+
+        value = aggregated_value / total_root_prior
+        support_ratio = aggregated_support_ratio / total_root_prior
+        margin = max(0.0, value - stop_score)
+        best_child_margin = max(
+            (summary["margin"] for summary in root_child_summaries),
+            default=0.0,
+        )
+        signal = clamp(
+            (0.34 * support_ratio)
+            + (
+                0.28
+                * clamp(
+                    margin / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                    0.0,
+                    1.0,
+                )
+            )
+            + (
+                0.22
+                * clamp(
+                    max(0.0, peak_value - stop_score)
+                    / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                    0.0,
+                    1.0,
+                )
+            )
+            + (
+                0.16
+                * clamp(
+                    best_child_margin / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                    0.0,
+                    1.0,
+                )
+            ),
+            0.0,
+            1.0,
+        )
+        return {
+            "value": value,
+            "margin": margin,
+            "support_ratio": support_ratio,
+            "signal": signal,
+            "peak_value": peak_value,
+            "max_depth": max_depth,
+            "node_count": total_node_count,
+            "root_children": root_child_summaries,
+            "search_mode": "exhaustive",
+            "simulation_budget": float(total_node_count),
+        }
+
+    def _run_hybrid_full_game_search(
+        self,
+        *,
+        tree_moves: Sequence[Dict[str, Any]],
+        stop_score: float,
+    ) -> Dict[str, Any]:
+        return self._run_post_hit_exhaustive_search(
+            tree_moves=tree_moves,
+            stop_score=stop_score,
+        )
+
+    def _run_post_hit_mcts_search(
+        self,
+        *,
+        tree_moves: Sequence[Dict[str, Any]],
+        stop_score: float,
+    ) -> Dict[str, Any]:
+        if not tree_moves:
+            return {
+                "value": 0.0,
+                "margin": 0.0,
+                "support_ratio": 0.0,
+                "signal": 0.0,
+                "peak_value": 0.0,
+                "max_depth": 0.0,
+                "node_count": 0.0,
+                "root_children": [],
+                "search_mode": "mcts",
+                "simulation_budget": 0.0,
+            }
+
+        root = self._build_post_hit_search_root(
+            tree_moves=tree_moves,
+            search_mode="mcts",
+        )
+        simulation_budget = self._adaptive_mcts_simulation_budget(tree_moves)
+
         positive_terminal_visits = 0.0
         total_terminal_visits = 0.0
         max_depth = 0.0
-        for _ in range(self.MCTS_SIMULATION_COUNT):
+        for _ in range(simulation_budget):
             path = [root]
             current = root
             depth = 0.0
@@ -9131,6 +10232,8 @@ class DaVinciDecisionEngine:
                 node.visits += 1.0
                 node.value_sum += rollout_value
                 node.peak_value = max(node.peak_value, rollout_value)
+                if rollout_value > stop_score:
+                    node.positive_value_count += 1.0
             total_terminal_visits += 1.0
             if rollout_value > stop_score:
                 positive_terminal_visits += 1.0
@@ -9194,6 +10297,58 @@ class DaVinciDecisionEngine:
             0.0,
             1.0,
         )
+        root_child_summaries = []
+        for child in root_children:
+            child_value = (
+                (child.value_sum / child.visits)
+                if child.visits > 0.0
+                else child.rollout_value
+            )
+            child_support_ratio = (
+                child.positive_value_count / child.visits
+                if child.visits > 0.0
+                else 0.0
+            )
+            child_margin = max(0.0, child_value - stop_score)
+            child_signal = clamp(
+                (0.42 * child_support_ratio)
+                + (
+                    0.34
+                    * clamp(
+                        child_margin
+                        / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                        0.0,
+                        1.0,
+                    )
+                )
+                + (
+                    0.24
+                    * clamp(
+                        max(0.0, (child.peak_value or child_value) - stop_score)
+                        / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+                        0.0,
+                        1.0,
+                    )
+                ),
+                0.0,
+                1.0,
+            )
+            root_child_summaries.append(
+                {
+                    "move_key": self._move_identity_key(child.move or {}),
+                    "value": child_value,
+                    "margin": child_margin,
+                    "support_ratio": child_support_ratio,
+                    "signal": child_signal,
+                    "visit_share": (
+                        child.visits / total_move_visits
+                        if total_move_visits > 0.0
+                        else 0.0
+                    ),
+                    "peak_value": float(child.peak_value or child_value),
+                    "visits": float(child.visits),
+                }
+            )
         return {
             "value": value,
             "margin": margin,
@@ -9202,6 +10357,9 @@ class DaVinciDecisionEngine:
             "peak_value": peak_value,
             "max_depth": max_depth,
             "node_count": float(self._search_tree_node_count(root)),
+            "root_children": root_child_summaries,
+            "search_mode": "mcts",
+            "simulation_budget": float(simulation_budget),
         }
 
     def _evaluate_post_hit_rollout(
@@ -9325,6 +10483,8 @@ class DaVinciDecisionEngine:
         mcts_signal = 0.0
         mcts_node_count = 0.0
         mcts_max_depth = 0.0
+        mcts_search_mode = "mcts"
+        mcts_simulation_budget = 0.0
         expectimax_value = 0.0
         expectimax_margin = 0.0
         expectimax_support_ratio = 0.0
@@ -9371,6 +10531,7 @@ class DaVinciDecisionEngine:
             if combined_branch_value > 0.0:
                 branch_positive_count += 1.0
         tree_moves = top_k_moves[: self.TREE_SEARCH_TOP_K]
+        full_search_moves = list(next_moves)
         for move in tree_moves:
             immediate_tree_value = float(
                 move.get(
@@ -9499,9 +10660,9 @@ class DaVinciDecisionEngine:
                 0.0,
                 1.0,
             )
-        if tree_moves:
-            mcts_search = self._run_post_hit_mcts_search(
-                tree_moves=tree_moves,
+        if full_search_moves:
+            mcts_search = self._run_hybrid_full_game_search(
+                tree_moves=full_search_moves,
                 stop_score=stop_score,
             )
             mcts_value = float(mcts_search["value"])
@@ -9510,6 +10671,10 @@ class DaVinciDecisionEngine:
             mcts_signal = float(mcts_search["signal"])
             mcts_node_count = float(mcts_search["node_count"])
             mcts_max_depth = float(mcts_search["max_depth"])
+            mcts_search_mode = str(mcts_search.get("search_mode", "mcts"))
+            mcts_simulation_budget = float(
+                mcts_search.get("simulation_budget", 0.0)
+            )
         if expectimax_candidates:
             if expectimax_weight_sum > 0.0:
                 expectimax_value /= expectimax_weight_sum
@@ -9605,6 +10770,8 @@ class DaVinciDecisionEngine:
             "mcts_signal": mcts_signal,
             "mcts_node_count": mcts_node_count,
             "mcts_max_depth": mcts_max_depth,
+            "mcts_search_mode": mcts_search_mode,
+            "mcts_simulation_budget": mcts_simulation_budget,
             "expectimax_value": expectimax_value,
             "expectimax_margin": expectimax_margin,
             "expectimax_support_ratio": expectimax_support_ratio,
@@ -10711,6 +11878,11 @@ class DaVinciDecisionEngine:
             * float(best_move.get("post_hit_mcts_signal", 0.0))
         )
         continue_score += mcts_support
+        global_mcts_support = (
+            self.STOP_MARGIN_MCTS
+            * float(best_move.get("global_mcts_signal", 0.0))
+        )
+        continue_score += global_mcts_support
         post_hit_behavior_support_breakdown = self._post_hit_behavior_support_breakdown(
             best_move=best_move,
         )
@@ -10741,6 +11913,11 @@ class DaVinciDecisionEngine:
             1.0 - (0.25 * guard_relief_signal)
         )
         epsilon = self.EPSILON
+        margin_relief_signal = clamp(
+            continue_margin / self.DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE,
+            0.0,
+            1.0,
+        )
 
         low_confidence_guard_signal = 0.0
         if my_hidden_count <= 2:
@@ -10753,11 +11930,6 @@ class DaVinciDecisionEngine:
                 / 0.20,
                 0.0,
                 1.0,
-            ) * clamp(
-                (low_confidence_guard_margin - continue_margin)
-                / max(epsilon, low_confidence_guard_margin),
-                0.0,
-                1.0,
             )
         weak_edge_guard_signal = 0.0
         if second_move is not None:
@@ -10766,8 +11938,16 @@ class DaVinciDecisionEngine:
                 0.0,
                 1.0,
             ) * clamp(
-                (weak_edge_guard_margin - continue_margin)
-                / max(epsilon, weak_edge_guard_margin),
+                (
+                    second_move.get("strategy_objective", second_move["expected_value"])
+                    / max(
+                        epsilon,
+                        best_move.get(
+                            "strategy_objective",
+                            best_move["expected_value"],
+                        ),
+                    )
+                ),
                 0.0,
                 1.0,
             )
@@ -10785,25 +11965,75 @@ class DaVinciDecisionEngine:
             ),
             0.0,
             1.0,
-        ) * clamp(
-            (self_exposure_guard_margin - continue_margin)
-            / max(epsilon, self_exposure_guard_margin),
-            0.0,
-            1.0,
         )
-        low_confidence_guard = low_confidence_guard_signal >= 0.55
-        weak_edge_guard = weak_edge_guard_signal >= 0.55
-        self_exposure_guard = self_exposure_guard_signal >= 0.55
+        guard_stop_logit = (
+            self.GUARD_POLICY_BIAS
+            + (
+                self.GUARD_POLICY_LOW_CONFIDENCE_WEIGHT
+                * low_confidence_guard_signal
+            )
+            + (
+                self.GUARD_POLICY_WEAK_EDGE_WEIGHT
+                * weak_edge_guard_signal
+            )
+            + (
+                self.GUARD_POLICY_SELF_EXPOSURE_WEIGHT
+                * self_exposure_guard_signal
+            )
+            - (
+                self.GUARD_POLICY_MARGIN_RELIEF_WEIGHT
+                * margin_relief_signal
+            )
+            - (
+                self.GUARD_POLICY_SEARCH_RELIEF_WEIGHT
+                * guard_relief_signal
+            )
+        )
+        guard_stop_probability = 1.0 / (1.0 + exp(-guard_stop_logit))
+        guard_continue_probability = 1.0 - guard_stop_probability
+        low_confidence_guard = (
+            low_confidence_guard_signal >= 0.55 and guard_stop_probability >= 0.50
+        )
+        weak_edge_guard = (
+            weak_edge_guard_signal >= 0.55 and guard_stop_probability >= 0.50
+        )
+        self_exposure_guard = (
+            self_exposure_guard_signal >= 0.55 and guard_stop_probability >= 0.50
+        )
 
-        low_confidence_guard_boost = 0.18 * low_confidence_guard_signal
-        weak_edge_guard_boost = 0.14 * weak_edge_guard_signal
-        self_exposure_guard_boost = 0.20 * self_exposure_guard_signal
+        guard_policy_stop_boost = (
+            self.STOP_MARGIN_GUARD_POLICY_SCALE * guard_stop_probability
+        )
+        total_guard_signal = (
+            low_confidence_guard_signal
+            + weak_edge_guard_signal
+            + self_exposure_guard_signal
+        )
+        low_confidence_guard_boost = (
+            guard_policy_stop_boost
+            * low_confidence_guard_signal
+            / max(epsilon, total_guard_signal)
+            if total_guard_signal > 0.0
+            else 0.0
+        )
+        weak_edge_guard_boost = (
+            guard_policy_stop_boost
+            * weak_edge_guard_signal
+            / max(epsilon, total_guard_signal)
+            if total_guard_signal > 0.0
+            else 0.0
+        )
+        self_exposure_guard_boost = (
+            guard_policy_stop_boost
+            * self_exposure_guard_signal
+            / max(epsilon, total_guard_signal)
+            if total_guard_signal > 0.0
+            else 0.0
+        )
         continue_strategy_objective = continue_score
         stop_strategy_objective = (
             stop_score
-            + low_confidence_guard_boost
-            + weak_edge_guard_boost
-            + self_exposure_guard_boost
+            + guard_policy_stop_boost
         )
         strategy_action_margin = (
             continue_strategy_objective - stop_strategy_objective
@@ -10910,9 +12140,15 @@ class DaVinciDecisionEngine:
                 "branch_search_support": branch_search_support,
                 "expectimax_support": expectimax_support,
                 "mcts_support": mcts_support,
+                "global_mcts_support": global_mcts_support,
                 "low_confidence_guard_boost": low_confidence_guard_boost,
                 "weak_edge_guard_boost": weak_edge_guard_boost,
                 "self_exposure_guard_boost": self_exposure_guard_boost,
+                "guard_policy_stop_boost": guard_policy_stop_boost,
+                "guard_stop_logit": guard_stop_logit,
+                "guard_stop_probability": guard_stop_probability,
+                "guard_continue_probability": guard_continue_probability,
+                "margin_relief_signal": margin_relief_signal,
             },
         }
 
@@ -11327,6 +12563,7 @@ class DaVinciDecisionEngine:
                     float(best_move.get("post_hit_expectimax_signal", 0.0)),
                     float(best_move.get("post_hit_mcts_signal", 0.0)),
                     float(best_move.get("post_hit_branch_search_signal", 0.0)),
+                    float(best_move.get("global_mcts_signal", 0.0)),
                 ),
                 0.0,
                 1.0,
@@ -11339,8 +12576,25 @@ class DaVinciDecisionEngine:
                     / max(
                         1.0,
                         float(
-                            self.MCTS_SIMULATION_COUNT
+                            best_move.get(
+                                "post_hit_mcts_simulation_budget",
+                                self.MCTS_SIMULATION_COUNT,
+                            )
                             * self.MCTS_TOP_K
+                            * self.MCTS_DEEP_CHILD_TOP_K
+                        ),
+                    ),
+                    float(best_move.get("global_mcts_max_depth", 0.0))
+                    / max(1.0, float(self.DEEP_ROLLOUT_DEPTH + 1)),
+                    float(best_move.get("global_mcts_node_count", 0.0))
+                    / max(
+                        1.0,
+                        float(
+                            best_move.get(
+                                "global_mcts_simulation_budget",
+                                self.MCTS_SIMULATION_COUNT,
+                            )
+                            * self.GLOBAL_MCTS_TOP_K
                             * self.MCTS_DEEP_CHILD_TOP_K
                         ),
                     ),
@@ -11715,6 +12969,8 @@ class GameController:
 
     BEHAVIOR_DEBUG_TOP_K = 3
     DRAW_ROLLOUT_SAMPLE_LIMIT = 4
+    DRAW_ROLLOUT_EXACT_ENUMERATION_LIMIT = 8
+    DRAW_ROLLOUT_ENDGAME_ENUMERATION_THRESHOLD = 2
     DRAW_ROLLOUT_VALUE_REFERENCE = 8.0
     DRAW_ROLLOUT_EDGE_WINDOW = 0.80
     DRAW_ROLLOUT_CONTINUATION_VALUE_REFERENCE = 3.0
@@ -12045,7 +13301,17 @@ class GameController:
             (card for card in self.inference_engine.available_cards if card[0] == color),
             key=card_sort_key,
         )
-        if len(cards) <= self.DRAW_ROLLOUT_SAMPLE_LIMIT:
+        exact_endgame = (
+            self.game_state.my_hidden_count()
+            <= self.DRAW_ROLLOUT_ENDGAME_ENUMERATION_THRESHOLD
+            or len(self.game_state.target_hidden_slots())
+            <= self.DRAW_ROLLOUT_ENDGAME_ENUMERATION_THRESHOLD
+        )
+        if (
+            exact_endgame
+            or len(cards) <= self.DRAW_ROLLOUT_SAMPLE_LIMIT
+            or len(cards) <= self.DRAW_ROLLOUT_EXACT_ENUMERATION_LIMIT
+        ):
             return cards
 
         sampled_indices = {

@@ -1,0 +1,41 @@
+name: nightly-benchmark
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run nightly benchmark
+        shell: bash
+        run: |
+          mkdir -p nightly-benchmark
+          python backend/scripts/run_nightly_long_horizon_benchmark.py > nightly-benchmark/benchmark.json
+          cp score/评分 nightly-benchmark/score_snapshot.txt
+
+      - name: Refresh parametric weights from trajectory corpus
+        shell: bash
+        run: |
+          python backend/scripts/train_parametric_behavior_model.py > nightly-benchmark/parametric_weights.json
+
+      - name: Upload nightly benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-benchmark
+          path: nightly-benchmark/

@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -13,11 +14,27 @@ from tests.fixed_decision_cases import (
     assert_stop_summary,
     run_decision_case,
 )
-from app.core.engine import BehavioralLikelihoodModel, DaVinciDecisionEngine
+from app.core.engine import BehavioralLikelihoodModel, DaVinciDecisionEngine, GameController
 from app.core.state import CardSlot, GameState, GuessAction, PlayerState
 
 
 class ContinuationLikelihoodTests(unittest.TestCase):
+    def test_behavior_model_loads_trained_parametric_weights(self):
+        model = BehavioralLikelihoodModel()
+        self.assertTrue(str(model.parametric_weights_source).endswith("parametric_weights.json"))
+        self.assertNotEqual(
+            model.PARAMETRIC_GENERATIVE_FEATURE_WEIGHTS["value_selection"],
+            BehavioralLikelihoodModel.PARAMETRIC_GENERATIVE_FEATURE_WEIGHTS["value_selection"],
+        )
+
+    def test_trained_parametric_weights_metadata_uses_larger_corpus(self):
+        weights_path = ROOT / "app" / "core" / "parametric_weights.json"
+        payload = json.loads(weights_path.read_text(encoding="utf-8"))
+        metadata = payload["metadata"]
+        self.assertGreaterEqual(metadata["sample_count"], 100)
+        self.assertGreaterEqual(metadata["self_play_sample_count"], 80)
+        self.assertGreaterEqual(metadata["self_play_seed_count"], 8)
+
     def test_continue_likelihood_prefers_tighter_success_world(self):
         model = BehavioralLikelihoodModel()
         game_state = GameState(
@@ -241,6 +258,84 @@ class UnifiedObjectiveAndSearchTests(unittest.TestCase):
 
         self.assertGreaterEqual(rollout["mcts_max_depth"], 2.0)
         self.assertGreaterEqual(rollout["mcts_node_count"], 5.0)
+
+    def test_post_hit_search_uses_exhaustive_mode_for_small_horizon(self):
+        engine = DaVinciDecisionEngine()
+        behavior_model = BehavioralLikelihoodModel()
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=7, is_revealed=False, is_newly_drawn=True),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+        success_matrix = {
+            "opp": {
+                1: {("W", 5): 0.73, ("W", 6): 0.27},
+            }
+        }
+
+        rollout = engine._evaluate_post_hit_rollout(
+            success_matrix=success_matrix,
+            my_hidden_count=2,
+            behavior_model=behavior_model,
+            guess_signals_by_player=behavior_model.build_guess_signals(game_state),
+            acting_player_id="me",
+            behavior_guidance_profile=None,
+            game_state=game_state,
+            target_player_id="opp",
+            target_slot_index=1,
+            guessed_card=("W", 5),
+            rollout_depth=2,
+        )
+
+        self.assertEqual(rollout["mcts_search_mode"], "exhaustive")
+        self.assertGreaterEqual(rollout["mcts_simulation_budget"], rollout["mcts_node_count"])
+
+    def test_endgame_draw_rollout_uses_exact_enumeration(self):
+        game_state = GameState(
+            self_player_id="me",
+            target_player_id="opp",
+            players={
+                "me": PlayerState(
+                    player_id="me",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=2, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=7, is_revealed=False),
+                    ],
+                ),
+                "opp": PlayerState(
+                    player_id="opp",
+                    slots=[
+                        CardSlot(slot_index=0, color="B", value=1, is_revealed=True),
+                        CardSlot(slot_index=1, color="W", value=None, is_revealed=False),
+                    ],
+                ),
+            },
+            actions=[],
+        )
+
+        controller = GameController(game_state)
+        exact_black_cards = controller._representative_draw_cards("B")
+        available_black_cards = {
+            card for card in controller.inference_engine.available_cards if card[0] == "B"
+        }
+
+        self.assertEqual(set(exact_black_cards), available_black_cards)
 
     def test_continue_likelihood_rewards_secondary_attackable_followup(self):
         model = BehavioralLikelihoodModel()

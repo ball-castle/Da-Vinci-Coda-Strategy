@@ -1,6 +1,10 @@
-import React from 'react';
+interface AICenterProps {
+  aiAnalysis: any;
+  isAILoading: boolean;
+  opponentNames: Record<string, string>;
+}
 
-export function AICenter() {
+export function AICenter({ aiAnalysis, isAILoading, opponentNames }: AICenterProps) {
   return (
     <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-lg flex flex-col h-full overflow-hidden">
       <div className="p-4 bg-gray-900 border-b border-gray-700">
@@ -28,41 +32,66 @@ export function AICenter() {
 
         <hr className="border-gray-700" />
 
-        {/* Module B: Attack Advisor */}
-        <div className="space-y-2">
-          <button className="w-full py-2 px-4 bg-purple-600 hover:bg-purple-700 text-white rounded-lg shadow transition font-semibold">
-            [请求猜牌建议]
-          </button>
-          <div className="p-4 bg-gradient-to-br from-gray-800 to-gray-700 rounded-lg border border-indigo-500/30 shadow-inner">
-            <h3 className="text-xs font-bold text-indigo-300 mb-2 uppercase tracking-wider">🎯 最佳攻击目标</h3>
-            <ul className="text-sm text-gray-200 space-y-1">
-              <li>对象: <span className="font-semibold text-white">Player A</span></li>
-              <li>槽位: <span className="font-semibold text-white">左数第3张 (暗黑)</span></li>
-              <li className="mt-1">提议猜测: <span className="font-bold text-red-400 text-lg ml-1">黑 8</span></li>
-            </ul>
-            <div className="mt-3">
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-gray-400">预测置信度</span>
-                <span className="text-green-400 font-bold">90%</span>
-              </div>
-              <div className="w-full bg-gray-600 rounded-full h-1.5 overflow-hidden">
-                <div className="bg-green-400 h-1.5 rounded-full" style={{ width: '90%' }}></div>
+        {/* Module B: Attack Advisor & Continuation */}
+        <div className="space-y-4">
+          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center justify-between">
+            <span>⚔️ 攻击与防守研判</span>
+            {isAILoading && <span className="text-blue-400 text-[10px] animate-pulse">Computing MCTS...</span>}
+          </h3>
+
+          {!aiAnalysis && !isAILoading && (
+            <div className="p-4 bg-gray-800 rounded-lg text-sm text-gray-500 text-center italic border border-gray-700">
+              录入任意动作以触发分析...
+            </div>
+          )}
+
+          {aiAnalysis?.attackTarget && (
+            <div className="p-4 bg-gradient-to-br from-gray-800 to-gray-700 rounded-lg border border-indigo-500/50 shadow-inner relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-16 h-16 bg-indigo-500/10 blur-2xl"></div>
+              <h4 className="text-xs font-bold text-indigo-300 mb-3 uppercase tracking-wider flex items-center gap-2">
+                <span>🎯 最佳攻击目标</span>
+                <span className="px-1.5 py-0.5 bg-indigo-500/20 text-indigo-300 rounded text-[10px]">Highest Value</span>
+              </h4>
+              <ul className="text-sm text-gray-200 space-y-1.5 mb-4">
+                <li>对象: <span className="font-semibold text-white">{opponentNames[aiAnalysis.attackTarget.playerId] || aiAnalysis.attackTarget.playerId}</span></li>
+                <li>槽位: <span className="font-semibold text-white">第 {aiAnalysis.attackTarget.tileIndex + 1} 张盲牌</span></li>
+                <li className="mt-2 text-base">预测: <span className="font-bold text-red-400 text-lg ml-1">{aiAnalysis.attackTarget.expectedNumber}</span></li>
+              </ul>
+              
+              <div className="mt-auto">
+                <div className="flex justify-between text-[10px] mb-1.5 uppercase font-bold tracking-wider">
+                  <span className="text-gray-400">击杀置信度</span>
+                  <span className="text-green-400">{(aiAnalysis.attackTarget.confidence * 100).toFixed(0)}%</span>
+                </div>
+                <div className="w-full bg-gray-900 rounded-full h-2 overflow-hidden border border-gray-700">
+                  <div className="bg-gradient-to-r from-green-500 to-green-400 h-2 rounded-full transition-all duration-1000" style={{ width: `${aiAnalysis.attackTarget.confidence * 100}%` }}></div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
+          )}
 
-        <hr className="border-gray-700" />
-
-        {/* Module C: Continuation Analyzer */}
-        <div className="space-y-2">
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">⚠️ 连击风险研判</h3>
-          <div className="p-3 bg-red-900/20 rounded-lg border border-red-800/50 transition">
-            <h4 className="text-base font-bold text-red-400 text-center mb-1">见好就收，终止回合</h4>
-            <p className="text-xs text-gray-300 text-center">
-              后续安全攻击确信度仅为 42%，猜错暴露新牌代价过高。
-            </p>
-          </div>
+          {aiAnalysis?.recommendedAction === 'STOP' && (
+            <div className="p-3 bg-red-900/20 rounded-lg border border-red-800/50 transition relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-16 h-16 bg-red-500/10 blur-2xl"></div>
+              <h4 className="text-base font-bold text-red-400 text-center mb-1 flex justify-center items-center gap-2">
+                <span>🛑</span> 触发防守边界：建议停手
+              </h4>
+              <p className="text-xs text-red-300/80 text-center mt-2 leading-relaxed">
+                {aiAnalysis.reasoning}
+              </p>
+            </div>
+          )}
+          
+          {aiAnalysis?.recommendedAction === 'GUESS' && (
+            <div className="p-3 bg-green-900/20 rounded-lg border border-green-800/50 transition">
+              <h4 className="text-sm font-bold text-green-400 text-center flex justify-center items-center gap-2">
+                <span>⚡</span> 继续攻击 (Continue)
+              </h4>
+              <p className="text-xs text-green-300/80 text-center mt-1">
+                收益期望仍为正，存在明显高置信度目标。
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

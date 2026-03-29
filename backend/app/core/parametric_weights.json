@@ -1,0 +1,55 @@
+{
+  "metadata": {
+    "training_source": "regression_cases + large_self_play_trajectory_corpus",
+    "sample_count": 205,
+    "regression_sample_count": 16,
+    "self_play_sample_count": 189,
+    "self_play_seed_count": 12,
+    "self_play_games_per_seed": 5,
+    "external_trace_sample_count": 0,
+    "external_trace_file_count": 0
+  },
+  "generative": {
+    "bias": -0.18,
+    "weights": {
+      "player_selection": 0.5604400047353743,
+      "slot_selection": 0.7120384008688975,
+      "value_selection": 1.2374849859409631,
+      "slot_fit": 0.5559376975911483,
+      "continue_fit": 0.7274302806024417,
+      "attackability": 0.527328386867777,
+      "attack_window": 0.4,
+      "public_bridge": 0.22,
+      "target_chain": 0.24,
+      "finish_chain": 0.28,
+      "global_propagation": 0.2,
+      "same_player_transition": 0.14767523297046217,
+      "same_slot_transition": 0.21725108991216271,
+      "continue_choice": 1.181524190419355,
+      "conditional_probability": 0.8491786308824659,
+      "prior_probability": 0.382869901481034,
+      "structural_probability": 0.8354829253536747,
+      "sequence_probability": 0.5296966409278759,
+      "sequence_profile_stability": 0.22,
+      "sequence_profile_density": 0.14,
+      "base_probability": 0.779273114050244
+    }
+  },
+  "posterior": {
+    "bias": -0.1,
+    "weights": {
+      "player_selection": 0.36971217800256617,
+      "slot_selection": 0.43216323844332083,
+      "value_selection": 0.9024109146888015,
+      "continue_fit": 0.6893131245255775,
+      "sequence_probability": 0.383159928835722,
+      "base_probability": 0.6433480804097436,
+      "posterior_structured_fit": 1.2151766320916852,
+      "posterior_contextual_prior": 0.4814650537753816,
+      "posterior_trajectory_prior": 0.6904277810515012,
+      "posterior_sequence_prior": 0.4551885510959205,
+      "sequence_profile_stability": 0.18,
+      "sequence_profile_density": 0.12
+    }
+  }
+}
