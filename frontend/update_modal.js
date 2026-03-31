@@ -1,0 +1,6 @@
+const fs = require('fs');
+let c = fs.readFileSync('src/components/TileEditorModal.tsx', 'utf8');
+c = c.replace('<div className=\"mt-8 flex justify-end gap-3\">', '<div className=\"mt-8 flex justify-between gap-3\">\n          <div className=\"flex gap-2\">\n            <button onClick={() => onMove(-1)} title=\"Move Left\" className=\"px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded shadow transition\">⬅️</button>\n            <button onClick={() => onMove(1)} title=\"Move Right\" className=\"px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded shadow transition\">➡️</button>\n          </div>\n          <div className=\"flex gap-3\">');
+c = c.replace('</button>\n        </div>\n      </div>', '</button>\n          </div>\n        </div>\n      </div>');
+fs.writeFileSync('src/components/TileEditorModal.tsx', c);
+

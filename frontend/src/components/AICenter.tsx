@@ -77,7 +77,7 @@ export function AICenter({ aiAnalysis, isAILoading, opponentNames }: AICenterPro
                 <span>🛑</span> 触发防守边界：建议停手
               </h4>
               <p className="text-xs text-red-300/80 text-center mt-2 leading-relaxed">
-                {aiAnalysis.reasoning}
+                当前处于防守稳态，继续探索的预期收益为负。
               </p>
             </div>
           )}
@@ -90,6 +90,19 @@ export function AICenter({ aiAnalysis, isAILoading, opponentNames }: AICenterPro
               <p className="text-xs text-green-300/80 text-center mt-1">
                 收益期望仍为正，存在明显高置信度目标。
               </p>
+              {aiAnalysis.attackTarget && (
+                <div className="mt-3 p-2 bg-black/40 rounded border border-green-900/50 text-center">
+                  <div className="text-sm font-bold text-yellow-400">
+                    🎯 建议目标: {opponentNames[aiAnalysis.attackTarget.playerId] || aiAnalysis.attackTarget.playerId} 的第 {aiAnalysis.attackTarget.tileIndex + 1} 张牌
+                  </div>
+                  <div className="text-base font-black text-white mt-1">
+                    猜测数字: {aiAnalysis.attackTarget.expectedNumber === '-' ? '鬼牌 (-)' : aiAnalysis.attackTarget.expectedNumber}
+                  </div>
+                  <div className="text-xs text-gray-400 mt-1">
+                    胜率: {(aiAnalysis.attackTarget.confidence * 100).toFixed(1)}%
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

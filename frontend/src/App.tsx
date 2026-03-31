@@ -12,20 +12,12 @@ const INITIAL_OPPONENTS_DATA = [
   {
     id: 'p-a',
     name: 'Player A',
-    tiles: [
-      { id: 'a1', color: 'black', isKnown: true, number: 0 },
-      { id: 'a2', color: 'white', isKnown: false, probabilities: [{ number: 5, prob: 60 }, { number: 6, prob: 40 }] },
-      { id: 'a3', color: 'black', isKnown: false, probabilities: [{ number: 8, prob: 90 }, { number: 9, prob: 10 }] },
-    ]
+    tiles: []
   },
   {
     id: 'p-b',
     name: 'Player B',
-    tiles: [
-      { id: 'b1', color: 'white', isKnown: false, probabilities: [{ number: 1, prob: 50 }, { number: 2, prob: 50 }] },
-      { id: 'b2', color: 'white', isKnown: false, probabilities: [{ number: 4, prob: 75 }, { number: 5, prob: 25 }] },
-      { id: 'b3', color: 'black', isKnown: true, number: 11 },
-    ]
+    tiles: []
   },
   {
     id: 'p-c',
@@ -36,18 +28,14 @@ const INITIAL_OPPONENTS_DATA = [
 
 function App() {
   const [playerCount, setPlayerCount] = useState<number>(3); // 2, 3, or 4 (including You)
-  
+
   const [opponents, setOpponents] = useState<PlayerState[]>(INITIAL_OPPONENTS_DATA.slice(0, 2));
 
-  const [myHand, setMyHand] = useState<TileState[]>([
-    { id: 'm1', color: 'black', isKnown: true, number: 2 },
-    { id: 'm2', color: 'white', isKnown: true, number: 7 },
-    { id: 'm3', color: 'black', isKnown: true, number: 10 },
-  ]);
+  const [myHand, setMyHand] = useState<TileState[]>([]);
 
   // Action History State
   const [actionHistory, setActionHistory] = useState<GameAction[]>([]);
-  
+
   // History Stack for Undo
   const [historyStack, setHistoryStack] = useState<{opponents: PlayerState[], myHand: TileState[], actionHistory: GameAction[]}[]>([]);
 
@@ -199,6 +187,33 @@ function App() {
     syncAI();
   }, [actionHistory]); // Re-fetch whenever action history changes
 
+  // Handle move tile manually
+  const handleMoveTile = (direction: -1 | 1) => {
+    if (!editingTileId) return;
+    saveStateToHistory();
+
+    const moveInArray = (arr: TileState[]) => {
+      const idx = arr.findIndex(t => t.id === editingTileId.tileId);
+      if (idx < 0) return arr;
+      const newIdx = idx + direction;
+      if (newIdx < 0 || newIdx >= arr.length) return arr;
+      const newArr = [...arr];
+      [newArr[idx], newArr[newIdx]] = [newArr[newIdx], newArr[idx]];
+      return sortTiles(newArr);
+    };
+
+    if (editingTileId.playerId === 'me') {
+      setMyHand(prev => moveInArray(prev));
+    } else {
+      setOpponents(prev => prev.map(opp => {
+        if (opp.id === editingTileId.playerId) {
+          return { ...opp, tiles: moveInArray(opp.tiles) };
+        }
+        return opp;
+      }));
+    }
+  };
+
   // Handle Save Edited Tile
   const handleSaveTile = (updatedTile: TileState) => {
     if (!editingTileId) return;
@@ -267,18 +282,19 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen p-6 flex gap-6 max-w-7xl mx-auto h-screen items-stretch relative">
+    <div className="min-h-screen p-6 flex gap-6 max-w-[1600px] mx-auto h-screen items-stretch relative">
       {/* 模态框渲染 */}
       {editingTileId && getTileToEdit() && (
         <TileEditorModal 
           tile={getTileToEdit()!} 
           onClose={() => setEditingTileId(null)} 
           onSave={handleSaveTile}
+            onMove={handleMoveTile}
         />
       )}
 
-      {/* 左侧：桌面状态沙盘 (70%) */}
-      <div className="flex-[7] flex flex-col gap-6 h-full">
+      {/* 左侧：桌面状态沙盘 (60%) */}
+      <div className="flex-[6] flex flex-col gap-6 h-full">
         <header className="mb-2 shrink-0 flex justify-between items-start">
           <div>
             <h1 className="text-3xl font-black text-white tracking-widest uppercase items-center flex gap-3">
@@ -371,10 +387,10 @@ function App() {
         </div>
       </div>
 
-      {/* 右侧：控制台与事件区 (30%) */}
-      <div className="flex-[3] flex flex-col gap-6 h-full pt-[64px]">
+      {/* 右侧：控制台与事件区 (35%) */}
+      <div className="flex-[4] flex flex-col gap-6 h-full pt-[64px]">
         {/* AI 决策面板 (占上部) */}
-        <div className="flex-[3] min-h-0 flex flex-col gap-4">
+        <div className="flex-[4] min-h-0 flex flex-col gap-4">
           <AICenter 
             aiAnalysis={aiAnalysis} 
             isAILoading={isAILoading}
