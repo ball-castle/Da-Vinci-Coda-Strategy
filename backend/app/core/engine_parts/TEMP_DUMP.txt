@@ -1,0 +1,1003 @@
+
+> class DaVinciInferenceEngine:
+      """Infer hard posterior, soft posterior, and blended posterior for all hidden slots."""
+  
+      def __init__(self, game_state: GameState):
+          self.game_state = game_state
+          self.inference_player_ids = [
+              player_id
+              for player_id in game_state.inference_player_ids()
+              if game_state.resolved_ordered_slots(player_id)
+          ]
+          self.player_slots = {
+              player_id: game_state.resolved_ordered_slots(player_id)
+              for player_id in self.inference_player_ids
+          }
+          self.hard_constraints = HardConstraintCompiler(game_state).compile()
+          self.preassigned_hidden: Dict[str, Dict[int, Card]] = {
+              player_id: {} for player_id in self.inference_player_ids
+          }
+          self.search_positions: List[HiddenPosition] = []
+          self.position_by_key: Dict[SlotKey, HiddenPosition] = {}
+          self.player_slot_order: Dict[str, Dict[int, int]] = {}
+          self.publicly_collapsed_slots: Set[SlotKey] = set()
+  
+          self._build_slot_views()
+          self.available_cards = tuple(self._get_available_cards())
+          self.base_domains = self._build_base_domains()
+          self._validate_initial_domains()
+  
+      def _build_all_possible_cards(self) -> Tuple[Card, ...]:
+          ordered_cards = [
+              (color, value)
+              for value in range(MAX_CARD_VALUE + 1)
+              for color in CARD_COLORS
+          ]
+          ordered_cards.extend((color, JOKER) for color in CARD_COLORS)
+          return tuple(ordered_cards)
+  
+      def _build_slot_views(self) -> None:
+          for player_id, slots in self.player_slots.items():
+              order_map: Dict[int, int] = {}
+              for order_index, slot in enumerate(slots):
+                  order_map[slot.slot_index] = order_index
+                  key = slot_key(player_id, slot.slot_index)
+                  forced = self.hard_constraints.fixed_by_slot.get(key)
+                  known = slot.known_card()
+  
+                  if known is not None:
+                      if forced is not None and forced != known:
+                          raise ValueError(
+                              f"Slot {key} conflicts between state {known} and action evidence {forced}"
+                          )
+                      continue
+  
+                  if forced is not None:
+                      self.preassigned_hidden[player_id][slot.slot_index] = forced
+                      self.publicly_collapsed_slots.add(key)
+                      continue
+  
+                  if slot.value is None:
+                      hidden = HiddenPosition(
+                          player_id=player_id,
+                          slot_index=slot.slot_index,
+                          order_index=order_index,
+                          color=getattr(slot, "color", None),
+                      )
+                      self.search_positions.append(hidden)
+                      self.position_by_key[key] = hidden
+              self.player_slot_order[player_id] = order_map
+  
+      def _get_available_cards(self) -> Tuple[Card, ...]:
+          known_cards = set(self.game_state.known_cards())
+          fixed_hidden_cards = {
+              card
+              for cards_by_slot in self.preassigned_hidden.values()
+              for card in cards_by_slot.values()
+          }
+          used_cards = known_cards | fixed_hidden_cards
+          return tuple(
+              card
+              for card in self._build_all_possible_cards()
+              if card not in used_cards
+          )
+  
+      def _build_base_domains(self) -> Dict[SlotKey, Tuple[Card, ...]]:
+          base_domains: Dict[SlotKey, Tuple[Card, ...]] = {}
+          for position in self.search_positions:
+              key = slot_key(position.player_id, position.slot_index)
+              forbidden = self.hard_constraints.forbidden_by_slot.get(key, set())
+              domain = []
+              for card in self.available_cards:
+                  if position.color is not None and card[0] != position.color:
+                      continue
+                  if card in forbidden:
+                      continue
+                  domain.append(card)
+              base_domains[key] = tuple(domain)
+          return base_domains
+  
+      def _validate_initial_domains(self) -> None:
+          if len(set(self.available_cards)) != len(self.available_cards):
+              raise ValueError("Available card pool contains duplicates.")
+          for key, domain in self.base_domains.items():
+              if not domain:
+                  raise ValueError(f"Hidden slot {key} has empty hard domain.")
+  
+      def infer_hidden_probabilities(
+          self,
+          guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+          behavior_model: BehavioralLikelihoodModel,
+      ) -> Tuple[
+          FullProbabilityMatrix,
+          FullProbabilityMatrix,
+          FullProbabilityMatrix,
+          int,
+          float,
+      ]:
+          if not self.search_positions and not any(self.preassigned_hidden.values()):
+              return {}, {}, {}, 0, 0.0
+  
+          hard_position_weights: Dict[str, DefaultDict[int, DefaultDict[Card, float]]] = {
+              player_id: defaultdict(lambda: defaultdict(float))
+              for player_id in self.inference_player_ids
+          }
+          soft_position_weights: Dict[str, DefaultDict[int, DefaultDict[Card, float]]] = {
+              player_id: defaultdict(lambda: defaultdict(float))
+              for player_id in self.inference_player_ids
+          }
+  
+          legal_world_count = 0
+          total_soft_weight = 0.0
+          current_assignment: Dict[str, Dict[int, Card]] = {
+              player_id: dict(cards_by_slot)
+              for player_id, cards_by_slot in self.preassigned_hidden.items()
+          }
+          dead_state_cache: Set[Tuple[Tuple[Card, ...], Tuple[Tuple[str, Tuple[Optional[Card], ...]], ...]]] = set()
+  
+          def dfs(remaining_positions: Tuple[HiddenPosition, ...], remaining_cards: Tuple[Card, ...]) -> bool:
+              nonlocal legal_world_count, total_soft_weight
+  
+              state_signature = self._state_signature(current_assignment, remaining_cards)
+              if state_signature in dead_state_cache:
+                  return False
+  
+              if not remaining_positions:
+                  legal_world_count += 1
+                  hypothesis_by_player = {
+                      player_id: dict(cards_by_slot)
+                      for player_id, cards_by_slot in current_assignment.items()
+                      if cards_by_slot
+                  }
+                  soft_weight = behavior_model.score_hypothesis(
+                      hypothesis_by_player,
+                      guess_signals_by_player,
+                      self.game_state,
+                  )
+                  total_soft_weight += soft_weight
+                  self._accumulate_world(
+                      hard_position_weights,
+                      soft_position_weights,
+                      current_assignment,
+                      soft_weight,
+                  )
+                  return True
+  
+              feasible_domains = self._feasible_domains(remaining_positions, remaining_cards, current_assignment)
+              if any(len(domain) == 0 for _, domain in feasible_domains):
+                  dead_state_cache.add(state_signature)
+                  return False
+  
+              next_position, next_domain = min(feasible_domains, key=lambda item: (len(item[1]), item[0].player_id, item[0].slot_index))
+              next_remaining_positions = tuple(
+                  position for position in remaining_positions if position != next_position
+              )
+              found_any_solution = False
+  
+              for candidate in next_domain:
+                  current_assignment[next_position.player_id][next_position.slot_index] = candidate
+                  next_remaining_cards = tuple(card for card in remaining_cards if card != candidate)
+                  found_any_solution = dfs(next_remaining_positions, next_remaining_cards) or found_any_solution
+                  del current_assignment[next_position.player_id][next_position.slot_index]
+  
+              if not found_any_solution:
+                  dead_state_cache.add(state_signature)
+              return found_any_solution
+  
+          dfs(tuple(self.search_positions), self.available_cards)
+  
+          if legal_world_count == 0:
+              return {}, {}, {}, 0, 0.0
+  
+          hard_matrix = self._normalize_matrix(hard_position_weights, legal_world_count)
+          soft_matrix = (
+              self._normalize_matrix(soft_position_weights, total_soft_weight)
+              if total_soft_weight > 0
+              else hard_matrix
+          )
+          blended_matrix = self._blend_probability_matrices(hard_matrix, soft_matrix)
+          return hard_matrix, soft_matrix, blended_matrix, legal_world_count, total_soft_weight
+  
+      def _state_signature(
+          self,
+          current_assignment: Dict[str, Dict[int, Card]],
+          remaining_cards: Tuple[Card, ...],
+      ) -> Tuple[Tuple[Card, ...], Tuple[Tuple[str, Tuple[Optional[Card], ...]], ...]]:
+          player_signatures: List[Tuple[str, Tuple[Optional[Card], ...]]] = []
+          for player_id in sorted(self.player_slots):
+              signature: List[Optional[Card]] = []
+              for slot in self.player_slots[player_id]:
+                  known = slot.known_card()
+                  if known is not None:
+                      signature.append(known)
+                      continue
+                  signature.append(current_assignment[player_id].get(slot.slot_index))
+              player_signatures.append((player_id, tuple(signature)))
+          return tuple(sorted(remaining_cards, key=card_sort_key)), tuple(player_signatures)
+  
+      def _feasible_domains(
+          self,
+          remaining_positions: Tuple[HiddenPosition, ...],
+          remaining_cards: Tuple[Card, ...],
+          current_assignment: Dict[str, Dict[int, Card]],
+      ) -> List[Tuple[HiddenPosition, Tuple[Card, ...]]]:
+          remaining_card_set = set(remaining_cards)
+          feasible: List[Tuple[HiddenPosition, Tuple[Card, ...]]] = []
+          for position in remaining_positions:
+              key = slot_key(position.player_id, position.slot_index)
+              candidates = []
+              for candidate in self.base_domains[key]:
+                  if candidate not in remaining_card_set:
+                      continue
+                  if not self._fits_local_order(position, candidate, current_assignment):
+                      continue
+                  candidates.append(candidate)
+              candidates.sort(key=card_sort_key)
+              feasible.append((position, tuple(candidates)))
+          return feasible
+  
+      def _fits_local_order(
+          self,
+          position: HiddenPosition,
+          candidate: Card,
+          current_assignment: Dict[str, Dict[int, Card]],
+      ) -> bool:
+          if candidate[1] == JOKER:
+              return True
+  
+          left_bound = self._nearest_numeric_bound(position.player_id, position.order_index, -1, current_assignment)
+          if left_bound is not None and self._card_precedes(candidate, left_bound):
+              return False
+  
+          right_bound = self._nearest_numeric_bound(position.player_id, position.order_index, 1, current_assignment)
+          if right_bound is not None and self._card_precedes(right_bound, candidate):
+              return False
+  
+          return True
+  
+      def _nearest_numeric_bound(
+          self,
+          player_id: str,
+          order_index: int,
+          direction: int,
+          current_assignment: Dict[str, Dict[int, Card]],
+      ) -> Optional[Card]:
+          slots = self.player_slots[player_id]
+          cursor = order_index + direction
+          while 0 <= cursor < len(slots):
+              slot = slots[cursor]
+              card = slot.known_card()
+              if card is None:
+                  card = current_assignment[player_id].get(slot.slot_index)
+              if card is not None and card[1] != JOKER:
+                  return card
+              cursor += direction
+          return None
+  
+      def _card_precedes(self, left: Card, right: Card) -> bool:
+          if left[1] == JOKER or right[1] == JOKER:
+              return False
+          if left[1] != right[1]:
+              return int(left[1]) < int(right[1])
+          return CARD_COLOR_RANK[left[0]] < CARD_COLOR_RANK[right[0]]
+  
+      def _accumulate_world(
+          self,
+          hard_position_weights: Dict[str, DefaultDict[int, DefaultDict[Card, float]]],
+          soft_position_weights: Dict[str, DefaultDict[int, DefaultDict[Card, float]]],
+          current_assignment: Dict[str, Dict[int, Card]],
+          soft_weight: float,
+      ) -> None:
+          for player_id, cards_by_slot in current_assignment.items():
+              for slot_index, card in cards_by_slot.items():
+                  hard_position_weights[player_id][slot_index][card] += 1.0
+                  soft_position_weights[player_id][slot_index][card] += soft_weight
+  
+      def _normalize_matrix(
+          self,
+          position_weights: Dict[str, DefaultDict[int, DefaultDict[Card, float]]],
+          total_weight: float,
+      ) -> FullProbabilityMatrix:
+          if total_weight <= 0:
+              return {}
+          result: FullProbabilityMatrix = {}
+          for player_id, weighted_slots in position_weights.items():
+              if not weighted_slots:
+                  continue
+              result[player_id] = {
+                  slot_index: {
+                      card: weight / total_weight
+                      for card, weight in weighted_cards.items()
+                  }
+                  for slot_index, weighted_cards in weighted_slots.items()
+              }
+          return result
+  
+      def _blend_probability_matrices(
+          self,
+          hard_matrix: FullProbabilityMatrix,
+          soft_matrix: FullProbabilityMatrix,
+      ) -> FullProbabilityMatrix:
+          blended: FullProbabilityMatrix = {}
+          for player_id in sorted(set(hard_matrix) | set(soft_matrix)):
+              player_positions: ProbabilityMatrix = {}
+              all_slot_indices = set(hard_matrix.get(player_id, {})) | set(soft_matrix.get(player_id, {}))
+              for slot_index in sorted(all_slot_indices):
+                  hard_dist = hard_matrix.get(player_id, {}).get(slot_index, {})
+                  soft_dist = soft_matrix.get(player_id, {}).get(slot_index, hard_dist)
+                  cards = set(hard_dist) | set(soft_dist)
+                  blended_weights = {
+                      card: ((1.0 - SOFT_BEHAVIOR_BLEND) * hard_dist.get(card, 0.0))
+                      + (SOFT_BEHAVIOR_BLEND * soft_dist.get(card, 0.0))
+                      for card in cards
+                  }
+                  player_positions[slot_index] = normalize_card_distribution(blended_weights)
+              if player_positions:
+                  blended[player_id] = player_positions
+          return blended
+  
+  
+  class DaVinciDecisionEngine:
+      """Score moves by immediate EV, continuation likelihood, and stop-aware thresholding."""
+  
+      HIT_REWARD = 10.0
+      MISS_BASE = 12.0
+      MISS_ENDGAME_MULTIPLIER = 12.0
+      INFORMATION_GAIN_WEIGHT = 0.45
+      CONTINUATION_DISCOUNT = 0.72
+      MAX_CANDIDATES_PER_SLOT = 8
+      MIN_CANDIDATE_PROBABILITY = 1e-9
+      EPSILON = 1e-9
+  
+      STOP_MARGIN_BASE = 0.18
+      STOP_MARGIN_RISK_SCALE = 0.035
+      STOP_MARGIN_SHORT_HAND = 0.22
+      STOP_MARGIN_LOW_CONFIDENCE = 0.28
+      STOP_MARGIN_WEAK_CONTINUATION = 0.16
+      STOP_MARGIN_WEAK_EDGE = 0.22
+      STOP_MARGIN_WEAK_ROLLOUT = 0.24
+      STOP_MARGIN_FRAGILE_POST_HIT = 0.18
+      STOP_MARGIN_TOP_K_SUPPORT = 0.18
+      STOP_MARGIN_LOW_ATTACKABILITY = 0.18
+      STOP_MARGIN_BEHAVIOR_ROLLOUT = 0.16
+      STOP_MARGIN_SELF_EXPOSURE = 0.18
+      STOP_MARGIN_NEW_DRAWN_EXPOSURE = 0.22
+      STOP_MARGIN_FINISH_FRAGILITY = 0.18
+      STOP_MARGIN_EDGE_SELF_EXPOSURE_BOOST = 0.45
+      STOP_MARGIN_FAILURE_RECOVERY = 0.12
+      STOP_MARGIN_ATTACK_WINDOW = 0.10
+      STOP_MARGIN_JOINT_COLLAPSE = 0.08
+      STOP_MARGIN_GLOBAL_PROPAGATION = 0.08
+      STOP_MARGIN_PUBLIC_BRIDGE = 0.06
+      STOP_MARGIN_TARGET_CHAIN = 0.07
+      STOP_MARGIN_FINISH_CHAIN = 0.08
+      STOP_MARGIN_BRANCH_SEARCH = 0.10
+      STOP_MARGIN_EXPECTIMAX = 0.12
+      STOP_MARGIN_MCTS = 0.10
+      STOP_EDGE_REFERENCE = 0.18
+      ROLLOUT_MARGIN_REFERENCE = 0.40
+      FAILURE_RECOVERY_REFERENCE = 0.30
+      POST_HIT_GAP_REFERENCE = 0.22
+      POST_HIT_TOP_K_COUNT = 3
+      DRAW_ROLLOUT_CONTINUE_MARGIN_REFERENCE = 1.0
+      CONTINUATION_TOP_K_BLEND = 0.38
+      CONTINUATION_BRANCH_SEARCH_BLEND = 0.24
+      CONTINUATION_EXPECTIMAX_BLEND = 0.18
+      LOW_CONFIDENCE_GUARD_MARGIN = 0.22
+      WEAK_EDGE_GUARD_MARGIN = 0.18
+      SELF_EXPOSURE_GUARD_REFERENCE = 0.40
+      SELF_EXPOSURE_GUARD_MARGIN = 0.20
+      LOW_CONFIDENCE_SELF_EXPOSURE_BOOST = 0.10
+      WEAK_EDGE_SELF_EXPOSURE_BOOST = 0.08
+      ATTACKABILITY_REFERENCE = BehavioralLikelihoodModel.ATTACKABILITY_TIGHT_THRESHOLD
+      DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER = 1.0
+      DEFAULT_BEHAVIOR_MATCH_MULTIPLIER = 1.0
+      BEHAVIOR_MATCH_CONTEXT_TOP_K = 3
+      BEHAVIOR_MATCH_DECISION_SCALE = 0.45
+      BEHAVIOR_MATCH_SUPPORT_REFERENCE = 0.10
+      BEHAVIOR_MATCH_CONTEXT_COUNT_REFERENCE = 4.0
+      BEHAVIOR_MATCH_COMPONENT_WEIGHT_REFERENCE = 0.15
+      BEHAVIOR_MATCH_COMPONENT_PENALTY_WEIGHT = 0.40
+      BEHAVIOR_MATCH_NET_STRUCTURE_SCALE = 0.10
+      BEHAVIOR_MATCH_DECISION_WINDOW = 0.12
+      BEHAVIOR_MATCH_DECISION_NET_STRUCTURE_SCALE = 0.50
+      POST_HIT_BEHAVIOR_SUPPORT_SCALE = 0.08
+      POST_HIT_BEHAVIOR_SUPPORT_REFERENCE = 0.20
+      POST_HIT_FAILURE_RECOVERY_SCALE = 0.65
+      CONTINUATION_SELF_EXPOSURE_DRAG = 0.26
+      CONTINUATION_FINISH_FRAGILITY_DRAG = 0.22
+      SELF_EXPOSURE_SECONDARY_BLEND = 0.35
+      SELF_EXPOSURE_RISK_SCALE = 0.28
+      SELF_NEW_DRAWN_RISK_SCALE = 0.34
+      SELF_EXPOSURE_COLOR_BONUS = 1.12
+      SELF_EXPOSURE_NARROW_BONUS = 1.06
+      SELF_EXPOSURE_EDGE_BONUS = 1.08
+      SELF_EXPOSURE_NEW_DRAWN_BONUS = 1.18
+      SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS = 1.08
+      SELF_EXPOSURE_DOUBLE_COLOR_ANCHOR_BONUS = 1.12
+      FAILED_GUESS_SLOT_COLLAPSE_VALUE_BONUS = 0.28
+      FAILED_GUESS_NEIGHBOR_COLLAPSE_VALUE_BONUS = 0.12
+      FAILED_GUESS_PLAYER_COLLAPSE_VALUE_BONUS = 0.10
+      FAILED_GUESS_SWITCH_CONTINUITY_VALUE_BONUS = 0.18
+      TARGET_ATTACK_WINDOW_VALUE_BONUS = 0.24
+      TARGET_ATTACK_WINDOW_CONTINUATION_SCALE = 0.12
+      JOINT_COLLAPSE_VALUE_BONUS = 0.22
+      JOINT_COLLAPSE_CONTINUATION_SCALE = 0.08
+      GLOBAL_PROPAGATION_VALUE_BONUS = 0.20
+      GLOBAL_PROPAGATION_CONTINUATION_SCALE = 0.08
+      PUBLIC_REVEAL_BRIDGE_VALUE_BONUS = 0.18
+      PUBLIC_REVEAL_BRIDGE_CONTINUATION_SCALE = 0.06
+      TARGET_CHAIN_VALUE_BONUS = 0.22
+      TARGET_CHAIN_CONTINUATION_SCALE = 0.08
+      TARGET_FINISH_CHAIN_VALUE_BONUS = 0.26
+      TARGET_FINISH_CHAIN_CONTINUATION_SCALE = 0.10
+      BRANCH_SEARCH_FUTURE_MARGIN_BLEND = 0.55
+      TREE_SEARCH_TOP_K = 2
+      TREE_SEARCH_FUTURE_SCALE = 0.72
+      MCTS_TOP_K = 2
+      MCTS_DEEP_CHILD_TOP_K = 2
+      MCTS_SIMULATION_COUNT = 6
+      MCTS_SIMULATION_COUNT_PER_HORIZON = 3
+      MCTS_SIMULATION_COUNT_PER_ROOT_MOVE = 2
+      MCTS_SIMULATION_COUNT_CAP = 48
+      MCTS_EXPLORATION_SCALE = 0.32
+      MCTS_FUTURE_SCALE = 0.74
+      GLOBAL_MCTS_TOP_K = 3
+      GLOBAL_MCTS_OBJECTIVE_SCALE = 0.14
+      GLOBAL_MCTS_RANKING_SCALE = 0.08
+      EXACT_TREE_SEARCH_HORIZON_THRESHOLD = 4
+      EXACT_TREE_SEARCH_NODE_BUDGET = 96
+      EXPECTIMAX_TOP_K = 3
+      EXPECTIMAX_FUTURE_SCALE = 0.60
+      DEEP_ROLLOUT_DEPTH = 3
+      DEEP_ROLLOUT_TARGET_HIDDEN_THRESHOLD = 1
+      DEEP_ROLLOUT_SELF_HIDDEN_THRESHOLD = 3
+      DEEP_ROLLOUT_SEARCH_SPACE_THRESHOLD = 80.0
+      SELF_PLAY_BENCHMARK_HAND_SIZE = 3
+      SELF_PLAY_BENCHMARK_WORLD_COUNT = 24
+      SELF_PLAY_BENCHMARK_MAX_STEPS = 3
+      LONG_SELF_PLAY_HAND_SIZE = 2
+      LONG_SELF_PLAY_GAME_COUNT = 4
+      LONG_SELF_PLAY_MAX_TURNS = 10
+      LONG_SELF_PLAY_PRE_DRAW_ROLLOUT_DEPTH = 1
+      LONG_SELF_PLAY_DRAW_ROLLOUT_SAMPLE_LIMIT = 2
+      LONG_SELF_PLAY_PAIRED_WORLD_REPEATS = 2
+      LONG_SELF_PLAY_LEAGUE_MATCH_COUNT = 6
+      LONG_SELF_PLAY_LEAGUE_GAMES_PER_MATCH = 4
+      LONG_SELF_PLAY_STABILITY_MIN_TOTAL_GAMES = 24
+      LONG_SELF_PLAY_EVALUATION_MIN_TOTAL_GAMES = 96
+      LONG_SELF_PLAY_STABILITY_SEED_STRIDE = 1009
+      STRATEGY_OBJECTIVE_WIN_SCALE = 0.18
+      STRATEGY_OBJECTIVE_CONTINUATION_SCALE = 0.20
+      STRATEGY_OBJECTIVE_ATTACKABILITY_SCALE = 0.14
+      STRATEGY_OBJECTIVE_INFORMATION_GAIN_SCALE = 0.12
+      STRATEGY_OBJECTIVE_EXPECTIMAX_SCALE = 0.18
+      STRATEGY_OBJECTIVE_SUPPORT_SCALE = 0.08
+      STRATEGY_OBJECTIVE_BEHAVIOR_SCALE = 0.10
+      STRATEGY_OBJECTIVE_SEARCH_SIGNAL_SCALE = 0.14
+      STRATEGY_OBJECTIVE_MCTS_SCALE = 0.08
+      STRATEGY_OBJECTIVE_RECOVERY_SCALE = 0.08
+      STRATEGY_OBJECTIVE_OPENING_PRECISION_SCALE = 0.14
+      STRATEGY_OBJECTIVE_INITIATIVE_RECOVERY_SCALE = 0.10
+      STRATEGY_OBJECTIVE_CONFIDENCE_DRAG = 0.12
+      STRATEGY_OBJECTIVE_NEW_DRAWN_DRAG = 0.10
+      STRATEGY_OBJECTIVE_SELF_EXPOSURE_DRAG = 0.12
+      STRATEGY_OBJECTIVE_FINISH_FRAGILITY_DRAG = 0.10
+      STOP_MARGIN_OBJECTIVE_CREDIT = 0.16
+      STOP_MARGIN_SEARCH_CREDIT = 0.08
+      STOP_MARGIN_SEARCH_DEPTH_CREDIT = 0.05
+      STOP_MARGIN_GUARD_RELIEF_SCALE = 0.30
+      STOP_MARGIN_GUARD_POLICY_SCALE = 0.22
+      GUARD_POLICY_BIAS = -1.70
+      GUARD_POLICY_LOW_CONFIDENCE_WEIGHT = 2.10
+      GUARD_POLICY_WEAK_EDGE_WEIGHT = 1.55
+      GUARD_POLICY_SELF_EXPOSURE_WEIGHT = 1.85
+      GUARD_POLICY_MARGIN_RELIEF_WEIGHT = 1.20
+      GUARD_POLICY_SEARCH_RELIEF_WEIGHT = 0.95
+      OPENING_PRECISION_MARGIN_REFERENCE = 0.28
+      OPENING_JOKER_SUPPRESSION_MARGIN = 0.03
+      OPENING_JOKER_PENALTY_SCALE = 0.78
+      OPENING_JOKER_POSTERIOR_DAMPING = 0.42
+      INITIATIVE_RECOVERY_REFERENCE = 3.0
+  
+      def calculate_risk_factor(self, my_hidden_count: int) -> float:
+          exposure = 1.0 / max(1, my_hidden_count)
+          return self.MISS_BASE + self.MISS_ENDGAME_MULTIPLIER * exposure
+  
+      def _recent_failed_guess_switch_continuity_signal(
+          self,
+          game_state: Optional[GameState],
+          acting_player_id: Optional[str],
+          target_player_id: str,
+          guessed_card: Card,
+      ) -> float:
+          if game_state is None or acting_player_id is None:
+              return 0.0
+  
+          previous_failed_action: Optional[GuessAction] = None
+          for action in reversed(getattr(game_state, "actions", ())):
+              if getattr(action, "action_type", None) != "guess":
+                  continue
+              if getattr(action, "guesser_id", None) != acting_player_id:
+                  continue
+              if getattr(action, "result", False):
+                  continue
+              if action.guessed_card() is None:
+                  continue
+              previous_failed_action = action
+              break
+  
+          if previous_failed_action is None:
+              return 0.0
+          if getattr(previous_failed_action, "target_player_id", None) == target_player_id:
+              return 0.0
+  
+          previous_card = previous_failed_action.guessed_card()
+          if previous_card is None or previous_card[0] != guessed_card[0]:
+              return 0.0
+  
+          previous_value = numeric_card_value(previous_card)
+          current_value = numeric_card_value(guessed_card)
+          if previous_value is None or current_value is None:
+              return 0.0
+  
+          delta = abs(previous_value - current_value)
+          if delta > 2:
+              return 0.0
+          return clamp(1.0 - (0.35 * delta), 0.0, 1.0)
+  
+      def _recent_public_reveal_bridge_signal(
+          self,
+          game_state: Optional[GameState],
+          target_player_id: str,
+          guessed_card: Card,
+      ) -> float:
+          if game_state is None:
+              return 0.0
+          guessed_value = numeric_card_value(guessed_card)
+          if guessed_value is None:
+              return 0.0
+  
+          bridge_score = 0.0
+          recency_weight = 1.0
+          for action in reversed(getattr(game_state, "actions", ())):
+              revealed_card = action.revealed_card()
+              revealed_player_id = getattr(action, "revealed_player_id", None)
+              if (
+                  revealed_card is None
+                  or revealed_player_id is None
+                  or revealed_player_id == target_player_id
+                  or revealed_card[0] != guessed_card[0]
+              ):
+                  recency_weight *= 0.7
+                  if recency_weight < 0.2:
+                      break
+                  continue
+              revealed_value = numeric_card_value(revealed_card)
+              if revealed_value is None:
+                  recency_weight *= 0.7
+                  if recency_weight < 0.2:
+                      break
+                  continue
+              distance = abs(guessed_value - revealed_value)
+              if distance <= 2:
+                  bridge_score += recency_weight * ((3.0 - distance) / 3.0)
+              recency_weight *= 0.7
+              if recency_weight < 0.2:
+                  break
+          return clamp(bridge_score, 0.0, 1.0)
+  
+      def _recent_target_chain_signal(
+          self,
+          game_state: Optional[GameState],
+          target_player_id: str,
+      ) -> float:
+          if game_state is None:
+              return 0.0
+          chain_score = 0.0
+          recency_weight = 1.0
+          for action in reversed(getattr(game_state, "actions", ())):
+              if getattr(action, "action_type", None) != "guess":
+                  continue
+              if getattr(action, "target_player_id", None) != target_player_id:
+                  continue
+              if getattr(action, "result", False):
+                  chain_score += 0.65 * recency_weight
+                  if getattr(action, "continued_turn", None) is True:
+                      chain_score += 0.20 * recency_weight
+              if getattr(action, "revealed_player_id", None) == target_player_id:
+                  chain_score += 0.35 * recency_weight
+              recency_weight *= 0.62
+              if recency_weight < 0.15:
+                  break
+          return clamp(chain_score, 0.0, 1.0)
+  
+      def evaluate_all_moves(
+          self,
+          *,
+          full_probability_matrix: FullProbabilityMatrix,
+          my_hidden_count: int,
+          hidden_index_by_player: Dict[str, Dict[int, int]],
+          behavior_model: BehavioralLikelihoodModel,
+          guess_signals_by_player: Dict[str, Sequence[GuessSignal]],
+          acting_player_id: Optional[str],
+          behavior_guidance_profile: Optional[Dict[str, float]] = None,
+          game_state: Optional[GameState] = None,
+          behavior_map_hypothesis: Optional[Dict[str, Dict[int, Card]]] = None,
+          blocked_slots: Optional[Set[SlotKey]] = None,
+          rollout_depth: int = 1,
+      ) -> Tuple[List[Dict[str, Any]], float]:
+          risk_factor = self.calculate_risk_factor(my_hidden_count)
+          self_exposure_profile = self._public_self_exposure_profile(game_state)
+          blocked_slots = blocked_slots or set()
+          moves: List[Dict[str, Any]] = []
+  
+          for player_id in sorted(full_probability_matrix):
+              probability_matrix = full_probability_matrix[player_id]
+              hidden_index_by_slot = hidden_index_by_player.get(player_id, {})
+              for target_slot_index, slot_distribution in probability_matrix.items():
+                  if slot_key(player_id, target_slot_index) in blocked_slots:
+                      continue
+                  ranked_candidates = sorted(
+                      slot_distribution.items(),
+                      key=lambda item: (-item[1], card_sort_key(item[0])),
+                  )
+                  for card, probability in ranked_candidates[: self.MAX_CANDIDATES_PER_SLOT]:
+                      if probability <= self.MIN_CANDIDATE_PROBABILITY:
+                          continue
+                      move = self._score_single_move(
+                          full_probability_matrix=full_probability_matrix,
+                          my_hidden_count=my_hidden_count,
+                          risk_factor=risk_factor,
+                          hidden_index_by_slot=hidden_index_by_slot,
+                          player_id=player_id,
+                          slot_index=target_slot_index,
+                          card=card,
+                          probability=probability,
+                          slot_distribution=slot_distribution,
+                          behavior_model=behavior_model,
+                          guess_signals_by_player=guess_signals_by_player,
+                          acting_player_id=acting_player_id,
+                          behavior_guidance_profile=behavior_guidance_profile,
+                          game_state=game_state,
+                          behavior_map_hypothesis=behavior_map_hypothesis,
+                          self_exposure_profile=self_exposure_profile,
+                          rollout_depth=rollout_depth,
+                      )
+                      moves.append(move)
+  
+          opening_phase = self._strategy_phase_for_state(game_state) == "post_draw_opening"
+          if opening_phase:
+              moves.sort(
+                  key=lambda move: (
+                      -move.get("opening_precision_support", 0.0),
+                      -move.get("opening_behavior_posterior_support", 0.0),
+                      move.get("opening_joker_penalty", 0.0),
+                      -move["win_probability"],
+                      -move.get("opening_margin_signal", 0.0),
+                      -move.get("strategy_objective", move.get("ranking_score", move["expected_value"])),
+                      -move.get("ranking_score", move["expected_value"]),
+                      -move["continuation_value"],
+                      move["target_player_id"],
+                      move["target_slot_index"],
+                      card_sort_key((move["guess_card"][0], move["guess_card"][1])),
+                  )
+              )
+          else:
+              moves.sort(
+                  key=lambda move: (
+                      -move.get("strategy_objective", move.get("ranking_score", move["expected_value"])),
+                      -move.get("ranking_score", move["expected_value"]),
+                      -move["win_probability"],
+                      -move["continuation_value"],
+                      -move["continuation_likelihood"],
+                      move["target_player_id"],
+                      move["target_slot_index"],
+                      card_sort_key((move["guess_card"][0], move["guess_card"][1])),
+                  )
+              )
+          return moves, risk_factor
+  
+      def _sort_scored_moves(
+          self,
+          moves: Sequence[Dict[str, Any]],
+      ) -> List[Dict[str, Any]]:
+          sorted_moves = list(moves)
+          opening_phase = (
+              bool(sorted_moves)
+              and str(sorted_moves[0].get("strategy_phase", "")) == "post_draw_opening"
+          )
+          if opening_phase:
+              sorted_moves.sort(
+                  key=lambda move: (
+                      -move.get("opening_precision_support", 0.0),
+                      -move.get("opening_behavior_posterior_support", 0.0),
+                      move.get("opening_joker_penalty", 0.0),
+                      -move["win_probability"],
+                      -move.get("opening_margin_signal", 0.0),
+                      -move.get(
+                          "strategy_objective",
+                          move.get("ranking_score", move["expected_value"]),
+                      ),
+                      -move.get("ranking_score", move["expected_value"]),
+                      -move["continuation_value"],
+                      move.get("target_player_id", ""),
+                      int(move.get("target_slot_index", -1)),
+                      card_sort_key(
+                          tuple(move.get("guess_card", ("B", 0)))  # type: ignore[arg-type]
+                      ),
+                  )
+              )
+          else:
+              sorted_moves.sort(
+                  key=lambda move: (
+                      -move.get(
+                          "strategy_objective",
+                          move.get("ranking_score", move["expected_value"]),
+                      ),
+                      -move.get("ranking_score", move["expected_value"]),
+                      -move["win_probability"],
+                      -move["continuation_value"],
+                      -move["continuation_likelihood"],
+                      move.get("target_player_id", ""),
+                      int(move.get("target_slot_index", -1)),
+                      card_sort_key(
+                          tuple(move.get("guess_card", ("B", 0)))  # type: ignore[arg-type]
+                      ),
+                  )
+              )
+          return sorted_moves
+  
+      def _apply_global_mcts_rerank(
+          self,
+          *,
+          all_moves: Sequence[Dict[str, Any]],
+          risk_factor: float,
+          my_hidden_count: int,
+      ) -> List[Dict[str, Any]]:
+          ranked_moves = list(all_moves)
+          if len(ranked_moves) <= 1:
+              return ranked_moves
+          root_moves = ranked_moves
+          if any(
+              "target_player_id" not in move
+              or "target_slot_index" not in move
+              or "guess_card" not in move
+              for move in root_moves
+          ):
+              return ranked_moves
+          baseline_stop_threshold = self._stop_threshold_breakdown(
+              risk_factor=risk_factor,
+              my_hidden_count=my_hidden_count,
+              best_move=root_moves[0],
+          )["threshold"]
+          global_mcts = self._run_hybrid_full_game_search(
+              tree_moves=root_moves,
+              stop_score=baseline_stop_threshold,
+          )
+          root_stats_by_key = {
+              tuple(root_stat.get("move_key", ())): root_stat
+              for root_stat in global_mcts.get("root_children", ())
+          }
+          for move in ranked_moves:
+              root_stat = root_stats_by_key.get(self._move_identity_key(move), {})
+              global_mcts_margin = float(root_stat.get("margin", 0.0))
+              global_mcts_signal = float(root_stat.get("signal", 0.0))
+              global_mcts_bonus = (
+                  self.GLOBAL_MCTS_OBJECTIVE_SCALE * global_mcts_margin
+                  + self.GLOBAL_MCTS_RANKING_SCALE * global_mcts_signal
+              )
+              move["global_mcts_value"] = float(
+                  root_stat.get(
+                      "value",
+                      move.get(
+                          "strategy_objective",
+                          move.get("ranking_score", move.get("expected_value", 0.0)),
+                      ),
+                  )
+              )
+              move["global_mcts_margin"] = global_mcts_margin
+              move["global_mcts_support_ratio"] = float(
+                  root_stat.get("support_ratio", 0.0)
+              )
+              move["global_mcts_signal"] = global_mcts_signal
+              move["global_mcts_visit_share"] = float(
+                  root_stat.get("visit_share", 0.0)
+              )
+              move["global_mcts_peak_value"] = float(
+                  root_stat.get("peak_value", move["global_mcts_value"])
+              )
+              move["global_mcts_visits"] = float(root_stat.get("visits", 0.0))
+              move["global_mcts_node_count"] = float(
+                  global_mcts.get("node_count", 0.0)
+              )
+              move["global_mcts_max_depth"] = float(
+                  global_mcts.get("max_depth", 0.0)
+              )
+              move["global_mcts_search_mode"] = str(
+                  global_mcts.get("search_mode", "mcts")
+              )
+              move["global_mcts_simulation_budget"] = float(
+                  global_mcts.get("simulation_budget", 0.0)
+              )
+              move["global_mcts_bonus"] = global_mcts_bonus
+              move["strategy_objective"] = float(
+                  move.get(
+                      "strategy_objective",
+                      move.get("ranking_score", move.get("expected_value", 0.0)),
+                  )
+              ) + global_mcts_bonus
+              move["ranking_score"] = float(
+                  move.get("ranking_score", move.get("expected_value", 0.0))
+              ) + (0.45 * global_mcts_bonus)
+              score_breakdown = move.get("score_breakdown")
+              if isinstance(score_breakdown, dict):
+                  score_breakdown["global_mcts_value"] = move["global_mcts_value"]
+                  score_breakdown["global_mcts_margin"] = global_mcts_margin
+                  score_breakdown["global_mcts_support_ratio"] = move[
+                      "global_mcts_support_ratio"
+                  ]
+                  score_breakdown["global_mcts_signal"] = global_mcts_signal
+                  score_breakdown["global_mcts_bonus"] = global_mcts_bonus
+                  score_breakdown["global_mcts_visit_share"] = move[
+                      "global_mcts_visit_share"
+                  ]
+                  score_breakdown["global_mcts_node_count"] = move[
+                      "global_mcts_node_count"
+                  ]
+                  score_breakdown["global_mcts_max_depth"] = move[
+                      "global_mcts_max_depth"
+                  ]
+                  score_breakdown["global_mcts_search_mode"] = move[
+                      "global_mcts_search_mode"
+                  ]
+                  score_breakdown["global_mcts_simulation_budget"] = move[
+                      "global_mcts_simulation_budget"
+                  ]
+          return self._sort_scored_moves(ranked_moves)
+  
+      def choose_best_move(
+          self,
+          all_moves: List[Dict[str, Any]],
+          *,
+          risk_factor: float,
+          my_hidden_count: int,
+      ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+          if not all_moves:
+              stop_threshold_breakdown = self._stop_threshold_breakdown(
+                  risk_factor=risk_factor,
+                  my_hidden_count=my_hidden_count,
+                  best_move=None,
+              )
+              stop_threshold = stop_threshold_breakdown["threshold"]
+              return None, {
+                  "evaluated_move_count": 0,
+                  "best_immediate_value": 0.0,
+                  "best_expected_value": 0.0,
+                  "best_win_probability": 0.0,
+                  "best_continuation_value": 0.0,
+                  "best_continuation_likelihood": 0.0,
+                  "best_behavior_guidance_multiplier": self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER,
+                  "best_behavior_guidance_signal_count": 0.0,
+                  "best_behavior_guidance_support": 0.0,
+                  "best_behavior_guidance_stable_ratio": 0.0,
+                  "best_information_gain": 0.0,
+                  "best_ranking_score": 0.0,
+                  "best_behavior_match_multiplier": self.DEFAULT_BEHAVIOR_MATCH_MULTIPLIER,
+                  "best_behavior_match_bonus": 0.0,
+                  "best_behavior_match_support": 0.0,
+                  "best_behavior_match_decision_bonus": 0.0,
+                  "best_behavior_match_decision_structure_adjustment": 0.0,
+                  "best_behavior_match_ranking_bonus": 0.0,
+                  "best_behavior_match_net_structure": 0.0,
+                  "best_behavior_match_structure_adjustment": 0.0,
+                  "best_behavior_match_candidate_confidence": 0.0,
+                  "best_behavior_match_component_support": 0.0,
+                  "best_behavior_match_component_strength": 0.0,
+                  "best_behavior_match_component_penalty": 0.0,
+                  "best_behavior_match_context_focus": 0.0,
+                  "best_behavior_rollout_pressure": 0.0,
+                  "best_post_hit_behavior_support_adjustment": 0.0,
+                  "best_post_hit_behavior_support_gain": 0.0,
+                  "best_post_hit_behavior_fragility_drag": 0.0,
+                  "best_post_hit_continue_score": 0.0,
+                  "best_post_hit_stop_score": 0.0,
+                  "best_post_hit_continue_margin": 0.0,
+                  "best_post_hit_best_gap": 0.0,
+                  "best_post_hit_guidance_multiplier": self.DEFAULT_BEHAVIOR_GUIDANCE_MULTIPLIER,
+                  "best_post_hit_guidance_support": 0.0,
+                  "best_post_hit_guidance_stable_ratio": 0.0,
+                  "best_post_hit_guidance_signal_count": 0.0,
+                  "best_post_hit_guidance_rebuild_applied": False,
+                  "best_post_hit_guidance_rebuild_signal_count": 0.0,
+                  "best_post_hit_guidance_augmented_slot_count": 0.0,
+                  "best_post_hit_guidance_multiplier_delta": 0.0,
+                  "best_post_hit_guidance_source_shift": "neutral",
+                  "best_post_hit_guidance_source_shift_strength": 0.0,
+                  "best_post_hit_guidance_rebuild_reason": "post-hit rebuild unavailable",
+                  "best_post_hit_top_k_expected_continue_margin": 0.0,
+                  "best_post_hit_top_k_continue_margin": 0.0,
+                  "best_post_hit_top_k_expected_support_ratio": 0.0,
+                  "best_post_hit_top_k_support_ratio": 0.0,
+                  "best_post_hit_failure_recovery_bonus": 0.0,
+                  "best_post_hit_failed_switch_bonus": 0.0,
+                  "best_post_hit_failed_switch_signal": 0.0,
+                  "best_self_public_exposure": 0.0,
+                  "best_self_newly_drawn_exposure": 0.0,
+                  "best_self_finish_fragility": 0.0,
+                  "best_failure_collapse_bonus": 0.0,
+                  "best_failed_guess_switch_bonus": 0.0,
+                  "best_failed_guess_switch_continuity_signal": 0.0,
+                  "best_target_attack_window_signal": 0.0,
+                  "best_target_attack_window_bonus": 0.0,
+                  "best_target_attack_window_continuation_bonus": 0.0,
+                  "best_joint_collapse_signal": 0.0,
+                  "best_joint_collapse_bonus": 0.0,
+                  "best_joint_collapse_continuation_bonus": 0.0,
+                  "best_global_propagation_signal": 0.0,
+                  "best_global_propagation_bonus": 0.0,
+                  "best_global_propagation_continuation_bonus": 0.0,
+                  "best_target_chain_signal": 0.0,
+                  "best_target_chain_bonus": 0.0,
+                  "best_target_chain_continuation_bonus": 0.0,
+                  "best_target_finish_chain_signal": 0.0,
+                  "best_target_finish_chain_bonus": 0.0,
+                  "best_target_finish_chain_continuation_bonus": 0.0,
+                  "best_post_hit_branch_search_value": 0.0,
+                  "best_post_hit_branch_search_margin": 0.0,
+                  "best_post_hit_branch_search_support_ratio": 0.0,
+                  "best_post_hit_branch_search_signal": 0.0,
+                  "best_post_hit_mcts_value": 0.0,
+                  "best_post_hit_mcts_margin": 0.0,
+                  "best_post_hit_mcts_support_ratio": 0.0,
+                  "best_post_hit_mcts_signal": 0.0,
+                  "best_post_hit_expectimax_value": 0.0,
+                  "best_post_hit_expectimax_margin": 0.0,
+                  "best_post_hit_expectimax_support_ratio": 0.0,
+                  "best_post_hit_expectimax_signal": 0.0,
+                  "best_global_mcts_value": 0.0,
+                  "best_global_mcts_margin": 0.0,
+                  "best_global_mcts_support_ratio": 0.0,
+                  "best_global_mcts_signal": 0.0,
+                  "best_global_mcts_visit_share": 0.0,
+                  "best_global_mcts_node_count": 0.0,
+                  "best_global_mcts_max_depth": 0.0,
+                  "best_strategy_objective": 0.0,
+                  "best_strategy_objective_core": 0.0,
+                  "strategy_objective_guess": 0.0,
+                  "strategy_objective_stop": stop_threshold,
+                  "strategy_action_margin": -stop_threshold,
+                  "stop_threshold": stop_threshold,
+                  "stop_score": stop_threshold,
+                  "continue_score": 0.0,
+                  "continue_margin": -stop_threshold,
+                  "recommend_stop": True,
+                  "decision_score_breakdown": {
+                      "base_stop_threshold": stop_threshold_breakdown["base_stop_threshold"],
+                      "short_hand_threshold": stop_threshold_breakdown["short_hand_threshold"],
+                      "self_exposure_threshold": stop_threshold_breakdown["self_exposure_threshold"],
+                      "newly_drawn_threshold": stop_threshold_breakdown["newly_drawn_threshold"],
+                      "finish_fragility_threshold": stop_threshold_breakdown["finish_fragility_threshold"],
+                      "low_confidence_threshold": stop_threshold_breakdown["low_confidence_threshold"],
+                      "weak_continuation_threshold": stop_threshold_breakdown["weak_continuation_threshold"],
+                      "strategy_objective_credit": stop_threshold_breakdown["strategy_objective_credit"],
+                      "search_credit": stop_threshold_breakdown["search_credit"],
+                      "total_stop_threshold": stop_threshold,
+                      "edge_pressure": 0.0,
+                      "rollout_pressure": 0.0,
+                      "fragile_rollout_pressure": 0.0,
+                      "top_k_rollout_pressure": 0.0,
+                      "attackability_pressure": 0.0,
+                      "behavior_rollout_pressure": 0.0,
+                      "post_hit_behavior_support_adjustment": 0.0,
+                      "post_hit_behavior_support_gain": 0.0,
+                      "post_hit_behavior_fragility_drag": 0.0,
+                      "post_hit_behavior_support_signal": 0.0,
+                      "post_hit_behavior_fragility_signal": 0.0,
+                      "post_hit_behavior_support_strength": 0.0,
+                      "post_hit_behavior_fragility_strength": 0.0,
+                      "behavior_match_decision_bonus": 0.0,
+                      "behavior_match_decision_structure_adjustment": 0.0,
+                      "behavior_match_net_structure": 0.0,
+                      "behavior_match_ranking_bonus": 0.0,
+

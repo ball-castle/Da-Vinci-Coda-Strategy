@@ -1,4 +1,7 @@
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
+import { SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import type { TileState } from '../types';
+import { SortableTile } from './SortableTile';
 
 interface HandProps {
   playerName: string;
@@ -8,10 +11,36 @@ interface HandProps {
   onTileClick?: (id: string) => void;
   onAddTile?: (color: 'black' | 'white') => void;
   onRemoveTile?: () => void;
-  onMoveTile?: (id: string, direction: 'left' | 'right') => void;
+  onReorderTile: (oldIndex: number, newIndex: number) => void;
 }
 
-export function Hand({ playerName, isMe, tiles, aiTargetTileIndex, onTileClick, onAddTile, onRemoveTile, onMoveTile }: HandProps) {
+export function Hand({ playerName, isMe, tiles, aiTargetTileIndex, onTileClick, onAddTile, onRemoveTile, onReorderTile }: HandProps) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5, // 5px tolerance to distinguish between click and drag
+      },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: 250, // 250ms press to drag on touch devices to prevent scroll capturing
+        tolerance: 5,
+      },
+    }),
+    useSensor(KeyboardSensor)
+  );
+
+  const handleDragEnd = (event: any) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      const oldIndex = tiles.findIndex((t) => t.id === active.id);
+      const newIndex = tiles.findIndex((t) => t.id === over.id);
+      if (oldIndex !== -1 && newIndex !== -1) {
+        onReorderTile(oldIndex, newIndex);
+      }
+    }
+  };
+
   return (
     <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg relative">
       <div className="flex justify-between items-center mb-4">
@@ -47,61 +76,27 @@ export function Hand({ playerName, isMe, tiles, aiTargetTileIndex, onTileClick, 
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-3 min-h-[80px]">
-        {tiles.map((tile, index) => {
-          const isTarget = aiTargetTileIndex === index;
-          return (
-          <div
-            key={tile.id}
-            className={`
-              group relative flex flex-col items-center justify-center w-14 h-20 rounded-md shadow-md transition transform hover:-translate-y-1
-              ${tile.color === 'black' ? 'bg-black text-white' : 'bg-gray-100 text-gray-900'}
-              ${isTarget ? 'border-2 border-red-500 shadow-[0_0_12px_rgba(239,68,68,0.8)] scale-110' : tile.color === 'black' ? 'border border-gray-600' : 'border border-gray-300'}
-            `}
+      <DndContext 
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <div className="flex flex-wrap gap-3 min-h-[80px]">
+          <SortableContext 
+            items={tiles.map(t => t.id)}
+            strategy={horizontalListSortingStrategy}
           >
-            {isTarget && (
-              <div className="absolute -top-6 text-red-500 text-xs font-bold animate-bounce flex items-center gap-1">
-                <span>🎯 Target</span>
-              </div>
-            )}
-            
-            {/* 点击区域占满整个牌的正中心，但边角留给移动按钮 */}
-            <div 
-              className="absolute inset-0 flex items-center justify-center cursor-pointer"
-              onClick={() => onTileClick && onTileClick(tile.id)}
-            >
-              <span className="text-2xl font-bold">
-                {tile.isKnown ? (tile.isJoker ? '-' : tile.number) : '?'}
-              </span>
-            </div>
-
-            {/* AI 概率预览（针对暗牌） */}
-            {!tile.isKnown && tile.probabilities && (
-              <div className="absolute -bottom-6 w-24 text-center text-xs text-blue-400 font-mono tracking-tighter pointer-events-none">
-                {tile.probabilities.slice(0, 2).map(p => `${p.number}:${p.prob}%`).join(' ')}
-              </div>
-            )}
-
-            {/*左右移动控制 (Hover显示) */}
-            {onMoveTile && (
-              <div className="absolute -top-3 flex justify-between w-full px-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                <button 
-                  onClick={(e) => { e.stopPropagation(); onMoveTile(tile.id, 'left'); }}
-                  className="bg-gray-700/80 hover:bg-blue-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-xs"
-                >
-                  ◀
-                </button>
-                <button 
-                  onClick={(e) => { e.stopPropagation(); onMoveTile(tile.id, 'right'); }}
-                  className="bg-gray-700/80 hover:bg-blue-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-xs"
-                >
-                  ▶
-                </button>
-              </div>
-            )}
-          </div>
-        )})}
-      </div>
+            {tiles.map((tile, index) => (
+              <SortableTile 
+                key={tile.id} 
+                tile={tile} 
+                isTarget={aiTargetTileIndex === index} 
+                onTileClick={onTileClick}
+              />
+            ))}
+          </SortableContext>
+        </div>
+      </DndContext>
     </div>
   );
 }

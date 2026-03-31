@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import json
+from collections import defaultdict
+from dataclasses import dataclass, replace
+from math import ceil, exp, log2, sqrt
+from pathlib import Path
+from random import Random
+from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+from app.core.state import (
+    CARD_COLORS,
+    JOKER,
+    MAX_CARD_VALUE,
+    Card,
+    CardSlot,
+    GameState,
+    GuessAction,
+    PlayerState,
+)
+
+ProbabilityMatrix = Dict[int, Dict[Card, float]]
+FullProbabilityMatrix = Dict[str, ProbabilityMatrix]
+SlotKey = Tuple[str, int]
+
+CARD_COLOR_RANK = {"B": 0, "W": 1}
+SOFT_BEHAVIOR_BLEND = 0.28
+
+
+@dataclass(frozen=True)
+class HiddenPosition:
+    player_id: str
+    slot_index: int
+    order_index: int
+    color: Optional[str]
+
+
+@dataclass
+class HardConstraintSet:
+    fixed_by_slot: Dict[SlotKey, Card]
+    forbidden_by_slot: Dict[SlotKey, Set[Card]]
+
+
+@dataclass(frozen=True)
+class GuessSignal:
+    action_index: int
+    guesser_id: str
+    target_player_id: str
+    target_slot_index: int
+    guessed_card: Card
+    result: bool
+    continued_turn: Optional[bool]
+
+
+@dataclass
+class SearchTreeNode:
+    label: str
+    prior: float
+    rollout_value: float
+    move: Optional[Dict[str, Any]] = None
+    is_terminal: bool = False
+    visits: float = 0.0
+    value_sum: float = 0.0
+    peak_value: float = 0.0
+    positive_value_count: float = 0.0
+    children: Optional[List["SearchTreeNode"]] = None
+    success_matrix: Optional[FullProbabilityMatrix] = None
+    my_hidden_count: int = 0
+    hidden_index_by_player: Optional[Dict[str, Dict[int, int]]] = None
+    behavior_model: Optional["BehavioralLikelihoodModel"] = None
+    guess_signals_by_player: Optional[Dict[str, Sequence[GuessSignal]]] = None
+    acting_player_id: Optional[str] = None
+    behavior_guidance_profile: Optional[Dict[str, float]] = None
+    game_state: Optional[GameState] = None
+    behavior_map_hypothesis: Optional[Dict[str, Dict[int, Card]]] = None
+    rollout_depth_remaining: int = 0
+    perspective_sign: float = 1.0
+    search_mode: str = "mcts"
+
+
+def numeric_card_value(card: Optional[Card]) -> Optional[int]:
+    if card is None:
+        return None
+    value = card[1]
+    if value == JOKER or not isinstance(value, int):
+        return None
+    return int(value)
+
+
+def card_sort_key(card: Card) -> Tuple[int, int]:
+    color, value = card
+    if value == JOKER:
+        return (MAX_CARD_VALUE + 1, CARD_COLOR_RANK[color])
+    return (int(value), CARD_COLOR_RANK[color])
+
+
+def serialize_card(card: Card) -> List[Any]:
+    return [card[0], card[1]]
+
+
+def normalize_card_distribution(weights: Dict[Card, float]) -> Dict[Card, float]:
+    total = sum(weights.values())
+    if total <= 0:
+        return {}
+    return {card: weight / total for card, weight in weights.items()}
+
+
+def slot_key(player_id: str, slot_index: int) -> SlotKey:
+    return (player_id, slot_index)
+
+
+def clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+class HardConstraintCompiler:
+    """Compile hard public evidence into fixed/forbidden slot constraints."""
+
+    def __init__(self, game_state: GameState):
+        self.game_state = game_state
+
+    def compile(self) -> HardConstraintSet:
+        fixed_by_slot: Dict[SlotKey, Card] = {}
+        forbidden_by_slot: Dict[SlotKey, Set[Card]] = defaultdict(set)
+
+        for player_id in self.game_state.inference_player_ids():
+            for slot in self.game_state.resolved_ordered_slots(player_id):
+                known = slot.known_card()
+                if known is not None:
+                    self._fix_card(
+                        fixed_by_slot,
+                        forbidden_by_slot,
+                        slot_key(player_id, slot.slot_index),
+                        known,
+                    )
+
+        for action in getattr(self.game_state, "actions", ()):
+            if getattr(action, "action_type", None) != "guess":
+                continue
+
+            guessed_card = action.guessed_card()
+            target_player_id = getattr(action, "target_player_id", None)
+            target_slot_index = getattr(action, "target_slot_index", None)
+            if guessed_card is not None and target_player_id is not None and target_slot_index is not None:
+                key = slot_key(target_player_id, target_slot_index)
+                if getattr(action, "result", False):
+                    self._fix_card(fixed_by_slot, forbidden_by_slot, key, guessed_card)
+                else:
+                    forbidden_by_slot[key].add(guessed_card)
+
+            revealed_card = self._revealed_card_from_action(action)
+            revealed_player_id = getattr(action, "revealed_player_id", None)
+            revealed_slot_index = getattr(action, "revealed_slot_index", None)
+            if revealed_card is not None and revealed_player_id is not None and revealed_slot_index is not None:
+                self._fix_card(
+                    fixed_by_slot,
+                    forbidden_by_slot,
+                    slot_key(revealed_player_id, revealed_slot_index),
+                    revealed_card,
+                )
+
+        return HardConstraintSet(
+            fixed_by_slot=fixed_by_slot,
+            forbidden_by_slot={key: set(value) for key, value in forbidden_by_slot.items()},
+        )
+
+    def _fix_card(
+        self,
+        fixed_by_slot: Dict[SlotKey, Card],
+        forbidden_by_slot: Dict[SlotKey, Set[Card]],
+        key: SlotKey,
+        card: Card,
+    ) -> None:
+        current = fixed_by_slot.get(key)
+        if current is not None and current != card:
+            raise ValueError(
+                f"Conflicting hard evidence for slot {key}: {current} vs {card}"
+            )
+        if card in forbidden_by_slot.get(key, set()):
+            raise ValueError(
+                f"Slot {key} cannot be both fixed to and forbidden from {card}"
+            )
+        fixed_by_slot[key] = card
+
+    def _revealed_card_from_action(self, action: Any) -> Optional[Card]:
+        if hasattr(action, "revealed_card"):
+            revealed = action.revealed_card()
+            if revealed is not None:
+                return revealed
+
+        color = getattr(action, "revealed_color", None)
+        value = getattr(action, "revealed_value", None)
+        if color is None or value is None:
+            return None
+        return (color, value)
+
+
+class BehavioralLikelihoodModel:
+    """Structured soft action likelihood model, separate from hard constraints."""
+
+    SELF_EXACT_GUESS_PENALTY = 0.14
+    SELF_ADJACENT_ANCHOR_BONUS = 1.08
+
+    TARGET_PLAYER_BEST_MATCH_BONUS = 1.07
+    TARGET_PLAYER_CLOSE_MATCH_BONUS = 1.03
+    TARGET_PLAYER_WEAK_CHOICE_PENALTY = 0.94
+    TARGET_PLAYER_REPEAT_FOCUS_BONUS = 1.04
+    TARGET_PLAYER_CONFIDENT_CHAIN_BONUS = 1.05
+    TARGET_PLAYER_BREAK_CONFIDENT_CHAIN_PENALTY = 0.95
+    TARGET_PLAYER_SWITCH_AFTER_FAILURE_BONUS = 1.04
+    TARGET_PLAYER_SWITCH_FAILURE_CONTINUITY_BONUS = 1.03
+    TARGET_PLAYER_RECENT_COLLAPSE_BONUS = 1.04
+    TARGET_PLAYER_COLLAPSE_STREAK_BONUS = 1.05
+    TARGET_PLAYER_PUBLIC_BRIDGE_BONUS = 1.04
+    TARGET_PLAYER_FINISH_CHAIN_BONUS = 1.08
+    TARGET_PLAYER_RECENT_TARGET_CHAIN_BONUS = 1.06
+    PLAYER_FINISH_PRESSURE_REFERENCE = 3.0
+    PLAYER_RECENT_PUBLIC_REVEAL_BONUS = 0.08
+    PLAYER_RECENT_FAILED_GUESS_BONUS = 0.10
+    PLAYER_ATTACK_WINDOW_BONUS = 0.14
+    PLAYER_GLOBAL_COLLAPSE_BONUS = 0.10
+
+    TARGET_SLOT_BEST_MATCH_BONUS = 1.08
+    TARGET_SLOT_CLOSE_MATCH_BONUS = 1.03
+    TARGET_SLOT_WEAK_CHOICE_PENALTY = 0.91
+    TARGET_SLOT_RETRY_AFTER_FAILURE_BONUS = 1.125
+    TARGET_SLOT_CONFIDENT_ADJACENT_FOLLOW_BONUS = 1.04
+    TARGET_SLOT_FAILURE_ADJACENT_PROBE_BONUS = 1.03
+    TARGET_SLOT_ATTACK_WINDOW_BONUS = 1.05
+    SLOT_EDGE_PRESSURE_BONUS = 1.05
+    SLOT_RECENT_REVEAL_NEIGHBOR_BONUS = 1.06
+    SLOT_FAILURE_NEIGHBOR_ATTACK_BONUS = 1.04
+    SLOT_ATTACK_WINDOW_BONUS = 1.08
+    PLAYER_SECONDARY_ATTACKABILITY_BLEND = 0.20
+    PLAYER_FINISH_PRESSURE_BONUS = 0.26
+    MATRIX_SECONDARY_ATTACKABILITY_BLEND = 0.22
+
+    TARGET_IN_INTERVAL_BONUS = 1.15
+    TARGET_NARROW_INTERVAL_BONUS = 1.10
+    TARGET_OUTSIDE_INTERVAL_PENALTY = 0.80
+    TARGET_NEIGHBOR_BONUS = 1.10
+    TARGET_CLOSE_BONUS = 1.04
+    TARGET_FAR_PENALTY = 0.97
+    TARGET_VALUE_PROGRESSIVE_STEP_BONUS = 1.08
+    TARGET_VALUE_DIRECTIONAL_BONUS = 1.03
+    TARGET_VALUE_STALLED_PENALTY = 0.90
+    TARGET_VALUE_WRONG_DIRECTION_PENALTY = 0.92
+    TARGET_VALUE_CONFIDENT_CHAIN_LOCAL_STEP_BONUS = 1.04
+    TARGET_VALUE_CONFIDENT_CHAIN_JUMP_PENALTY = 0.95
+    TARGET_VALUE_SANDWICH_EXACT_BONUS = 1.12
+    TARGET_VALUE_SANDWICH_FILL_BONUS = 1.06
+    TARGET_VALUE_WIDE_GAP_CENTER_BONUS = 1.05
+    TARGET_VALUE_WIDE_GAP_EDGE_PENALTY = 0.96
+    TARGET_VALUE_NARROW_BOUNDARY_PROBE_BONUS = 1.03
+    WRONG_COLOR_SLOT_PENALTY = 0.88
+
+    CONTINUE_HIGH_ATTACKABILITY_BONUS = 1.10
+    CONTINUE_LOW_ATTACKABILITY_PENALTY = 0.93
+    STOP_LOW_ATTACKABILITY_BONUS = 1.04
+    STOP_HIGH_ATTACKABILITY_PENALTY = 0.97
+    CONTINUE_TARGET_FOLLOWUP_BONUS = 1.06
+    STOP_TARGET_FOLLOWUP_PENALTY = 0.94
+    CONTINUE_TARGET_FINISH_BONUS = 1.05
+    CONTINUE_TARGET_FINISH_CHAIN_BONUS = 1.12
+    CONTINUE_TARGET_CHAIN_BONUS = 1.08
+    STOP_TARGET_FINISH_PENALTY = 0.96
+    STOP_TARGET_FINISH_CHAIN_PENALTY = 0.92
+    STOP_TARGET_CHAIN_PENALTY = 0.94
+    CONTINUE_SELF_EXPOSURE_PENALTY = 0.93
+    CONTINUE_NEW_DRAWN_EXPOSURE_PENALTY = 0.91
+    CONTINUE_FINISH_FRAGILITY_PENALTY = 0.92
+    CONTINUE_FAILURE_RECOVERY_BONUS = 1.05
+    CONTINUE_JOINT_COLLAPSE_BONUS = 1.04
+    STOP_SELF_EXPOSURE_BONUS = 1.05
+    STOP_NEW_DRAWN_EXPOSURE_BONUS = 1.07
+    STOP_FINISH_FRAGILITY_BONUS = 1.06
+    STOP_FAILURE_RECOVERY_PENALTY = 0.95
+    STOP_JOINT_COLLAPSE_PENALTY = 0.96
+    PUBLIC_SELF_EXPOSURE_SECONDARY_BLEND = 0.35
+    PUBLIC_SELF_EXPOSURE_FINISH_REFERENCE = 3.0
+    PUBLIC_SELF_EXPOSURE_SAME_COLOR_ANCHOR_BONUS = 1.08
+    PUBLIC_SELF_EXPOSURE_DOUBLE_COLOR_ANCHOR_BONUS = 1.12
+
+    ATTACKABILITY_TIGHT_THRESHOLD = 0.34
+    CONTINUATION_PRIOR_BASE = 0.52
+    CONTINUATION_ATTACKABILITY_GAIN = 1.35
+    CONTINUATION_TARGET_FOLLOWUP_BLEND = 0.32
+    CONTINUATION_MIN = 0.08
+    CONTINUATION_MAX = 0.95
+    CONTINUATION_RECENT_CONTINUE_BONUS = 0.04
+    CONTINUATION_RECENT_STOP_PENALTY = 0.04
+    CONTINUATION_CONFIDENT_STREAK_BONUS = 0.03
+    CONTINUATION_TARGET_FINISH_CHAIN_BONUS = 1.08
+    CONTINUATION_TARGET_CHAIN_HISTORY_BONUS = 1.06
+    PLAYER_GLOBAL_PROPAGATION_BONUS = 0.14
+    JOINT_ACTION_PLAN_BONUS = 1.10
+    JOINT_ACTION_PLAN_PENALTY = 0.92
+    JOINT_ACTION_COMPONENT_REFERENCE = 0.16
+    JOINT_ACTION_TEMPERATURE = 3.4
+    JOINT_ACTION_STRUCTURED_BLEND = 0.22

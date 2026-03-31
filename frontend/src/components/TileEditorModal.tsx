@@ -15,8 +15,8 @@ export function TileEditorModal({ tile, onClose, onSave, onMove }: TileEditorMod
   if (!tile) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-xl shadow-2xl p-6 w-full max-w-sm border border-gray-600">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 p-4 pt-20 sm:pt-4 overflow-y-auto">
+      <div className="bg-gray-800 rounded-xl shadow-2xl p-6 w-full max-w-sm border border-gray-600 mb-auto mt-[10vh] sm:mt-0">
         <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
           {tile.color === 'black' ? (
             <span className="w-4 h-4 bg-black border border-gray-500 rounded-sm inline-block"></span>

@@ -129,30 +129,23 @@ function App() {
     }
   };
 
-  // Move tile left or right
-  const moveTile = (playerId: string, tileId: string, direction: 'left' | 'right') => {
-    saveStateToHistory();
-    const moveInArray = (arr: TileState[]) => {
-      const idx = arr.findIndex(t => t.id === tileId);
-      if (idx === -1) return arr;
-      if (direction === 'left' && idx > 0) {
-        const newArr = [...arr];
-        [newArr[idx - 1], newArr[idx]] = [newArr[idx], newArr[idx - 1]];
-        return sortTiles(newArr); // Re-evaluate knowns sort after shift
-      }
-      if (direction === 'right' && idx < arr.length - 1) {
-        const newArr = [...arr];
-        [newArr[idx], newArr[idx + 1]] = [newArr[idx + 1], newArr[idx]];
-        return sortTiles(newArr);
-      }
-      return arr;
-    };
+// Reorder tile (for drag and drop)
+    const reorderTile = (playerId: string, oldIndex: number, newIndex: number) => {
+      if (oldIndex === newIndex) return;
+      saveStateToHistory();
 
-    if (playerId === 'me') {
-      setMyHand(moveInArray);
-    } else {
-      setOpponents(prev => prev.map(opp => 
-        opp.id === playerId ? { ...opp, tiles: moveInArray(opp.tiles) } : opp
+      const reorderInArray = (arr: TileState[]) => {
+        const newArr = [...arr];
+        const [movedItem] = newArr.splice(oldIndex, 1);
+        newArr.splice(newIndex, 0, movedItem);
+        return sortTiles(newArr);
+      };
+
+      if (playerId === 'me') {
+        setMyHand(reorderInArray);
+      } else {
+        setOpponents(prev => prev.map(opp =>
+          opp.id === playerId ? { ...opp, tiles: reorderInArray(opp.tiles) } : opp
       ));
     }
   };
@@ -309,7 +302,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen p-6 flex gap-6 max-w-[1600px] mx-auto h-screen items-stretch relative">
+    <div className="min-h-screen p-2 sm:p-6 flex flex-col lg:flex-row gap-6 max-w-[1600px] mx-auto h-full lg:h-screen lg:items-stretch relative">
       {/* 模态框渲染 */}
       {editingTileId && getTileToEdit() && (
         <TileEditorModal 
@@ -322,7 +315,7 @@ function App() {
 
       {/* 左侧：桌面状态沙盘 (60%) */}
       <div className="flex-[6] flex flex-col gap-6 h-full">
-        <header className="mb-2 shrink-0 flex justify-between items-start">
+        <header className="mb-2 shrink-0 flex flex-col xl:flex-row justify-between items-start gap-4">
           <div>
             <h1 className="text-3xl font-black text-white tracking-widest uppercase items-center flex gap-3">
               DA VINCI CODA <span className="text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded text-2xl border border-blue-500/30">AI</span>
@@ -388,7 +381,7 @@ function App() {
               onAddTile={(color) => addTileToPlayer(opp.id, color)}
               onRemoveTile={() => removeTileFromPlayer(opp.id)}
               onTileClick={(tileId) => setEditingTileId({ playerId: opp.id, tileId })}
-              onMoveTile={(tileId, dir) => moveTile(opp.id, tileId, dir)}
+              onReorderTile={(oldIndex, newIndex) => reorderTile(opp.id, oldIndex, newIndex)}
             />
           ))}
         </div>
@@ -409,13 +402,13 @@ function App() {
             onAddTile={(color) => addTileToPlayer('me', color)}
             onRemoveTile={() => removeTileFromPlayer('me')}
             onTileClick={(tileId) => setEditingTileId({ playerId: 'me', tileId })}
-            onMoveTile={(tileId, dir) => moveTile('me', tileId, dir)}
+            onReorderTile={(oldIndex, newIndex) => reorderTile('me', oldIndex, newIndex)}
           />
         </div>
       </div>
 
-      {/* 右侧：控制台与事件区 (35%) */}
-      <div className="flex-[4] flex flex-col gap-6 h-full pt-[64px]">
+      {/* 右侧：控制台与事件区 (40%) */}
+      <div className="flex-[4] flex flex-col gap-6 h-full lg:pt-[64px]">
         {/* AI 决策面板 (占上部) */}
         <div className="flex-[4] min-h-0 flex flex-col gap-4">
           <AICenter 
