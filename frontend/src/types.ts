@@ -27,6 +27,7 @@ export type GameAction = {
   // Specific to GUESS
   targetId?: string;       // Target player
   targetTileId?: string;   // the tile being guessed
+  targetColor?: 'black' | 'white'; // The color of the tile being guessed
   guessNumber?: number;    // guessed number
   isHit?: boolean;         // guess result
   

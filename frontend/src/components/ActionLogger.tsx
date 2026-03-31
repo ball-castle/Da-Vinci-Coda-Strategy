@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import type { ActionType, GameAction } from '../types';
+import type { ActionType, GameAction, TileState } from '../types';
 
 interface ActionLoggerProps {
-  players: { id: string; name: string }[];
+  players: { id: string; name: string; tiles?: TileState[] }[];
   onLogAction: (action: GameAction) => void;
 }
 
@@ -53,6 +53,9 @@ export function ActionLogger({ players, onLogAction }: ActionLoggerProps) {
       );
     }
 
+    const targetPlayerObj = players.find(p => p.id === targetId);
+    const targetColor = targetPlayerObj?.tiles?.[tileIndex]?.color;
+
     const action: GameAction = {
       id: Date.now().toString(),
       timestamp: Date.now(),
@@ -61,6 +64,7 @@ export function ActionLogger({ players, onLogAction }: ActionLoggerProps) {
       color: actionType === 'DRAW' ? color : undefined,
       targetId: actionType === 'GUESS' ? targetId : undefined,
       targetTileId: actionType === 'GUESS' ? `${tileIndex}` : undefined,
+      targetColor: actionType === 'GUESS' ? targetColor : undefined,
       guessNumber: actionType === 'GUESS' ? guessNumber : undefined,
       isHit: actionType === 'GUESS' ? isHit : undefined,
       humanReadable

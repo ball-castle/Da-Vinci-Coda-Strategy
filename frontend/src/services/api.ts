@@ -1,6 +1,7 @@
 import type { PlayerState, TileState, GameAction } from '../types';
 
 export interface GameStatePayload {
+  sessionId?: string;
   playerCount: number;
   opponents: PlayerState[];
   myHand: TileState[];
@@ -8,6 +9,7 @@ export interface GameStatePayload {
 }
 
 export interface AIAnalysisResponse {
+  sessionId?: string;
   recommendedAction: 'DRAW' | 'GUESS' | 'STOP';
   reasoning: string;
   attackTarget?: {
@@ -24,6 +26,7 @@ export async function fetchAIAnalysis(payload: GameStatePayload, signal?: AbortS
     const targetPlayerId = payload.opponents[0]?.id || 'opponent';
 
     const requestBody = {
+      session_id: payload.sessionId,
       state: {
         self_player_id: 'me',
         target_player_id: targetPlayerId,
@@ -53,7 +56,7 @@ export async function fetchAIAnalysis(payload: GameStatePayload, signal?: AbortS
           guesser_id: a.type === 'GUESS' ? (a.targetId === 'me' ? targetPlayerId : 'me') : 'me', // simplistic mapping
           target_player_id: a.targetId || targetPlayerId,
           target_slot_index: a.targetTileId ? parseInt(a.targetTileId, 10) : 0,
-          guessed_color: null,
+          guessed_color: a.targetColor === 'black' ? 'B' : (a.targetColor === 'white' ? 'W' : null),
           guessed_value: a.guessNumber ?? null,
           result: a.isHit ?? false,
           continued_turn: false,
@@ -102,6 +105,7 @@ export async function fetchAIAnalysis(payload: GameStatePayload, signal?: AbortS
     }
 
     return {
+      sessionId: data.session_id,
       recommendedAction: isStop ? 'STOP' : 'GUESS',
       reasoning: data.behavior_debug?.hypothesis_source || 'MCTS Full-game Search computed',
       attackTarget: !isStop ? {

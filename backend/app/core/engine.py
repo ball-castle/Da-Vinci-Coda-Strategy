@@ -198,8 +198,11 @@ class HardConstraintCompiler:
 class BehavioralLikelihoodModel:
     """Structured soft action likelihood model, separate from hard constraints."""
 
-    SELF_EXACT_GUESS_PENALTY = 0.14
-    SELF_ADJACENT_ANCHOR_BONUS = 1.08
+    # Theory of Mind (ToM) / Advanced Mind-Reading Parameters
+    # Extremely strong penalty for a player guessing a card they actually hold.
+    # We leave 5% (0.05) to account for high-level bluffing behavior.
+    SELF_EXACT_GUESS_PENALTY = 0.05
+    SELF_ADJACENT_ANCHOR_BONUS = 1.15
 
     TARGET_PLAYER_BEST_MATCH_BONUS = 1.07
     TARGET_PLAYER_CLOSE_MATCH_BONUS = 1.03

@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.engine import GameController
+from app.core.session import GameSessionManager
 from app.core.state import (
     CARD_COLORS,
     JOKER,
@@ -16,6 +17,7 @@ from app.core.state import (
 )
 
 router = APIRouter()
+session_manager = GameSessionManager()
 
 
 class OpponentAction(BaseModel):
@@ -68,6 +70,7 @@ class GameStatePayload(BaseModel):
 
 
 class TurnRequest(BaseModel):
+    session_id: Optional[str] = None
     state: Optional[GameStatePayload] = None
     my_cards: Optional[List[List[Any]]] = None
     public_cards: Optional[Dict[str, List[List[Any]]]] = None
@@ -252,9 +255,19 @@ def _build_game_state(req: TurnRequest) -> GameState:
 
 @router.post("/turn")
 def calculate_turn(req: TurnRequest):
+    # Ensure session tracking
+    session_id = session_manager.get_or_create_session(req.session_id)
+    session_data = session_manager.get_session(session_id)
+    
     game_state = _build_game_state(req)
+    
+    # Optional: Persist new actions into the session history
+    if req.state and req.state.actions:
+        session_data['history'] = req.state.actions
+    
     controller = GameController(game_state)
     result = controller.run_turn()
+    result["session_id"] = session_id
     result["input_summary"] = {
         "self_player_id": game_state.self_player_id,
         "target_player_id": game_state.target_player_id,

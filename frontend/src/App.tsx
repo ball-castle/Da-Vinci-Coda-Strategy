@@ -42,6 +42,7 @@ function App() {
   // AI 建议状态
   const [isAILoading, setIsAILoading] = useState<boolean>(false);
   const [aiAnalysis, setAiAnalysis] = useState<any>(null);
+  const [sessionId, setSessionId] = useState<string | undefined>(undefined);
 
   // UI Modal State
   const [editingTileId, setEditingTileId] = useState<{playerId: string, tileId: string} | null>(null);
@@ -168,11 +169,11 @@ function App() {
     const syncAI = async () => {
       setIsAILoading(true);
       try {
-        const result = await fetchAIAnalysis({ playerCount, opponents, myHand, actionHistory }, abortController.signal);
-        setAiAnalysis(result);
-        
-        // 反向更新牌的后验概率 (prob 面板)
-        setOpponents(prevOpponents => prevOpponents.map(opp => {
+          const result = await fetchAIAnalysis({ sessionId, playerCount, opponents, myHand, actionHistory }, abortController.signal);
+          setAiAnalysis(result);
+          if (result.sessionId) {
+            setSessionId(result.sessionId);
+          }
           let Changed = false;
           const newTiles = opp.tiles.map((t, idx) => {
             const key = `${opp.id}_${idx}`;
