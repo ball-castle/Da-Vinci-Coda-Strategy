@@ -169,23 +169,50 @@ function App() {
 
   // 监听动作历史，自动调用 AI 分析
   useEffect(() => {
-    // Skip empty states initially unless you want initial analysis
+    // 增加防抖 (Debounce) 和 AbortController 避免并发轰炸
+    const abortController = new AbortController();
+    
     const syncAI = async () => {
       setIsAILoading(true);
       try {
-        const result = await fetchAIAnalysis({ playerCount, opponents, myHand, actionHistory });
+        const result = await fetchAIAnalysis({ playerCount, opponents, myHand, actionHistory }, abortController.signal);
         setAiAnalysis(result);
         
-        // 我们也可以在这里反向更新牌的后验概率 (prob 面板)
-        // 例如遍历 result.posteriorProbabilities 更新 opponents
-      } catch (err) {
-        console.error("AI Sync failed", err);
+        // 反向更新牌的后验概率 (prob 面板)
+        setOpponents(prevOpponents => prevOpponents.map(opp => {
+          let Changed = false;
+          const newTiles = opp.tiles.map((t, idx) => {
+            const key = `${opp.id}_${idx}`;
+            const probs = result.posteriorProbabilities[key];
+            if (probs) {
+              Changed = true;
+              return { ...t, probabilities: probs };
+            }
+            return t;
+          });
+          return Changed ? { ...opp, tiles: newTiles } : opp;
+        }));
+        
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.error("AI Sync failed", err);
+        }
       } finally {
-        setIsAILoading(false);
+        if (!abortController.signal.aborted) {
+          setIsAILoading(false);
+        }
       }
     };
-    syncAI();
-  }, [actionHistory]); // Re-fetch whenever action history changes
+
+    const timer = setTimeout(() => {
+      syncAI();
+    }, 500); // 500ms debounce
+
+    return () => {
+      clearTimeout(timer);
+      abortController.abort();
+    };
+  }, [actionHistory, opponents.length, myHand.length]); // Re-fetch whenever history or hand amounts change
 
   // Handle move tile manually
   const handleMoveTile = (direction: -1 | 1) => {

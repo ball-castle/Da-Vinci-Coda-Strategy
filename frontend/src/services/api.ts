@@ -19,7 +19,7 @@ export interface AIAnalysisResponse {
   posteriorProbabilities: Record<string, { number: number; prob: number }[]>; 
 }
 
-export async function fetchAIAnalysis(payload: GameStatePayload): Promise<AIAnalysisResponse> {
+export async function fetchAIAnalysis(payload: GameStatePayload, signal?: AbortSignal): Promise<AIAnalysisResponse> {
   try {
     const targetPlayerId = payload.opponents[0]?.id || 'opponent';
 
@@ -64,12 +64,14 @@ export async function fetchAIAnalysis(payload: GameStatePayload): Promise<AIAnal
 
     console.log('[API] Sending request to POMDP Backend...', requestBody);
 
-    const response = await fetch('/api/turn', {
+    const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+    const response = await fetch(`${BASE_URL}/api/turn`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
+      signal
     });
 
     if (!response.ok) {
@@ -84,6 +86,21 @@ export async function fetchAIAnalysis(payload: GameStatePayload): Promise<AIAnal
     // Parse backend response to frontend format
     const isStop = !bestMove || data.recommended_action === 'stop' || !bestMove.target_player_id;
     
+    const probMap: Record<string, { number: number; prob: number }[]> = {};
+    if (data.full_probability_matrix) {
+      data.full_probability_matrix.forEach((p: any) => {
+        const pId = p.player_id;
+        p.positions.forEach((pos: any) => {
+          const slot = pos.target_slot_index;
+          const candidates = pos.candidates.map((c: any) => ({
+             number: c.card[1] === '-' ? -1 : c.card[1],
+             prob: Math.round(c.probability * 100)
+          }));
+          probMap[`${pId}_${slot}`] = candidates;
+        });
+      });
+    }
+
     return {
       recommendedAction: isStop ? 'STOP' : 'GUESS',
       reasoning: data.behavior_debug?.hypothesis_source || 'MCTS Full-game Search computed',
@@ -93,7 +110,7 @@ export async function fetchAIAnalysis(payload: GameStatePayload): Promise<AIAnal
         expectedNumber: bestMove.guess_card?.[1] || 0,
         confidence: bestMove.win_probability || 0
       } : undefined,
-      posteriorProbabilities: {} // Optionally map `data.probability_matrix` here if needed
+      posteriorProbabilities: probMap
     };
   } catch (error) {
     console.error('[API] Failed to fetch AI analysis', error);
