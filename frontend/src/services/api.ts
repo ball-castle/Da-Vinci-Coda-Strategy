@@ -19,7 +19,8 @@ export interface AIAnalysisResponse {
     confidence: number;
   };
   posteriorProbabilities: Record<string, { number: number; prob: number }[]>; 
-}
+  error?: string;
+  isDeadEnd?: boolean;
 
 export async function fetchAIAnalysis(payload: GameStatePayload, signal?: AbortSignal): Promise<AIAnalysisResponse> {
   try {
@@ -114,7 +115,8 @@ export async function fetchAIAnalysis(payload: GameStatePayload, signal?: AbortS
         expectedNumber: bestMove.guess_card?.[1] || 0,
         confidence: bestMove.win_probability || 0
       } : undefined,
-      posteriorProbabilities: probMap
+      posteriorProbabilities: probMap,
+      isDeadEnd: data.search_space_size === 0
     };
   } catch (error) {
     console.error('[API] Failed to fetch AI analysis', error);
@@ -122,7 +124,8 @@ export async function fetchAIAnalysis(payload: GameStatePayload, signal?: AbortS
     return {
       recommendedAction: 'STOP',
       reasoning: 'Error connecting to AI Backend: ' + (error as Error).message,
-      posteriorProbabilities: {}
+      posteriorProbabilities: {},
+      error: (error as Error).message
     };
   }
 }

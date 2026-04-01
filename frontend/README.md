@@ -1,73 +1,49 @@
-# React + TypeScript + Vite
+# DaVinci POMDP AI - 前端应用
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+基于React + TypeScript的现代化游戏界面
 
-Currently, two official plugins are available:
+## 💻 技术栈
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **框架**: React 19.2.4
+- **语言**: TypeScript 5.9.3
+- **构建工具**: Vite 8.0.1
+- **样式**: TailwindCSS 4.2.2
+- **拖拽**: @dnd-kit 6.3+
+- **移动端**: Capacitor 8.3.0
+- **代码规范**: ESLint + TypeScript ESLint
 
-## React Compiler
+## 👨‍💻 开发指南
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### 环境设置
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+1. **安装依赖**：
+```bash
+cd frontend
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+2. **配置环境变量**：
+```bash
+cp .env.example .env
 ```
+
+### 开发模式
+
+```bash
+npm run dev
+```
+
+访问 `http://localhost:5173`
+
+### 构建生产版本
+
+```bash
+npm run build
+npm run preview
+```
+
+详细文档请参考项目根目录的 README.md
+
+---
+
+**维护者**: [@ball-castle](https://github.com/ball-castle)

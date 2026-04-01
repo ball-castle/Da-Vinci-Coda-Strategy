@@ -169,27 +169,38 @@ function App() {
     const syncAI = async () => {
       setIsAILoading(true);
       try {
-          const result = await fetchAIAnalysis({ sessionId, playerCount, opponents, myHand, actionHistory }, abortController.signal);
-          setAiAnalysis(result);
-          if (result.sessionId) {
-            setSessionId(result.sessionId);
-          }
-          let Changed = false;
-          const newTiles = opp.tiles.map((t, idx) => {
-            const key = `${opp.id}_${idx}`;
-            const probs = result.posteriorProbabilities[key];
-            if (probs) {
-              Changed = true;
-              return { ...t, probabilities: probs };
-            }
-            return t;
-          });
-          return Changed ? { ...opp, tiles: newTiles } : opp;
-        }));
+        const result = await fetchAIAnalysis({ sessionId, playerCount, opponents, myHand, actionHistory }, abortController.signal);
         
+        if (result.isDeadEnd || result.error) {
+          window.alert(result.isDeadEnd ? "矛盾的录入！推演树崩溃，请点击撤销 (Undo)" : "连接服务器失败! 请检查网络");
+          setIsAILoading(false);
+          return;
+        }
+
+        setAiAnalysis(result);
+        if (result.sessionId) {
+          setSessionId(result.sessionId);
+        }
+
+        if (result.posteriorProbabilities) {
+          setOpponents(prev => prev.map(opp => {
+            let Changed = false;
+            const newTiles = opp.tiles.map((t, idx) => {
+              const key = `${opp.id}_${idx}`;
+              const probs = result.posteriorProbabilities[key];
+              if (probs) {
+                Changed = true;
+                return { ...t, probabilities: probs };
+              }
+              return t;
+            });
+            return Changed ? { ...opp, tiles: newTiles } : opp;
+          }));
+        }
       } catch (err: any) {
         if (err.name !== 'AbortError') {
           console.error("AI Sync failed", err);
+          window.alert("连接服务器失败! 请检查网络");
         }
       } finally {
         if (!abortController.signal.aborted) {

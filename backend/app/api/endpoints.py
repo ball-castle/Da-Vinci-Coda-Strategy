@@ -1,4 +1,16 @@
+"""
+API端点模块
+
+提供游戏状态计算和决策推荐的REST API接口。
+主要功能：
+- 接收游戏状态数据
+- 执行MCTS算法计算
+- 返回AI决策建议
+
+作者：DaVinci POMDP AI Team
+"""
 from typing import Any, Dict, List, Optional, Tuple
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -15,12 +27,16 @@ from app.core.state import (
     PlayerState,
     build_legacy_game_state,
 )
+from app.exceptions import ValidationError, GameStateError, MCTSComputationError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 session_manager = GameSessionManager()
 
 
 class OpponentAction(BaseModel):
+    """对手行动记录模型"""
     type: str = "guess"
     target_player_id: Optional[str] = None
     target_slot_index: Optional[int] = None
@@ -35,6 +51,7 @@ class OpponentAction(BaseModel):
 
 
 class CardSlotPayload(BaseModel):
+    """卡槽数据模型"""
     slot_index: int
     color: Optional[str] = None
     value: Any = None
@@ -43,11 +60,13 @@ class CardSlotPayload(BaseModel):
 
 
 class PlayerStatePayload(BaseModel):
+    """玩家状态数据模型"""
     player_id: str
     slots: List[CardSlotPayload] = Field(default_factory=list)
 
 
 class GuessActionPayload(BaseModel):
+    """猜测行动数据模型"""
     guesser_id: str
     target_player_id: str
     target_slot_index: Optional[int] = None
@@ -63,6 +82,7 @@ class GuessActionPayload(BaseModel):
 
 
 class GameStatePayload(BaseModel):
+    """游戏状态数据模型"""
     self_player_id: str = "me"
     target_player_id: str = "opponent"
     players: List[PlayerStatePayload]
@@ -70,6 +90,13 @@ class GameStatePayload(BaseModel):
 
 
 class TurnRequest(BaseModel):
+    """
+    回合计算请求模型
+    
+    支持两种输入格式：
+    1. 结构化状态（state）
+    2. 旧版格式（my_cards, public_cards等）
+    """
     session_id: Optional[str] = None
     state: Optional[GameStatePayload] = None
     my_cards: Optional[List[List[Any]]] = None
@@ -79,37 +106,53 @@ class TurnRequest(BaseModel):
     opponent_history: List[OpponentAction] = Field(default_factory=list)
 
 
+
 def _coerce_color(color: Optional[str], field_name: str) -> Optional[str]:
+    """验证并转换颜色值"""
     if color is None:
         return None
     if color not in CARD_COLORS:
-        raise HTTPException(status_code=400, detail=f"{field_name} 非法颜色: {color}。只支持 B 或 W。")
+        raise ValidationError(
+            f"{field_name} 非法颜色: {color}",
+            detail={"field": field_name, "value": color, "allowed": list(CARD_COLORS)}
+        )
     return color
 
 
 def _coerce_card_value(value: Any, field_name: str) -> Any:
+    """验证并转换牌值"""
     if value is None:
         return None
     if value == JOKER:
         return value
     if not isinstance(value, int):
-        raise HTTPException(status_code=400, detail=f"{field_name} 非法牌值: {value}。必须是 0-11 或 '-'.")
+        raise ValidationError(
+            f"{field_name} 非法牌值: {value}",
+            detail={"field": field_name, "value": value, "type": type(value).__name__}
+        )
     if not 0 <= value <= MAX_CARD_VALUE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} 非法牌值: {value}。必须落在 0 到 {MAX_CARD_VALUE} 之间。",
+        raise ValidationError(
+            f"{field_name} 牌值超出范围: {value}",
+            detail={"field": field_name, "value": value, "min": 0, "max": MAX_CARD_VALUE}
         )
     return value
 
 
 def _coerce_card(raw_card: List[Any]) -> Tuple[str, Any]:
+    """验证并转换卡牌数据"""
     if len(raw_card) != 2:
-        raise HTTPException(status_code=400, detail="卡牌格式必须是 [颜色, 数值]。")
+        raise ValidationError(
+            "卡牌格式错误",
+            detail={"expected_format": "[颜色, 数值]", "received": raw_card}
+        )
 
-    color = _coerce_color(raw_card[0], "card")
-    value = _coerce_card_value(raw_card[1], "card")
+    color = _coerce_color(raw_card[0], "card.color")
+    value = _coerce_card_value(raw_card[1], "card.value")
     if color is None:
-        raise HTTPException(status_code=400, detail="卡牌必须提供颜色。")
+        raise ValidationError(
+            "卡牌必须提供颜色",
+            detail={"card": raw_card}
+        )
     return color, value
 
 
@@ -140,25 +183,22 @@ def _build_structured_state(payload: GameStatePayload) -> GameState:
 
     for player_payload in payload.players:
         if player_payload.player_id in players:
-            raise HTTPException(status_code=400, detail=f"重复的 player_id: {player_payload.player_id}。")
+            raise ValidationError(f"重复的 player_id: {player_payload.player_id}", detail={"player_id": player_payload.player_id})
 
         slots: List[CardSlot] = []
         used_slot_indexes = set()
         for slot_payload in player_payload.slots:
             if slot_payload.slot_index < 0:
-                raise HTTPException(status_code=400, detail="slot_index 不能是负数。")
+                raise ValidationError("slot_index 不能是负数", detail={"slot_index": slot_payload.slot_index})
             if slot_payload.slot_index in used_slot_indexes:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"玩家 {player_payload.player_id} 存在重复 slot_index: {slot_payload.slot_index}。",
-                )
+                raise ValidationError(f"玩家 {player_payload.player_id} 存在重复 slot_index: {slot_payload.slot_index}", detail={"player_id": player_payload.player_id, "slot_index": slot_payload.slot_index})
 
             color = _coerce_color(slot_payload.color, "slot.color")
             value = _coerce_card_value(slot_payload.value, "slot.value")
             if value is not None and color is None:
-                raise HTTPException(status_code=400, detail="当 slot.value 已知时，slot.color 也必须提供。")
+                raise ValidationError("当 slot.value 已知时，slot.color 也必须提供")
             if slot_payload.is_revealed and value is None:
-                raise HTTPException(status_code=400, detail="明牌 slot 必须提供 value。")
+                raise ValidationError("明牌 slot 必须提供 value")
 
             used_slot_indexes.add(slot_payload.slot_index)
             slots.append(
@@ -177,18 +217,18 @@ def _build_structured_state(payload: GameStatePayload) -> GameState:
         )
 
     if payload.self_player_id not in players:
-        raise HTTPException(status_code=400, detail="state.self_player_id 不存在于 players 中。")
+        raise GameStateError("state.self_player_id 不存在于 players 中", detail={"self_player_id": payload.self_player_id})
     if payload.target_player_id not in players:
-        raise HTTPException(status_code=400, detail="state.target_player_id 不存在于 players 中。")
+        raise GameStateError("state.target_player_id 不存在于 players 中", detail={"target_player_id": payload.target_player_id})
 
     actions: List[GuessAction] = []
     for action_payload in payload.actions:
         if action_payload.guesser_id not in players:
-            raise HTTPException(status_code=400, detail=f"未知 guesser_id: {action_payload.guesser_id}。")
+            raise GameStateError(f"未知 guesser_id: {action_payload.guesser_id}", detail={"guesser_id": action_payload.guesser_id})
         if action_payload.target_player_id not in players:
-            raise HTTPException(status_code=400, detail=f"未知 target_player_id: {action_payload.target_player_id}。")
+            raise GameStateError(f"未知 target_player_id: {action_payload.target_player_id}", detail={"target_player_id": action_payload.target_player_id})
         if action_payload.revealed_player_id is not None and action_payload.revealed_player_id not in players:
-            raise HTTPException(status_code=400, detail=f"未知 revealed_player_id: {action_payload.revealed_player_id}。")
+            raise GameStateError(f"未知 revealed_player_id: {action_payload.revealed_player_id}", detail={"revealed_player_id": action_payload.revealed_player_id})
 
         actions.append(
             GuessAction(
@@ -220,10 +260,7 @@ def _build_game_state(req: TurnRequest) -> GameState:
         return _build_structured_state(req.state)
 
     if req.my_cards is None or req.public_cards is None or req.opponent_card_count is None:
-        raise HTTPException(
-            status_code=400,
-            detail="必须提供 state，或者同时提供 my_cards / public_cards / opponent_card_count。",
-        )
+        raise ValidationError("必须提供 state，或者同时提供 my_cards / public_cards / opponent_card_count")
 
     my_cards = [_coerce_card(card) for card in req.my_cards]
     public_cards = {
@@ -234,16 +271,13 @@ def _build_game_state(req: TurnRequest) -> GameState:
     opponent_revealed_count = len(public_cards.get("opponent", []))
     if req.opponent_hidden_count is not None:
         if req.opponent_hidden_count < 0:
-            raise HTTPException(status_code=400, detail="opponent_hidden_count 不能是负数。")
+            raise ValidationError("opponent_hidden_count 不能是负数", detail={"opponent_hidden_count": req.opponent_hidden_count})
         opponent_total_cards = req.opponent_hidden_count + opponent_revealed_count
     else:
         opponent_total_cards = req.opponent_card_count
 
     if opponent_total_cards < opponent_revealed_count:
-        raise HTTPException(
-            status_code=400,
-            detail="对手总牌数不能小于已公开的对手明牌数量。",
-        )
+        raise GameStateError("对手总牌数不能小于已公开的对手明牌数量", detail={"opponent_total": opponent_total_cards, "revealed": opponent_revealed_count})
 
     return build_legacy_game_state(
         my_cards=my_cards,
@@ -255,25 +289,76 @@ def _build_game_state(req: TurnRequest) -> GameState:
 
 @router.post("/turn")
 def calculate_turn(req: TurnRequest):
-    # Ensure session tracking
-    session_id = session_manager.get_or_create_session(req.session_id)
-    session_data = session_manager.get_session(session_id)
+    """
+    计算当前回合的最佳策略
     
-    game_state = _build_game_state(req)
-    
-    # Optional: Persist new actions into the session history
-    if req.state and req.state.actions:
-        session_data['history'] = req.state.actions
-    
-    controller = GameController(game_state)
-    result = controller.run_turn()
-    result["session_id"] = session_id
-    result["input_summary"] = {
-        "self_player_id": game_state.self_player_id,
-        "target_player_id": game_state.target_player_id,
-        "player_count": len(game_state.players),
-        "target_total_slots": len(game_state.target_player().ordered_slots()),
-        "target_hidden_count": result["opponent_hidden_count"],
-        "action_count": len(game_state.actions),
-    }
-    return result
+    Args:
+        req: 包含游戏状态和会话信息的请求
+        
+    Returns:
+        包含AI建议和分析结果的响应
+        
+    Raises:
+        ValidationError: 输入数据验证失败
+        GameStateError: 游戏状态不一致
+        MCTSComputationError: MCTS计算失败
+    """
+    try:
+        # 确保会话跟踪
+        session_id = session_manager.get_or_create_session(req.session_id)
+        session_data = session_manager.get_session(session_id)
+        
+        logger.info(f"处理回合请求 - session_id: {session_id}")
+        
+        # 构建游戏状态
+        try:
+            game_state = _build_game_state(req)
+        except (ValidationError, GameStateError) as e:
+            logger.warning(f"游戏状态构建失败: {e.message}")
+            raise
+        except Exception as e:
+            logger.error(f"游戏状态构建异常: {str(e)}", exc_info=True)
+            raise GameStateError(f"游戏状态构建失败: {str(e)}")
+        
+        # 可选：将新动作持久化到会话历史
+        if req.state and req.state.actions:
+            session_data['history'] = req.state.actions
+            logger.debug(f"更新会话历史 - 动作数: {len(req.state.actions)}")
+        
+        # 执行MCTS计算
+        try:
+            controller = GameController(game_state)
+            result = controller.run_turn()
+        except Exception as e:
+            logger.error(f"MCTS计算失败: {str(e)}", exc_info=True)
+            raise MCTSComputationError(
+                "AI决策计算失败",
+                detail={"error": str(e), "game_state_valid": True}
+            )
+        
+        # 添加会话和状态摘要信息
+        result["session_id"] = session_id
+        result["input_summary"] = {
+            "self_player_id": game_state.self_player_id,
+            "target_player_id": game_state.target_player_id,
+            "player_count": len(game_state.players),
+            "target_total_slots": len(game_state.target_player().ordered_slots()),
+            "target_hidden_count": result.get("opponent_hidden_count", 0),
+            "action_count": len(game_state.actions),
+        }
+        
+        logger.info(f"回合计算成功 - session_id: {session_id}, 决策: {result.get('action', 'unknown')}")
+        return result
+        
+    except (ValidationError, GameStateError, MCTSComputationError):
+        # 已知的业务异常，直接抛出
+        raise
+    except Exception as e:
+        # 未知异常，记录并包装
+        logger.error(f"calculate_turn 未知异常: {str(e)}", exc_info=True)
+        raise MCTSComputationError(
+            "处理请求时发生未知错误",
+            detail={"error_type": type(e).__name__}
+        )
+
+
