@@ -15,7 +15,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.core.engine import GameController
+from app.core.engine_split import GameController
 from app.core.session import GameSessionManager
 from app.core.state import (
     CARD_COLORS,
