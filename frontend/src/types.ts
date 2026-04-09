@@ -1,10 +1,17 @@
+export type GuessValue = number | '-';
+
+export type ProbabilityPreview = {
+  number: GuessValue;
+  prob: number;
+};
+
 export type TileState = {
   id: string;
   color: 'black' | 'white';
   isKnown: boolean;
   number?: number;
   isJoker?: boolean;
-  probabilities?: { number: number; prob: number }[];
+  probabilities?: ProbabilityPreview[];
 };
 
 export type PlayerState = {

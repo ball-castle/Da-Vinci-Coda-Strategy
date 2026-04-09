@@ -25,8 +25,8 @@ SlotKey = Tuple[str, int]
 
 CARD_COLOR_RANK = {"B": 0, "W": 1}
 SOFT_BEHAVIOR_BLEND = 0.28
-from .models import HardConstraintSet, FullProbabilityMatrix, ProbabilityMatrix, SlotKey
-from .utils import slot_key
+from .models import HardConstraintSet, FullProbabilityMatrix, ProbabilityMatrix, SlotKey, HiddenPosition, GuessSignal
+from .utils import slot_key, card_sort_key, normalize_card_distribution
 from .constraints import HardConstraintCompiler
 from .behavior import BehavioralLikelihoodModel
 

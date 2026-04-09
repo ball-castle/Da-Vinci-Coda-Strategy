@@ -8,6 +8,15 @@ from pathlib import Path
 from random import Random
 from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from .utils import (
+    numeric_card_value,
+    card_sort_key,
+    serialize_card,
+    normalize_card_distribution,
+    slot_key,
+    clamp,
+)
+
 from app.core.state import (
     CARD_COLORS,
     JOKER,
@@ -35,6 +44,7 @@ class GameController:
 
     BEHAVIOR_DEBUG_TOP_K = 3
     DRAW_ROLLOUT_SAMPLE_LIMIT = 4
+    DRAW_ROLLOUT_MAX_SAMPLES_PER_COLOR = 3
     DRAW_ROLLOUT_EXACT_ENUMERATION_LIMIT = 8
     DRAW_ROLLOUT_ENDGAME_ENUMERATION_THRESHOLD = 2
     DRAW_ROLLOUT_VALUE_REFERENCE = 8.0
@@ -367,24 +377,16 @@ class GameController:
             (card for card in self.inference_engine.available_cards if card[0] == color),
             key=card_sort_key,
         )
-        exact_endgame = (
-            self.game_state.my_hidden_count()
-            <= self.DRAW_ROLLOUT_ENDGAME_ENUMERATION_THRESHOLD
-            or len(self.game_state.target_hidden_slots())
-            <= self.DRAW_ROLLOUT_ENDGAME_ENUMERATION_THRESHOLD
-        )
-        if (
-            exact_endgame
-            or len(cards) <= self.DRAW_ROLLOUT_SAMPLE_LIMIT
-            or len(cards) <= self.DRAW_ROLLOUT_EXACT_ENUMERATION_LIMIT
-        ):
+        if len(cards) <= self.DRAW_ROLLOUT_MAX_SAMPLES_PER_COLOR:
             return cards
 
+        sample_count = min(self.DRAW_ROLLOUT_MAX_SAMPLES_PER_COLOR, len(cards))
+        if sample_count <= 1:
+            return [cards[0]]
+
         sampled_indices = {
-            0,
-            len(cards) // 3,
-            (2 * len(cards)) // 3,
-            len(cards) - 1,
+            round((index * (len(cards) - 1)) / (sample_count - 1))
+            for index in range(sample_count)
         }
         return [cards[index] for index in sorted(sampled_indices)]
 
@@ -2325,10 +2327,12 @@ class GameController:
         target_player_id = getattr(self.game_state, "target_player_id", None)
         target_probability_matrix = full_probability_matrix.get(target_player_id, {})
         target_hard_matrix = hard_full_probability_matrix.get(target_player_id, {})
+        public_best_move = self._serialize_move_for_response(best_move)
+        public_top_moves = self._serialize_moves_for_response(all_moves[:10])
 
         return {
-            "best_move": best_move,
-            "top_moves": all_moves[:10],
+            "best_move": public_best_move,
+            "top_moves": public_top_moves,
             "probability_matrix": self._serialize_probability_matrix(
                 target_probability_matrix,
                 self.game_state.hidden_index_by_slot(target_player_id) if target_player_id is not None else {},
@@ -2369,6 +2373,29 @@ class GameController:
             ),
             "should_stop": best_move is None,
         }
+
+    def _serialize_move_for_response(
+        self,
+        move: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if move is None:
+            return None
+
+        return {
+            key: value
+            for key, value in move.items()
+            if not key.startswith("_")
+        }
+
+    def _serialize_moves_for_response(
+        self,
+        moves: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        return [
+            serialized_move
+            for move in moves
+            if (serialized_move := self._serialize_move_for_response(move)) is not None
+        ]
 
     def _strategy_phase(self) -> str:
         self_slots = self.game_state.resolved_ordered_slots(self.game_state.self_player_id)

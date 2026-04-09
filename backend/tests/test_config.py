@@ -1,8 +1,7 @@
 """
 配置模块测试
 """
-import pytest
-from app.config import get_settings, Settings
+from app.config import get_settings
 
 
 class TestSettings:
@@ -28,3 +27,13 @@ class TestSettings:
         settings = get_settings()
         assert isinstance(settings.cors_origins, list)
         assert len(settings.cors_origins) > 0
+
+    def test_invalid_process_debug_env_is_ignored(self, monkeypatch):
+        """测试无效的全局DEBUG环境变量不会阻塞配置加载"""
+        get_settings.cache_clear()
+        monkeypatch.setenv("DEBUG", "release")
+
+        settings = get_settings()
+
+        assert settings.debug is False
+        get_settings.cache_clear()

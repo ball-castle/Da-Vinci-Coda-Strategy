@@ -36,13 +36,11 @@ class TestTurnEndpoint:
     def test_turn_with_valid_legacy_format(self, client, sample_turn_request):
         """测试使用旧版格式的有效请求"""
         response = client.post("/api/turn", json=sample_turn_request)
-        # MCTS实现可能不完整，允许500错误
-        assert response.status_code in [status.HTTP_200_OK, status.HTTP_500_INTERNAL_SERVER_ERROR]
-        
-        if response.status_code == status.HTTP_200_OK:
-            data = response.json()
-            assert "session_id" in data
-            assert "input_summary" in data
+        assert response.status_code == status.HTTP_200_OK
+
+        data = response.json()
+        assert "session_id" in data
+        assert "input_summary" in data
     
     def test_turn_with_invalid_card_format(self, client):
         """测试无效的卡牌格式"""

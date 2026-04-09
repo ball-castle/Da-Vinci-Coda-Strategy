@@ -1,14 +1,14 @@
 /**
  * 瓦片工具函数
  */
-import { TileState } from '../types';
+import type { TileState } from '../types';
 
 /**
  * 对瓦片进行排序
  */
 export function sortTiles(tiles: TileState[]): TileState[] {
-  const knownTiles = tiles.filter(t => t.number !== null && !t.isJoker);
-  const unknownAndJokers = tiles.filter(t => t.number === null || t.isJoker);
+  const knownTiles = tiles.filter(t => t.number !== undefined && t.number !== null && !t.isJoker);
+  const unknownAndJokers = tiles.filter(t => t.number === undefined || t.number === null || t.isJoker);
 
   knownTiles.sort((a, b) => {
     if (a.number !== b.number) {
@@ -24,7 +24,7 @@ export function sortTiles(tiles: TileState[]): TileState[] {
   let unknownIndex = 0;
 
   tiles.forEach(tile => {
-    if (tile.number === null || tile.isJoker) {
+    if (tile.number === undefined || tile.number === null || tile.isJoker) {
       if (unknownIndex < unknownAndJokers.length) {
         result.push(unknownAndJokers[unknownIndex++]);
       }

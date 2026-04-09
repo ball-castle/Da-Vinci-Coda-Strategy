@@ -1,7 +1,7 @@
 /**
  * 玩家工具函数
  */
-import { PlayerState, TileState } from '../types';
+import type { PlayerState, TileState } from '../types';
 
 export function findPlayer(players: PlayerState[], playerId: string): PlayerState | undefined {
   return players.find(p => p.id === playerId);

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -951,6 +953,7 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
             0.15,
         )
 
+    @pytest.mark.slow
     def test_self_play_benchmark_quantifies_guess_draw_and_rollout_behavior(self):
         engine = DaVinciDecisionEngine()
 
@@ -983,6 +986,7 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(benchmark["deep_rollout_usage"], 0.0)
         self.assertLessEqual(benchmark["deep_rollout_usage"], 1.0)
 
+    @pytest.mark.slow
     def test_long_horizon_self_play_benchmark_quantifies_win_rate_and_stop_rate(self):
         engine = DaVinciDecisionEngine()
 
@@ -1019,6 +1023,7 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(benchmark["seat_bias"], 0.0)
         self.assertLessEqual(benchmark["seat_bias"], 1.0)
 
+    @pytest.mark.slow
     def test_long_horizon_self_play_stays_active_after_draw(self):
         engine = DaVinciDecisionEngine()
 
@@ -1030,6 +1035,7 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertLessEqual(benchmark["post_draw_stop_rate"], 0.25)
         self.assertLess(benchmark["draw_rate"], 1.0)
 
+    @pytest.mark.slow
     def test_long_horizon_league_benchmark_aggregates_multiple_matches(self):
         engine = DaVinciDecisionEngine()
 
@@ -1066,6 +1072,7 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(benchmark["seat_bias"], 0.0)
         self.assertGreaterEqual(benchmark["average_match_seat_bias"], 0.0)
 
+    @pytest.mark.slow
     def test_long_horizon_matrix_benchmark_aggregates_multiple_seeds(self):
         engine = DaVinciDecisionEngine()
 
@@ -1096,6 +1103,7 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(benchmark["seed_stop_rate_stddev"], 0.0)
         self.assertGreaterEqual(benchmark["seed_starting_advantage_stddev"], 0.0)
 
+    @pytest.mark.slow
     def test_long_horizon_configuration_matrix_aggregates_multiple_configs(self):
         engine = DaVinciDecisionEngine()
 
@@ -1117,6 +1125,7 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
         self.assertGreaterEqual(benchmark["config_seat_bias_stddev"], 0.0)
         self.assertGreaterEqual(benchmark["config_starting_advantage_stddev"], 0.0)
 
+    @pytest.mark.slow
     def test_long_horizon_stability_matrix_repeats_small_configs(self):
         engine = DaVinciDecisionEngine()
 
@@ -1150,6 +1159,7 @@ class BehaviorRegressionCaseTests(unittest.TestCase):
             0.0,
         )
 
+    @pytest.mark.slow
     def test_long_horizon_evaluation_suite_exposes_balance_score(self):
         engine = DaVinciDecisionEngine()
 

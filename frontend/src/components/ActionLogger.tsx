@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ActionType, GameAction, TileState } from '../types';
 
 interface ActionLoggerProps {
@@ -18,10 +18,26 @@ export function ActionLogger({ players, onLogAction }: ActionLoggerProps) {
   const [tileIndex, setTileIndex] = useState<number>(0);
   const [guessNumber, setGuessNumber] = useState<number>(0);
   const [isHit, setIsHit] = useState<boolean>(false);
+  const activeActorId = useMemo(
+    () => (players.some(player => player.id === actorId) ? actorId : (players[0]?.id || '')),
+    [actorId, players],
+  );
+  const availableTargets = useMemo(
+    () => players.filter(player => player.id !== activeActorId),
+    [activeActorId, players],
+  );
+  const activeTargetId = useMemo(
+    () => (
+      availableTargets.some(player => player.id === targetId)
+        ? targetId
+        : (availableTargets[0]?.id || '')
+    ),
+    [availableTargets, targetId],
+  );
 
   const handleSubmit = () => {
-    const actorName = players.find(p => p.id === actorId)?.name || 'Unknown';
-    const targetName = players.find(p => p.id === targetId)?.name || 'Unknown';
+    const actorName = players.find(p => p.id === activeActorId)?.name || 'Unknown';
+    const targetName = players.find(p => p.id === activeTargetId)?.name || 'Unknown';
     
     let humanReadable: React.ReactNode = '';
     
@@ -53,16 +69,16 @@ export function ActionLogger({ players, onLogAction }: ActionLoggerProps) {
       );
     }
 
-    const targetPlayerObj = players.find(p => p.id === targetId);
+    const targetPlayerObj = players.find(p => p.id === activeTargetId);
     const targetColor = targetPlayerObj?.tiles?.[tileIndex]?.color;
 
     const action: GameAction = {
       id: Date.now().toString(),
       timestamp: Date.now(),
-      actorId,
+      actorId: activeActorId,
       type: actionType,
       color: actionType === 'DRAW' ? color : undefined,
-      targetId: actionType === 'GUESS' ? targetId : undefined,
+      targetId: actionType === 'GUESS' ? activeTargetId : undefined,
       targetTileId: actionType === 'GUESS' ? `${tileIndex}` : undefined,
       targetColor: actionType === 'GUESS' ? targetColor : undefined,
       guessNumber: actionType === 'GUESS' ? guessNumber : undefined,
@@ -74,15 +90,15 @@ export function ActionLogger({ players, onLogAction }: ActionLoggerProps) {
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-lg p-4 flex flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <div className="flex justify-between items-center mb-1">
         <h3 className="text-sm uppercase tracking-wider font-bold text-gray-400">回合控制器</h3>
-        <div className="flex gap-1 bg-gray-900 p-1 rounded">
+        <div className="flex gap-1 bg-black/40 p-1 rounded-lg border border-gray-700/50 shadow-inner">
           {(['DRAW', 'GUESS', 'STOP'] as ActionType[]).map(type => (
             <button
               key={type}
               onClick={() => setActionType(type)}
-              className={`px-3 py-1 text-xs font-bold rounded transition ${actionType === type ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}
+              className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${actionType === type ? 'bg-indigo-500 text-white shadow-md' : 'text-gray-400 hover:text-white hover:bg-gray-700/50'}`}
             >
               {type === 'DRAW' ? '摸牌' : type === 'GUESS' ? '猜测' : '过卡'}
             </button>
@@ -94,7 +110,7 @@ export function ActionLogger({ players, onLogAction }: ActionLoggerProps) {
         <span className="w-12 shrink-0">行动者:</span>
         <select 
           className="flex-1 bg-gray-900 border border-gray-700 rounded p-1.5 focus:ring focus:ring-blue-500 outline-none text-white"
-          value={actorId} 
+          value={activeActorId}
           onChange={(e) => setActorId(e.target.value)}
         >
           {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -127,10 +143,10 @@ export function ActionLogger({ players, onLogAction }: ActionLoggerProps) {
             <span className="w-12 shrink-0">目标:</span>
             <select 
               className="flex-1 bg-gray-900 border border-gray-700 rounded p-1.5 focus:ring focus:ring-blue-500 outline-none text-white"
-              value={targetId} 
+              value={activeTargetId}
               onChange={(e) => setTargetId(e.target.value)}
             >
-              {players.filter(p => p.id !== actorId).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {availableTargets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </div>
           <div className="flex items-center gap-2 text-sm text-gray-300">
@@ -174,7 +190,7 @@ export function ActionLogger({ players, onLogAction }: ActionLoggerProps) {
         onClick={handleSubmit}
         className="mt-2 w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded-lg shadow transition"
       >
-        录入系统并触发推演
+        录入系统并自动推演
       </button>
     </div>
   );

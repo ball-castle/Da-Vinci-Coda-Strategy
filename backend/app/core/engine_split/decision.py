@@ -26,10 +26,14 @@ SlotKey = Tuple[str, int]
 CARD_COLOR_RANK = {"B": 0, "W": 1}
 SOFT_BEHAVIOR_BLEND = 0.28
 from .models import SearchTreeNode, GuessSignal, FullProbabilityMatrix, ProbabilityMatrix, SlotKey, SOFT_BEHAVIOR_BLEND
-from .utils import numeric_card_value, card_sort_key, clamp
+from .utils import numeric_card_value, card_sort_key, clamp, normalize_card_distribution, slot_key, serialize_card
 from .constraints import HardConstraintCompiler
 from .behavior import BehavioralLikelihoodModel
 from .inference import DaVinciInferenceEngine
+
+def get_game_controller_class():
+    from .controller import GameController
+    return GameController
 
 class DaVinciDecisionEngine:
     """Score moves by immediate EV, continuation likelihood, and stop-aware thresholding."""
@@ -452,7 +456,7 @@ class DaVinciDecisionEngine:
         ranked_moves = list(all_moves)
         if len(ranked_moves) <= 1:
             return ranked_moves
-        root_moves = ranked_moves
+        root_moves = ranked_moves[: self.GLOBAL_MCTS_TOP_K]
         if any(
             "target_player_id" not in move
             or "target_slot_index" not in move
@@ -1297,7 +1301,7 @@ class DaVinciDecisionEngine:
         stopped_cleanly = 0.0
 
         for step in range(max_steps):
-            result = GameController(current_state).run_turn(
+            result = get_game_controller_class()(current_state).run_turn(
                 include_draw_color_summary=False,
             )
             decision_summary = result.get("decision_summary", {})
@@ -1400,11 +1404,11 @@ class DaVinciDecisionEngine:
                 color_cards[len(color_cards) // 2],
                 color_cards[-1],
             ]
-        base_controller = GameController(game_state)
+        base_controller = get_game_controller_class()(game_state)
         realized_objectives: List[float] = []
         for drawn_card in sampled_cards:
             simulated_state = base_controller._simulated_draw_game_state(drawn_card)
-            simulated_result = GameController(simulated_state).run_turn(
+            simulated_result = get_game_controller_class()(simulated_state).run_turn(
                 include_draw_color_summary=False,
             )
             realized_objectives.append(
@@ -1476,7 +1480,7 @@ class DaVinciDecisionEngine:
             public_state = world["public_state"]
             truth_by_slot = world["truth_by_slot"]
             actual_remaining_cards = world["actual_remaining_cards"]
-            result = GameController(public_state).run_turn()
+            result = get_game_controller_class()(public_state).run_turn()
             recommended_action = str(result.get("recommended_action", "stop"))
             best_move = result.get("best_move")
             top_moves = list(result.get("top_moves", ()))
@@ -1549,10 +1553,10 @@ class DaVinciDecisionEngine:
             sample_guessed_any = 0.0
             sample_stopped_cleanly = 0.0
             for drawn_card in sampled_draw_cards:
-                benchmark_state = GameController(public_state)._simulated_draw_game_state(
+                benchmark_state = get_game_controller_class()(public_state)._simulated_draw_game_state(
                     drawn_card
                 )
-                post_draw_result = GameController(benchmark_state).run_turn(
+                post_draw_result = get_game_controller_class()(benchmark_state).run_turn(
                     include_draw_color_summary=False,
                 )
                 post_draw_best_move = post_draw_result.get("best_move")
@@ -1877,7 +1881,7 @@ class DaVinciDecisionEngine:
             self_player_id=acting_player_id,
             target_player_id=target_player_id,
         )
-        controller = GameController(pre_draw_state)
+        controller = get_game_controller_class()(pre_draw_state)
         controller.decision_engine.DEEP_ROLLOUT_DEPTH = (
             self.LONG_SELF_PLAY_PRE_DRAW_ROLLOUT_DEPTH
         )
@@ -1982,7 +1986,7 @@ class DaVinciDecisionEngine:
                     self_player_id=acting_player_id,
                     target_player_id=target_player_id,
                 )
-                post_draw_controller = GameController(post_draw_state)
+                post_draw_controller = get_game_controller_class()(post_draw_state)
                 post_draw_controller.decision_engine.DEEP_ROLLOUT_DEPTH = 1
                 post_draw_result = post_draw_controller.run_turn(
                     include_draw_color_summary=False,
@@ -4605,7 +4609,7 @@ class DaVinciDecisionEngine:
 
         response_game_state = miss_context["game_state"]
         try:
-            response_controller = GameController(response_game_state)
+            response_controller = get_game_controller_class()(response_game_state)
         except ValueError:
             return []
         response_controller.decision_engine.DEEP_ROLLOUT_DEPTH = min(
@@ -5889,7 +5893,7 @@ class DaVinciDecisionEngine:
         )
         guidance_matrix = guidance_matrix_context["matrix"]
         guidance_map_hypothesis = self._map_hypothesis_from_matrix(guidance_matrix)
-        guidance_controller = GameController(game_state)
+        guidance_controller = get_game_controller_class()(game_state)
         behavior_debug = guidance_controller._build_behavior_debug(
             full_probability_matrix=guidance_matrix,
             guess_signals_by_player=guess_signals_by_player,

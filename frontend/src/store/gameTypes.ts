@@ -1,7 +1,7 @@
 /**
  * 游戏状态管理类型定义
  */
-import { TileState, PlayerState, GameAction } from '../types';
+import type { TileState, PlayerState, GameAction } from '../types';
 
 export interface GameState {
   playerCount: number;
@@ -20,5 +20,6 @@ export type GameActionType =
   | { type: 'UPDATE_TILE'; payload: { playerId: string; tileId: string; updates: Partial<TileState> } }
   | { type: 'ADD_ACTION'; payload: GameAction }
   | { type: 'CLEAR_ACTIONS' }
+  | { type: 'RESET_GAME' }
   | { type: 'RESTORE_STATE'; payload: GameState }
   | { type: 'SET_SESSION_ID'; payload: string };

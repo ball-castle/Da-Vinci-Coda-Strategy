@@ -1,24 +1,26 @@
 /**
  * 游戏状态管理Hook
  */
-import { useReducer, useCallback, useMemo, useRef } from 'react';
+import { useReducer, useCallback, useMemo, useRef, useState } from 'react';
 import { gameReducer, initialGameState } from '../store/gameReducer';
-import { GameState } from '../store/gameTypes';
-import { TileState, GameAction } from '../types';
+import type { GameState } from '../store/gameTypes';
+import type { TileState, GameAction } from '../types';
 
 const MAX_HISTORY_SIZE = 50; // 限制历史记录大小防止内存泄漏
 
 export function useGameState() {
   const [state, dispatch] = useReducer(gameReducer, initialGameState);
   const historyStack = useRef<GameState[]>([]);
+  const [historyDepth, setHistoryDepth] = useState(0);
 
   // 保存当前状态到历史栈
   const saveToHistory = useCallback(() => {
-    historyStack.current.push({ ...state });
+    historyStack.current.push(state);
     // 限制历史栈大小
     if (historyStack.current.length > MAX_HISTORY_SIZE) {
       historyStack.current = historyStack.current.slice(-MAX_HISTORY_SIZE);
     }
+    setHistoryDepth(historyStack.current.length);
   }, [state]);
 
   // 撤销操作
@@ -26,6 +28,7 @@ export function useGameState() {
     if (historyStack.current.length === 0) return false;
 
     const previousState = historyStack.current.pop();
+    setHistoryDepth(historyStack.current.length);
     if (previousState) {
       dispatch({ type: 'RESTORE_STATE', payload: previousState });
       return true;
@@ -71,13 +74,21 @@ export function useGameState() {
 
   // 添加游戏动作
   const addAction = useCallback((action: GameAction) => {
+    saveToHistory();
     dispatch({ type: 'ADD_ACTION', payload: action });
-  }, []);
+  }, [saveToHistory]);
 
   // 清空动作历史
   const clearActions = useCallback(() => {
+    saveToHistory();
     dispatch({ type: 'CLEAR_ACTIONS' });
-  }, []);
+  }, [saveToHistory]);
+
+  // 重置整个对局
+  const resetGame = useCallback(() => {
+    saveToHistory();
+    dispatch({ type: 'RESET_GAME' });
+  }, [saveToHistory]);
 
   // 设置会话ID
   const setSessionId = useCallback((sessionId: string) => {
@@ -87,12 +98,12 @@ export function useGameState() {
   // 计算派生状态
   const derivedState = useMemo(() => ({
     totalTiles: state.myHand.length + state.opponents.reduce((sum, opp) => sum + opp.tiles.length, 0),
-    canUndo: historyStack.current.length > 0,
+    canUndo: historyDepth > 0,
     opponentNames: state.opponents.reduce((acc, opp) => {
       acc[opp.id] = opp.name;
       return acc;
     }, {} as Record<string, string>),
-  }), [state.myHand.length, state.opponents]);
+  }), [historyDepth, state.myHand.length, state.opponents]);
 
   return {
     // State
@@ -108,6 +119,7 @@ export function useGameState() {
     updateTile,
     addAction,
     clearActions,
+    resetGame,
     setSessionId,
     undo,
   };

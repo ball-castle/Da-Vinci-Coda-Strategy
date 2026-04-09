@@ -1,4 +1,4 @@
-import { DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import type { TileState } from '../types';
 import { SortableTile } from './SortableTile';
@@ -30,7 +30,7 @@ export function Hand({ playerName, isMe, tiles, aiTargetTileIndex, onTileClick, 
     useSensor(KeyboardSensor)
   );
 
-  const handleDragEnd = (event: any) => {
+  const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (over && active.id !== over.id) {
       const oldIndex = tiles.findIndex((t) => t.id === active.id);

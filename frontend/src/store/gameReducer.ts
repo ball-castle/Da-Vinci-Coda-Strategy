@@ -1,10 +1,10 @@
 /**
  * 游戏状态Reducer
  */
-import { GameState, GameActionType } from './gameTypes';
+import type { GameState, GameActionType } from './gameTypes';
 import { sortTiles, reorderArray, moveInArray, generateTileId } from '../utils/tileUtils';
 import { updatePlayer, updatePlayerTiles } from '../utils/playerUtils';
-import { TileState } from '../types';
+import type { TileState } from '../types';
 
 const INITIAL_OPPONENTS_DATA = [
   { id: 'opp1', name: '对手A', tiles: [] },
@@ -12,19 +12,30 @@ const INITIAL_OPPONENTS_DATA = [
   { id: 'opp3', name: '对手C', tiles: [] },
 ];
 
-export const initialGameState: GameState = {
-  playerCount: 3,
-  opponents: INITIAL_OPPONENTS_DATA,
-  myHand: [],
-  actionHistory: [],
-  sessionId: undefined,
-};
+function createInitialOpponents(count = 3) {
+  return INITIAL_OPPONENTS_DATA.slice(0, count - 1).map(opponent => ({
+    ...opponent,
+    tiles: [],
+  }));
+}
+
+export function createInitialGameState(): GameState {
+  return {
+    playerCount: 3,
+    opponents: createInitialOpponents(3),
+    myHand: [],
+    actionHistory: [],
+    sessionId: undefined,
+  };
+}
+
+export const initialGameState: GameState = createInitialGameState();
 
 export function gameReducer(state: GameState, action: GameActionType): GameState {
   switch (action.type) {
     case 'SET_PLAYER_COUNT': {
       const count = action.payload;
-      const newOpponents = INITIAL_OPPONENTS_DATA.slice(0, count - 1);
+      const newOpponents = createInitialOpponents(count);
       return { ...state, playerCount: count, opponents: newOpponents };
     }
 
@@ -33,7 +44,7 @@ export function gameReducer(state: GameState, action: GameActionType): GameState
       const newTile: TileState = {
         id: generateTileId(),
         color,
-        number: null,
+        isKnown: false,
         isJoker: false,
       };
 
@@ -120,6 +131,9 @@ export function gameReducer(state: GameState, action: GameActionType): GameState
 
     case 'CLEAR_ACTIONS':
       return { ...state, actionHistory: [] };
+
+    case 'RESET_GAME':
+      return createInitialGameState();
 
     case 'RESTORE_STATE':
       return action.payload;

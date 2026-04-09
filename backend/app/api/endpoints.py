@@ -121,7 +121,7 @@ def _coerce_color(color: Optional[str], field_name: str) -> Optional[str]:
 
 def _coerce_card_value(value: Any, field_name: str) -> Any:
     """验证并转换牌值"""
-    if value is None:
+    if value is None or value == -1:
         return None
     if value == JOKER:
         return value
